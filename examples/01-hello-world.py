@@ -65,21 +65,14 @@ def main(args: Namespace):
         world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
                          color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
 
-    clock = Clock(dt=DT, max_ticks=MAX_SUBTICKS_PER_RENDER_TICK)
     while not rl.WindowShouldClose():
-        clock.wait()
-        clock.tick()
-
         if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
             radius = random.randint(5, 20)
             position = rl.GetMousePosition().x, rl.GetMousePosition().y
             world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
                              color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
 
-
-        for _ in clock.drain():
-            logger.log_every_s(f"Applying {clock.accumulator // clock.dt} update ticks per render tick", "DEBUG", True)
-            _ = [system.on_tick(world=world) for system in update_systems]
+        _ = [system.on_tick(world=world) for system in update_systems]
 
         rl.BeginDrawing()
         rl.ClearBackground(rl.RAYWHITE)

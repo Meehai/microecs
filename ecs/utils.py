@@ -32,3 +32,8 @@ class Clock:
     def wait(self):
         """waits the leftover time in case the previous tick ran too fast to maintain consistent FPS"""
         rl.WaitTime(max(self.dt - (rl.GetTime() - self.prev_time), 0))
+
+    def wait_and_tick(self):
+        """calls wait() then tick(). Put this at the beginning of the main loop :)"""
+        self.wait()
+        self.tick()

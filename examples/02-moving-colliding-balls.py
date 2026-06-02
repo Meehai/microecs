@@ -92,8 +92,7 @@ def main(args: Namespace):
 
     clock = Clock(dt=DT, max_ticks=MAX_SUBTICKS_PER_RENDER_TICK)
     while not rl.WindowShouldClose():
-        clock.wait()
-        clock.tick()
+        clock.wait_and_tick()
 
         for _ in clock.drain():
             logger.log_every_s(f"Applying {clock.accumulator // clock.dt} update ticks per render tick", "DEBUG", True)

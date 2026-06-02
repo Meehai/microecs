@@ -19,5 +19,5 @@ test_and_run:
     - pip install -r requirements.txt
     - export PYTHONPATH="$PYTHONPATH:."
   script:
-    - python examples/01-moving-colliding-balls.py --help
+    - python examples/01-hello-world.py --help
     - pytest test
