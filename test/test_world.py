@@ -247,7 +247,6 @@ def test_add_component_keeps_entity_id():
     np.testing.assert_array_equal(pool.velocity[ix], [3.0, 4.0])            # new field set
 
 
-@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
 def test_remove_component_narrows_archetype():
     """remove_component drops a field and moves the entity to the smaller pool."""
     world = World(components=[HasPosition, HasVelocity])
@@ -275,7 +274,6 @@ def test_add_component_only_needs_new_fields():
     np.testing.assert_array_equal(pos_vel.velocity[0], [7.0, 8.0])
 
 
-@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
 def test_add_duplicate_component_raises():
     """Adding a component the entity already has is an error."""
     world = World(components=[HasPosition, HasVelocity])
@@ -287,7 +285,18 @@ def test_add_duplicate_component_raises():
         world.add_component(eid, HasVelocity, velocity=np.array([9.0, 9.0], "float32"))
 
 
-@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
+def test_add_unknown_component_is_rejected_and_keeps_entity():
+    """Adding a component the world never registered must fail cleanly, leaving the entity untouched."""
+    world = World(components=[HasPosition, HasVelocity])        # HasRadius is NOT registered with this world
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+
+    with pytest.raises(AssertionError):                        # a clear error, not a raw KeyError
+        world.add_component(eid, HasRadius, radius=np.array([5.0], "float32"))
+
+    assert eid in world._eid_to_pool_ix                        # a rejected migration must not destroy the entity
+    pool, ix = world._eid_to_pool_ix[eid]
+    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])  # original data still there
+
 def test_remove_absent_component_raises():
     """Removing a component the entity does not have is an error."""
     world = World(components=[HasPosition, HasVelocity])
