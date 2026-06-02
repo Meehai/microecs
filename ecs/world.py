@@ -11,6 +11,7 @@ class World:
     def __init__(self, components: list[type[Component]]):
         self._check_components(components)
         self.pools: dict[PoolKey, Pool] = {}
+        self.pool_to_components: dict[Pool, list[type[Component]]] = {}
         # components management
         self.component_names = [x.__name__ for x in components]
         self.component_types = list(components)
@@ -26,8 +27,8 @@ class World:
         self._last_id: EntityId = -1
         logger.debug(f"Created scene with components: {self.component_names}")
 
-    def add_entity(self, components: list[type], **kwargs) -> EntityId:
-        """adds an entity to the right pool based on its traits. Returns an entity id. Components are sent to kwargs"""
+    def add_entity(self, components: list[type[Component]], **kwargs) -> EntityId:
+        """Adds an entity to the right pool based on components. Data sent as kwargs. Returns an entity id."""
         pool = self._get_entity_pool(components, **kwargs)
         pool_index = pool.add_entity(**kwargs)
         self._last_id += 1
@@ -43,6 +44,20 @@ class World:
         if entity_id != id_which_was_last_in_pool:
             self._eid_to_pool_ix[id_which_was_last_in_pool] = (pool, pool_ix) # we re-use the popped id (it's swapped)
             self._pool_ix_to_eid[(pool, pool_ix)] = id_which_was_last_in_pool
+
+    def add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
+        """Adds a component to an entity given its id. Component data is sent to kwargs"""
+        pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
+        entity = pool.pop_entity(pool_ix)
+        id_which_was_last_in_pool = self._pool_ix_to_eid.pop((pool, len(pool)))
+        if entity_id != id_which_was_last_in_pool:
+            self._eid_to_pool_ix[id_which_was_last_in_pool] = (pool, pool_ix) # we re-use the popped id (it's swapped)
+            self._pool_ix_to_eid[(pool, pool_ix)] = id_which_was_last_in_pool
+        new_components = [*self.pool_to_components[pool], component]
+        pool = self._get_entity_pool(new_components, **entity, **kwargs)
+        pool_index = pool.add_entity(**entity, **kwargs)
+        self._eid_to_pool_ix[entity_id] = (pool, pool_index)
+        self._pool_ix_to_eid[(pool, pool_index)] = entity_id
 
     def query_and(self, component_types: list[type]) -> list[Pool]:
         """returns all the entities that have all the components"""
@@ -67,6 +82,7 @@ class World:
             shapes = sum([self.component_to_shapes[component] for component in components], []) # merge shapes
             dtypes = sum([self.component_to_dtypes[component] for component in components], []) # merge dtypes
             self.pools[key] = Pool(fields, shapes, dtypes)
+            self.pool_to_components[self.pools[key]] = components
         return self.pools[key]
 
     def _make_key(self, components: list[type]) -> PoolKey:

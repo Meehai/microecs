@@ -219,7 +219,6 @@ def test_id_resolves_after_sibling_removed():
     np.testing.assert_array_equal(pool.position[0], [3.0, 3.0])  # only c remains
 
 
-@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
 def test_add_component_moves_entity_and_preserves_fields():
     """add_component widens the archetype: entity leaves the old pool, old field intact, new field set."""
     world = World(components=[HasPosition, HasVelocity])
@@ -232,6 +231,20 @@ def test_add_component_moves_entity_and_preserves_fields():
     assert len(pos_vel) == 1
     np.testing.assert_array_equal(pos_vel.position[0], [1.0, 2.0])          # carried-over value intact
     np.testing.assert_array_equal(pos_vel.velocity[0], [3.0, 4.0])          # new value set
+
+
+def test_add_component_keeps_entity_id():
+    """The id is the caller's stable handle (task 02): migrating via add_component must NOT change it."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
+
+    assert eid in world._eid_to_pool_ix                                     # original id still resolves
+    pool, ix = world._eid_to_pool_ix[eid]
+    assert pool is world.pools[world._make_key((HasPosition, HasVelocity))]  # now in the richer pool
+    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])            # carried-over field intact
+    np.testing.assert_array_equal(pool.velocity[ix], [3.0, 4.0])            # new field set
 
 
 @pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
@@ -250,7 +263,6 @@ def test_remove_component_narrows_archetype():
     assert not hasattr(pos_only, "velocity")                               # dropped field is gone
 
 
-@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
 def test_add_component_only_needs_new_fields():
     """Caller supplies just the new component's field; existing fields carry over without being re-passed."""
     world = World(components=[HasPosition, HasVelocity])
