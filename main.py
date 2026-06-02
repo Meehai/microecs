@@ -92,7 +92,7 @@ def main(args: Namespace):
 
     clock = Clock(dt=DT, max_ticks=MAX_SUBTICKS_PER_RENDER_TICK)
     while not rl.WindowShouldClose():
-        rl.WaitTime(max(DT - (rl.GetTime() - clock.prev_time), 0))
+        clock.wait()
         clock.tick()
 
         for _ in clock.drain():

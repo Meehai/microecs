@@ -27,3 +27,7 @@ class Clock:
             self.accumulator -= self.dt
             n_ticks += 1
         self.accumulator = min(self.accumulator, self.dt) # Drop residual debt instead of it piling up across frames
+
+    def wait(self):
+        """waits the leftover time in case the previous tick ran too fast to maintain consistent FPS"""
+        rl.WaitTime(max(self.dt - (rl.GetTime() - self.prev_time), 0))
