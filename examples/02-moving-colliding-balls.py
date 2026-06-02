@@ -92,6 +92,7 @@ def main(args: Namespace):
 
     clock = Clock(dt=DT, max_ticks=MAX_SUBTICKS_PER_RENDER_TICK)
     while not rl.WindowShouldClose():
+        world.update()
         clock.wait_and_tick()
 
         for _ in clock.drain():

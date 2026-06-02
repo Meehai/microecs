@@ -65,6 +65,7 @@ def main(args: Namespace):
                          color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
 
     while not rl.WindowShouldClose():
+        world.update()
         if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
             radius = random.randint(5, 20)
             position = rl.GetMousePosition().x, rl.GetMousePosition().y

@@ -1,4 +1,12 @@
-"""Unit tests for ecs.World"""
+"""Unit tests for ecs.World.
+
+World is deferred (one mode): add_entity / remove_entity / add_component / remove_component queue a
+command and return; nothing materializes until world.update() commits the buffer. So these tests call
+world.update() after structural ops before asserting on pool state. Two things stay eager: entity ids
+(minted and returned at call time) and field validation that runs synchronously in add_entity /
+add_component (so "bad fields" / "unknown component" still raise at the call). Errors that are only
+knowable while migrating (duplicate / missing component) raise at commit, inside update().
+"""
 from dataclasses import field
 import numpy as np
 import pytest
@@ -24,7 +32,8 @@ class HasBox(Component):  # two fields, to exercise multi-field merge/ordering a
 
 
 def test_add_entity_rejects_field_from_an_unrequested_component():
-    """An entity declared with only HasPosition may not pass `velocity` (a field of the unrequested HasVelocity)."""
+    """An entity declared with only HasPosition may not pass `velocity` (a field of the unrequested HasVelocity).
+    Field validation is eager (add_entity runs it at call time), so this raises before any update()."""
     world = World(components=[HasPosition, HasVelocity])  # both components known to the world
 
     with pytest.raises(AssertionError, match="velocity"):
@@ -42,10 +51,11 @@ def test_fresh_world_has_no_pools():
 
 
 def test_add_one_entity_creates_exactly_one_pool_with_one_entity():
-    """First add_entity creates a single pool, holding that single entity."""
+    """First add_entity (after commit) creates a single pool, holding that single entity."""
     world = World(components=[HasPosition, HasVelocity])
 
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
 
     assert len(world.pools) == 1
     pool = next(iter(world.pools.values()))
@@ -57,6 +67,7 @@ def test_entity_lands_in_the_pool_keyed_by_its_components():
     world = World(components=[HasPosition, HasVelocity])
 
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
 
     key = world._make_key((HasPosition,))
     assert key in world.pools                                   # a pool with that exact key exists
@@ -68,6 +79,7 @@ def test_added_entity_field_values_are_stored():
     world = World(components=[HasPosition, HasVelocity])
 
     world.add_entity(components=(HasPosition,), position=np.array([1.5, 2.5], "float32"))
+    world.update()
 
     pool = world.query_and((HasPosition,))[0]
     np.testing.assert_array_equal(pool.position[0], np.array([1.5, 2.5], "float32"))
@@ -79,6 +91,7 @@ def test_same_archetype_entities_share_a_single_pool():
 
     for i in range(3):
         world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32"))
+    world.update()
 
     assert len(world.pools) == 1                                # still just one archetype
     pool = world.query_and((HasPosition,))[0]
@@ -93,6 +106,7 @@ def test_distinct_archetypes_get_distinct_pools():
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.add_entity(components=(HasPosition, HasVelocity),
                      position=np.array([3.0, 4.0], "float32"), velocity=np.array([5.0, 6.0], "float32"))
+    world.update()
 
     assert len(world.pools) == 2
     assert len(world.query_and((HasPosition,))[0]) >= 1
@@ -108,6 +122,7 @@ def test_component_order_does_not_create_a_second_pool():
                      position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
     world.add_entity(components=(HasVelocity, HasPosition),
                      position=np.array([5.0, 6.0], "float32"), velocity=np.array([7.0, 8.0], "float32"))
+    world.update()
 
     assert len(world.pools) == 1                                # key is a bitmask, order-independent
     assert len(next(iter(world.pools.values()))) == 2
@@ -120,6 +135,7 @@ def test_query_and_returns_all_pools_that_are_supersets():
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.add_entity(components=(HasPosition, HasVelocity),
                      position=np.array([3.0, 4.0], "float32"), velocity=np.array([5.0, 6.0], "float32"))
+    world.update()
 
     assert len(world.query_and((HasPosition,))) == 2            # both pools contain HasPosition
     assert len(world.query_and((HasPosition, HasVelocity))) == 1  # only the richer pool has both
@@ -130,6 +146,7 @@ def test_query_and_is_empty_when_no_pool_has_the_component():
     world = World(components=[HasPosition, HasVelocity])
 
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
 
     assert world.query_and((HasVelocity,)) == []
 
@@ -142,6 +159,7 @@ def test_entities_are_conserved_across_pools():
     world.add_entity(components=(HasPosition,), position=np.array([3.0, 4.0], "float32"))
     world.add_entity(components=(HasPosition, HasVelocity),
                      position=np.array([5.0, 6.0], "float32"), velocity=np.array([7.0, 8.0], "float32"))
+    world.update()
 
     assert sum(len(pool) for pool in world.pools.values()) == 3
 
@@ -151,10 +169,12 @@ def test_remove_entity_leaves_empty_pool():
     world = World(components=[HasPosition])
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
     pool = world.query_and((HasPosition,))[0]
     assert len(pool) == 1
 
     world.remove_entity(eid)                                   # last entity out -> pool becomes empty
+    world.update()
 
     assert len(pool) == 0                                      # pool is empty
     assert world._pool_ix_to_eid == {}                         # no dangling (pool, index) -> id mapping
@@ -167,10 +187,12 @@ def test_empty_pool_is_reclaimed():
     pos_key = world._make_key((HasPosition,))
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
     pos_pool = world.pools[pos_key]
     assert pos_key in world.pools                              # pool exists while it holds an entity
 
     world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))  # empties the pos-only pool
+    world.update()
 
     assert pos_key not in world.pools                          # reclaimed from the archetype registry
     assert pos_pool not in world.pool_to_components            # and released from the reverse map -> fully reclaimed
@@ -184,6 +206,7 @@ def test_remove_last_index_drops_only_that_entity():
     last = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))  # idx 1 (last)
 
     world.remove_entity(last)
+    world.update()
 
     pool = world.query_and((HasPosition,))[0]
     assert len(pool) == 1
@@ -202,6 +225,7 @@ def test_remove_middle_entity_repoints_swapped_id():
     c = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))  # idx 2 (tail)
 
     world.remove_entity(b)                                     # c slides from slot 2 into slot 1
+    world.update()
 
     pool = world.query_and((HasPosition,))[0]
     assert len(pool) == 2
@@ -213,7 +237,7 @@ def test_remove_middle_entity_repoints_swapped_id():
 
 
 def test_add_entity_returns_unique_ids():
-    """Every add_entity hands back a distinct, monotonically increasing id."""
+    """Every add_entity hands back a distinct, monotonically increasing id -- eagerly, before any update()."""
     world = World(components=[HasPosition])
 
     ids = [world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32")) for i in range(3)]
@@ -223,7 +247,8 @@ def test_add_entity_returns_unique_ids():
 
 
 def test_id_resolves_after_sibling_removed():
-    """Swap-remove moves the tail row; the moved entity's id must still resolve to it, not to its new neighbour."""
+    """Swap-remove moves the tail row; the moved entity's id must still resolve to it, not to its new neighbour.
+    The whole add/remove/add/remove sequence commits in order on a single update(), same as immediate mode would."""
     world = World(components=[HasPosition])
 
     a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
@@ -233,6 +258,7 @@ def test_id_resolves_after_sibling_removed():
     world.add_entity(components=(HasPosition,), position=np.array([3.0, 3.0], "float32"))  # c lands after b
 
     world.remove_entity(b)                                      # must drop b ([2,2]), not c, despite the earlier shuffle
+    world.update()
 
     pool = world.query_and((HasPosition,))[0]
     assert len(pool) == 1
@@ -245,6 +271,7 @@ def test_add_component_moves_entity_and_preserves_fields():
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
 
     assert world._make_key((HasPosition,)) not in world.pools               # position-only pool emptied -> reclaimed
     pos_vel = world.pools[world._make_key((HasPosition, HasVelocity))]
@@ -259,6 +286,7 @@ def test_add_component_keeps_entity_id():
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
 
     assert eid in world._eid_to_pool_ix                                     # original id still resolves
     pool, ix = world._eid_to_pool_ix[eid]
@@ -274,6 +302,7 @@ def test_remove_component_narrows_archetype():
     eid = world.add_entity(components=(HasPosition, HasVelocity),
                            position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
     world.remove_component(eid, HasVelocity)
+    world.update()
 
     assert world._make_key((HasPosition, HasVelocity)) not in world.pools   # richer pool emptied -> reclaimed
     pos_only = world.pools[world._make_key((HasPosition,))]
@@ -288,6 +317,7 @@ def test_add_component_only_needs_new_fields():
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([5.0, 6.0], "float32"))
     world.add_component(eid, HasVelocity, velocity=np.array([7.0, 8.0], "float32"))  # position NOT re-passed
+    world.update()
 
     pos_vel = world.pools[world._make_key((HasPosition, HasVelocity))]
     np.testing.assert_array_equal(pos_vel.position[0], [5.0, 6.0])          # carried over automatically
@@ -295,18 +325,20 @@ def test_add_component_only_needs_new_fields():
 
 
 def test_add_duplicate_component_raises():
-    """Adding a component the entity already has is an error."""
+    """Adding a component the entity already has is an error -- caught at commit, where the migration runs."""
     world = World(components=[HasPosition, HasVelocity])
 
     eid = world.add_entity(components=(HasPosition, HasVelocity),
                            position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
 
+    world.add_component(eid, HasVelocity, velocity=np.array([9.0, 9.0], "float32"))  # queued
     with pytest.raises(AssertionError):
-        world.add_component(eid, HasVelocity, velocity=np.array([9.0, 9.0], "float32"))
+        world.update()                                                               # duplicate detected on commit
 
 
 def test_add_unknown_component_raises():
-    """Adding a component the world never registered is rejected with a clear error."""
+    """Adding a component the world never registered is rejected eagerly, at the call (cheap synchronous check)."""
     world = World(components=[HasPosition, HasVelocity])        # HasRadius is NOT registered with this world
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
 
@@ -315,13 +347,15 @@ def test_add_unknown_component_raises():
 
 
 def test_remove_absent_component_raises():
-    """Removing a component the entity does not have is an error."""
+    """Removing a component the entity does not have is an error -- caught at commit (the field check runs there)."""
     world = World(components=[HasPosition, HasVelocity])
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
 
+    world.remove_component(eid, HasVelocity)                   # queued
     with pytest.raises(AssertionError):
-        world.remove_component(eid, HasVelocity)
+        world.update()                                         # missing-field detected on commit
 
 
 def test_remove_entity_by_id():
@@ -332,6 +366,7 @@ def test_remove_entity_by_id():
     drop = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
 
     world.remove_entity(drop)
+    world.update()
 
     assert sum(len(pool) for pool in world.pools.values()) == 1            # counts conserved
     pool = world.query_and((HasPosition,))[0]
@@ -344,6 +379,7 @@ def test_add_component_to_middle_sibling_keeps_all_ids():
 
     ids = [world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32")) for i in range(3)]
     world.add_component(ids[1], HasVelocity, velocity=np.array([9.0, 9.0], "float32"))  # middle one leaves the pool
+    world.update()
 
     assert sum(len(pool) for pool in world.pools.values()) == 3            # nobody lost
     for eid, expected in zip(ids, ([0, 0], [1, 1], [2, 2])):
@@ -358,6 +394,7 @@ def test_add_then_remove_component_round_trips():
     eid = world.add_entity(components=(HasPosition,), position=np.array([5.0, 6.0], "float32"))
     world.add_component(eid, HasVelocity, velocity=np.array([7.0, 8.0], "float32"))
     world.remove_component(eid, HasVelocity)
+    world.update()
 
     pool, ix = world._eid_to_pool_ix[eid]
     assert pool is world.pools[world._make_key((HasPosition,))]            # back in the position-only pool
@@ -374,6 +411,7 @@ def test_remove_component_lands_in_existing_pool_and_conserves_entities():
                              position=np.array([2.0, 2.0], "float32"), velocity=np.array([3.0, 3.0], "float32"))
 
     world.remove_component(mover, HasVelocity)                             # mover joins sibling's pos-only pool
+    world.update()
 
     assert sum(len(pool) for pool in world.pools.values()) == 2            # both conserved
     for eid, expected in ((sibling, [1.0, 1.0]), (mover, [2.0, 2.0])):
@@ -390,6 +428,7 @@ def test_add_component_reuses_existing_archetype_pool():
                               position=np.array([1.0, 1.0], "float32"), velocity=np.array([2.0, 2.0], "float32"))
     migrated = world.add_entity(components=(HasPosition,), position=np.array([3.0, 3.0], "float32"))
     world.add_component(migrated, HasVelocity, velocity=np.array([4.0, 4.0], "float32"))
+    world.update()
 
     assert world._eid_to_pool_ix[direct][0] is world._eid_to_pool_ix[migrated][0]  # same pool object, no dup archetype
     assert len(world.pools[world._make_key((HasPosition, HasVelocity))]) == 2
@@ -401,6 +440,7 @@ def test_migrate_multi_field_component_preserves_all_fields():
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.add_component(eid, HasBox, lo=np.array([0.0, 0.0], "float32"), hi=np.array([4.0, 4.0], "float32"))
+    world.update()
 
     pool, ix = world._eid_to_pool_ix[eid]
     np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])           # carried-over field

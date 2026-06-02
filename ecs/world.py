@@ -1,4 +1,6 @@
 """world.py - The world container for ECS. It manages all the pools (one per archetype). Entities are id-based."""
+from typing import Callable
+from functools import partial
 import numpy as np
 from loggez import loggez_logger as logger
 
@@ -25,41 +27,38 @@ class World:
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ix_to_eid: dict[tuple[Pool, int], EntityId] = {}
         self._last_id: EntityId = -1
+        # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
+        self._command_buffer: list[Callable] = []
         logger.debug(f"Created scene with components: {self.component_names}")
+
+    # public api
 
     def update(self):
         """commits the underlying pool changes from the systems between two updates. Should be called in main loop."""
+        for fn in self._command_buffer:
+            fn()
+        self._command_buffer.clear()
 
     def add_entity(self, components: list[type[Component]], **kwargs) -> EntityId:
-        """Adds an entity to the right pool based on components. Data sent as kwargs. Returns an entity id."""
+        """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
         pool = self._get_entity_pool(components, **kwargs)
         self._last_id += 1
-        self._add_to_pool(self._last_id, pool, **kwargs)
+        self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id, pool=pool, **kwargs))
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):
-        """removes an entity based on its unique entity id"""
-        self._pop_from_pool(entity_id)
+        """Removes an entity based on its unique entity id. Lazy; call update()"""
+        self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
 
     def add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
-        """Adds a component to an entity given its id. Component data is sent to kwargs"""
+        """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
-        entity, components = self._pop_from_pool(entity_id)
-        new_components = [*components, component]
-        assert entity.keys().isdisjoint(kwargs), f"Duplicate keys: {entity.keys()} vs {kwargs.keys()}"
-        new_pool: Pool = self._get_entity_pool(new_components, **entity, **kwargs)
-        self._add_to_pool(entity_id, new_pool, **entity, **kwargs)
+        self._command_buffer.append(partial(self._do_add_component, entity_id=entity_id, component=component, **kwargs))
 
     def remove_component(self, entity_id: EntityId, component: type[Component]):
-        """Removes a component from an entity given its id"""
-        entity, components = self._pop_from_pool(entity_id)
+        """Removes a component from an entity given its id. Lazy; call update()"""
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
-        for _field in self.component_to_field_names[component]:
-            assert _field in entity.keys(), f"Field {component}/{_field} not in components: {components} ({entity_id=})"
-            entity.pop(_field)
-        new_components = [c for c in components if c != component]
-        new_pool: Pool = self._get_entity_pool(new_components, **entity)
-        self._add_to_pool(entity_id, new_pool, **entity)
+        self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
     def query_and(self, component_types: list[type]) -> list[Pool]:
         """returns all the entities that have all the components"""
@@ -69,6 +68,10 @@ class World:
             if (archetype_key & key) == key: # key is subset of archetype_key
                 res.append(archetype_pool)
         return res
+
+    # private stuff
+
+    # eager mode methods equivalent to add/remove entities and add/remove_components
 
     def _add_to_pool(self, entity_id: EntityId, pool: Pool, **kwargs):
         """adds the item to the pool"""
@@ -89,6 +92,24 @@ class World:
             del self.pools[self._make_key(components)]
             del self.pool_to_components[old_pool]
         return entity, components
+
+    def _do_add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
+        entity, components = self._pop_from_pool(entity_id)
+        new_components = [*components, component]
+        assert entity.keys().isdisjoint(kwargs), f"Duplicate keys: {entity.keys()} vs {kwargs.keys()}"
+        new_pool: Pool = self._get_entity_pool(new_components, **entity, **kwargs)
+        self._add_to_pool(entity_id, new_pool, **entity, **kwargs)
+
+    def _do_remove_component(self, entity_id: EntityId, component: type[Component]):
+        entity, components = self._pop_from_pool(entity_id)
+        for _field in self.component_to_field_names[component]:
+            assert _field in entity.keys(), f"Field {component}/{_field} not in components: {components} ({entity_id=})"
+            entity.pop(_field)
+        new_components = [c for c in components if c != component]
+        new_pool: Pool = self._get_entity_pool(new_components, **entity)
+        self._add_to_pool(entity_id, new_pool, **entity)
+
+    # other low-level methods
 
     def _get_entity_pool(self, components: list[type], **entity_fields) -> Pool:
         assert len(cs := components) > 0, f"Entity has no components: {self.component_names}"
