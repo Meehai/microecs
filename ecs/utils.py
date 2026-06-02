@@ -1,6 +1,7 @@
 """clock.py - raylib-based clock allowing to 'drain' it such as to keep a steady FPS rate and consitent physics"""
 import raylib as rl
 
+EntityId = int
 Shape = tuple[int, ...]
 
 class Clock:

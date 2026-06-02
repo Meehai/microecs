@@ -3,12 +3,15 @@ import numpy as np
 from loggez import loggez_logger as logger
 
 from .pool import Pool, PoolKey
-from .utils import Shape
+from .utils import Shape, EntityId
+from .component import Component
 
 class World:
     """Generic container for pools of components. Newly added components are assigned a unique id and go in a pool"""
-    def __init__(self, components: list[type]):
+    def __init__(self, components: list[type[Component]]):
         self._check_components(components)
+        self.pools: dict[PoolKey, Pool] = {}
+        # components management
         self.component_names = [x.__name__ for x in components]
         self.component_types = list(components)
         self.component_to_bit: dict[type, int] = {t: 2**i for i, t in enumerate(components)} # unique bit for querying
@@ -17,11 +20,29 @@ class World:
         self.component_to_dtypes: dict[type, list[str]] = {
             t: [f.metadata["dtype"] for f in t.__dataclass_fields__.values()] for t in components}
         self.component_to_field_names: dict[type, list[str]] = {t: list(t.__dataclass_fields__) for t in components}
-        self.pools: dict[PoolKey, Pool] = {}
-        logger.info(f"Created scene with components: {self.component_names}")
+        # entity id management
+        self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
+        self._pool_ix_to_eid: dict[tuple[Pool, int], EntityId] = {}
+        self._last_id: EntityId = -1
+        logger.debug(f"Created scene with components: {self.component_names}")
 
-    def add_entity(self, components: list[type], **kwargs):
-        self._get_entity_pool(components, **kwargs).add_entity(**kwargs)
+    def add_entity(self, components: list[type], **kwargs) -> EntityId:
+        """adds an entity to the right pool based on its traits. Returns an entity id. Components are sent to kwargs"""
+        pool = self._get_entity_pool(components, **kwargs)
+        pool_index = pool.add_entity(**kwargs)
+        self._last_id += 1
+        self._eid_to_pool_ix[self._last_id] = (pool, pool_index)
+        self._pool_ix_to_eid[(pool, pool_index)] = self._last_id
+        return self._last_id
+
+    def remove_entity(self, entity_id: EntityId):
+        """removes an entity based on its unique entity id"""
+        pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
+        pool.remove_entity(pool_ix)
+        id_which_was_last_in_pool = self._pool_ix_to_eid.pop((pool, len(pool)))
+        if entity_id != id_which_was_last_in_pool:
+            self._eid_to_pool_ix[id_which_was_last_in_pool] = (pool, pool_ix) # we re-use the popped id (it's swapped)
+            self._pool_ix_to_eid[(pool, pool_ix)] = id_which_was_last_in_pool
 
     def query_and(self, component_types: list[type]) -> list[Pool]:
         """returns all the entities that have all the components"""

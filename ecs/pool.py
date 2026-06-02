@@ -26,7 +26,7 @@ class Pool:
         for _field, shape, dtype in zip(fields, shapes, dtypes):
             self.data[_field] = np.empty(shape=(self.capacity, *shape), dtype=dtype)
 
-    def add_entity(self, **entity_fields):
+    def add_entity(self, **entity_fields) -> int:
         """Adds an entity to the pool. All the fields required by this pool must be provided as kwargs"""
         if self.size == self.capacity:
             self.capacity *= 2
@@ -42,6 +42,7 @@ class Pool:
             assert np.issubdtype(new_item.dtype, field_dtype), f"{_field=} {new_item=} {new_item.dtype=} {field_dtype=}"
             self.data[_field][self.size] = new_item
         self.size += 1
+        return self.size - 1
 
     def remove_entity(self, entity_index: int):
         """removes an entity given an index (NOT ID) inside this pool"""

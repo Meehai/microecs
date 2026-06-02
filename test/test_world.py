@@ -141,31 +141,160 @@ def test_entities_are_conserved_across_pools():
     assert sum(len(pool) for pool in world.pools.values()) == 3
 
 
-def test_pop_then_migrate_entity_to_a_richer_archetype():
-    """Two entities share a pool; pop one, give it a new component, re-add it -> it moves to a second pool."""
+def test_remove_entity_leaves_empty_pool():
+    """Removing the only entity empties its pool and leaves the id bookkeeping consistent (the `else` branch)."""
+    world = World(components=[HasPosition])
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    pool = world.query_and((HasPosition,))[0]
+    assert len(pool) == 1
+
+    world.remove_entity(eid)                                   # last entity out -> pool becomes empty
+
+    assert len(pool) == 0                                      # pool is empty
+    assert world._pool_ix_to_eid == {}                         # no dangling (pool, index) -> id mapping
+    assert world._eid_to_pool_ix == {}                         # removed id is gone, not pointing at an empty slot
+
+
+def test_remove_last_index_drops_only_that_entity():
+    """Removing the last row (no swap happens) must drop that id, not resurrect it at a now-dead slot."""
+    world = World(components=[HasPosition])
+
+    keep = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))  # idx 0
+    last = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))  # idx 1 (last)
+
+    world.remove_entity(last)
+
+    pool = world.query_and((HasPosition,))[0]
+    assert len(pool) == 1
+    assert last not in world._eid_to_pool_ix                   # removed id gone, not pointing at a dead slot
+    assert world._eid_to_pool_ix == {keep: (pool, 0)}          # only the survivor remains, at its row
+    assert world._pool_ix_to_eid == {(pool, 0): keep}          # reverse map agrees
+    np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])
+
+
+def test_remove_middle_entity_repoints_swapped_id():
+    """Removing a middle row swaps the tail into the gap: the tail's id re-points, the removed id vanishes."""
+    world = World(components=[HasPosition])
+
+    a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))  # idx 0
+    b = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))  # idx 1 (removed)
+    c = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))  # idx 2 (tail)
+
+    world.remove_entity(b)                                     # c slides from slot 2 into slot 1
+
+    pool = world.query_and((HasPosition,))[0]
+    assert len(pool) == 2
+    assert b not in world._eid_to_pool_ix                      # removed id gone
+    assert world._eid_to_pool_ix[a] == (pool, 0)               # a untouched
+    assert world._eid_to_pool_ix[c] == (pool, 1)               # c re-pointed to the freed slot
+    assert world._pool_ix_to_eid == {(pool, 0): a, (pool, 1): c}  # reverse map consistent
+    np.testing.assert_array_equal(pool.position[1], [2.0, 2.0])   # c's data now sits at slot 1
+
+
+def test_add_entity_returns_unique_ids():
+    """Every add_entity hands back a distinct, monotonically increasing id."""
+    world = World(components=[HasPosition])
+
+    ids = [world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32")) for i in range(3)]
+
+    assert len(set(ids)) == 3                                   # all distinct
+    assert ids == sorted(ids)                                   # monotonic (distinct + sorted => strictly increasing)
+
+
+def test_id_resolves_after_sibling_removed():
+    """Swap-remove moves the tail row; the moved entity's id must still resolve to it, not to its new neighbour."""
+    world = World(components=[HasPosition])
+
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    b = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
+
+    world.remove_entity(a)                                      # swap-remove: b's row slides into a's old slot
+    world.add_entity(components=(HasPosition,), position=np.array([3.0, 3.0], "float32"))  # c lands after b
+
+    world.remove_entity(b)                                      # must drop b ([2,2]), not c, despite the earlier shuffle
+
+    pool = world.query_and((HasPosition,))[0]
+    assert len(pool) == 1
+    np.testing.assert_array_equal(pool.position[0], [3.0, 3.0])  # only c remains
+
+
+@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
+def test_add_component_moves_entity_and_preserves_fields():
+    """add_component widens the archetype: entity leaves the old pool, old field intact, new field set."""
     world = World(components=[HasPosition, HasVelocity])
 
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
+
+    assert len(world.pools[world._make_key((HasPosition,))]) == 0           # left the position-only pool
+    pos_vel = world.pools[world._make_key((HasPosition, HasVelocity))]
+    assert len(pos_vel) == 1
+    np.testing.assert_array_equal(pos_vel.position[0], [1.0, 2.0])          # carried-over value intact
+    np.testing.assert_array_equal(pos_vel.velocity[0], [3.0, 4.0])          # new value set
+
+
+@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
+def test_remove_component_narrows_archetype():
+    """remove_component drops a field and moves the entity to the smaller pool."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    eid = world.add_entity(components=(HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.remove_component(eid, HasVelocity)
+
+    assert len(world.pools[world._make_key((HasPosition, HasVelocity))]) == 0  # left the richer pool
+    pos_only = world.pools[world._make_key((HasPosition,))]
+    assert len(pos_only) == 1
+    np.testing.assert_array_equal(pos_only.position[0], [1.0, 2.0])         # kept field survives
+    assert not hasattr(pos_only, "velocity")                               # dropped field is gone
+
+
+@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
+def test_add_component_only_needs_new_fields():
+    """Caller supplies just the new component's field; existing fields carry over without being re-passed."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([5.0, 6.0], "float32"))
+    world.add_component(eid, HasVelocity, velocity=np.array([7.0, 8.0], "float32"))  # position NOT re-passed
+
+    pos_vel = world.pools[world._make_key((HasPosition, HasVelocity))]
+    np.testing.assert_array_equal(pos_vel.position[0], [5.0, 6.0])          # carried over automatically
+    np.testing.assert_array_equal(pos_vel.velocity[0], [7.0, 8.0])
+
+
+@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
+def test_add_duplicate_component_raises():
+    """Adding a component the entity already has is an error."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    eid = world.add_entity(components=(HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+
+    with pytest.raises(AssertionError):
+        world.add_component(eid, HasVelocity, velocity=np.array([9.0, 9.0], "float32"))
+
+
+@pytest.mark.xfail(reason="task 02: id-based World API not implemented yet")
+def test_remove_absent_component_raises():
+    """Removing a component the entity does not have is an error."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+
+    with pytest.raises(AssertionError):
+        world.remove_component(eid, HasVelocity)
+
+
+def test_remove_entity_by_id():
+    """remove_entity(eid) drops exactly that entity; the rest are conserved and still correct."""
+    world = World(components=[HasPosition])
+
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
-    world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
+    drop = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
 
-    pos_key = world._make_key((HasPosition,))
-    pos_vel_key = world._make_key((HasPosition, HasVelocity))
-    assert len(world.pools) == 1                            # both share the position-only pool
-    assert len(world.pools[pos_key]) == 2
+    world.remove_entity(drop)
 
-    popped = world.pools[pos_key].pop_entity(1)             # take the 2nd entity out of pool 1
-    np.testing.assert_array_equal(popped["position"], [2.0, 2.0])
-
-    world.add_entity(components=(HasPosition, HasVelocity),  # add a component -> richer archetype -> pool 2
-                     position=popped["position"], velocity=np.array([9.0, 9.0], "float32"))
-
-    assert len(world.pools) == 2
-
-    pos_pool = world.pools[pos_key]                         # 1st entity stays alone in pool 1
-    assert len(pos_pool) == 1
-    np.testing.assert_array_equal(pos_pool.position[0], [1.0, 1.0])
-
-    pos_vel_pool = world.pools[pos_vel_key]                 # migrated entity is alone in pool 2
-    assert len(pos_vel_pool) == 1
-    np.testing.assert_array_equal(pos_vel_pool.position[0], [2.0, 2.0])
-    np.testing.assert_array_equal(pos_vel_pool.velocity[0], [9.0, 9.0])
+    assert sum(len(pool) for pool in world.pools.values()) == 1            # counts conserved
+    pool = world.query_and((HasPosition,))[0]
+    np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])            # the kept entity remains
