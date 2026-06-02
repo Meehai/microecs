@@ -2,7 +2,8 @@
 import numpy as np
 from loggez import loggez_logger as logger
 
-from .pool import Pool, PoolKey, Shape
+from .pool import Pool, PoolKey
+from .utils import Shape
 
 class World:
     """Generic container for pools of components. Newly added components are assigned a unique id and go in a pool"""

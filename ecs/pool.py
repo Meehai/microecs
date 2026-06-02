@@ -1,8 +1,8 @@
 """pool.py - A pool of entities of the same type (same list of components). Basically a dynamic array with numpy"""
 import numpy as np
 from loggez import loggez_logger as logger
+from .utils import Shape
 
-Shape = tuple[int, ...]
 PoolKey = int
 
 class Pool:

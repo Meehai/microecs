@@ -1,6 +1,8 @@
 """clock.py - raylib-based clock allowing to 'drain' it such as to keep a steady FPS rate and consitent physics"""
 import raylib as rl
 
+Shape = tuple[int, ...]
+
 class Clock:
     """clock used for physics with fixed DT in main loops"""
 

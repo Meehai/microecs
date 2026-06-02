@@ -7,7 +7,7 @@ import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from ecs import World
+from ecs import World, TickSystem
 from ecs.utils import Clock
 
 Point2D = tuple[float, float]
@@ -33,11 +33,6 @@ class HasColor:
     color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32"})
 
 # systems
-
-class TickSystem(ABC):
-    @abstractmethod
-    def on_tick(self, scene: World):
-        pass
 
 class RenderSystem(TickSystem):
     def on_tick(self, scene: World):
