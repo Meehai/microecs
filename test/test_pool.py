@@ -48,6 +48,50 @@ def test_remove_swaps_tail_into_slot():
     assert pool.position[1, 0] == 1.0
 
 
+def test_pop_returns_removed_entity_data():
+    pool = _pool_pos_vel()
+    pool.add_entity(
+        position=np.array([1.0, 2.0], "float32"),
+        velocity=np.array([3.0, 4.0], "float32"),
+    )
+    popped = pool.pop_entity(0)
+    assert len(pool) == 0
+    assert popped["position"].tolist() == [1.0, 2.0]
+    assert popped["velocity"].tolist() == [3.0, 4.0]
+
+
+def test_pop_swaps_tail_into_slot():
+    """pop returns the data at the index, then the tail fills that slot (same swap-remove as remove_entity)."""
+    pool = _pool_pos_vel()
+    for i in range(3):
+        pool.add_entity(
+            position=np.array([float(i), 0.0], "float32"),
+            velocity=np.zeros(2, "float32"),
+        )
+    popped = pool.pop_entity(0)  # returns slot 0 (i=0); tail (i=2) swaps into slot 0
+    assert popped["position"][0] == 0.0
+    assert len(pool) == 2
+    assert pool.position[0, 0] == 2.0
+    assert pool.position[1, 0] == 1.0
+
+
+def test_pop_returns_independent_copy():
+    """Popped data is a copy: reusing the freed slot must not mutate what pop returned."""
+    pool = _pool_pos_vel()
+    pool.add_entity(position=np.array([1.0, 2.0], "float32"), velocity=np.zeros(2, "float32"))
+    pool.add_entity(position=np.array([5.0, 6.0], "float32"), velocity=np.zeros(2, "float32"))
+    popped = pool.pop_entity(0)                          # returns [1,2]; tail [5,6] swaps into slot 0
+    pool.position[0] = np.array([9.0, 9.0], "float32")   # overwrite the reused slot
+    assert popped["position"].tolist() == [1.0, 2.0]     # copy is unaffected
+
+
+def test_pop_oob_raises():
+    pool = _pool_pos_vel()
+    pool.add_entity(position=np.array([1.0, 2.0], "float32"), velocity=np.zeros(2, "float32"))
+    with pytest.raises(AssertionError):
+        pool.pop_entity(5)
+
+
 def test_dynamic_grow_preserves_data():
     """Forces multiple growths and verifies every entity survives intact."""
     pool = _pool_pos_vel()
