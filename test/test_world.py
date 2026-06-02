@@ -18,6 +18,11 @@ class HasRadius(Component):
     radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32"})
 
 
+class HasBox(Component):  # two fields, to exercise multi-field merge/ordering across migrations
+    lo: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    hi: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+
+
 def test_add_entity_rejects_field_from_an_unrequested_component():
     """An entity declared with only HasPosition may not pass `velocity` (a field of the unrequested HasVelocity)."""
     world = World(components=[HasPosition, HasVelocity])  # both components known to the world
@@ -156,6 +161,21 @@ def test_remove_entity_leaves_empty_pool():
     assert world._eid_to_pool_ix == {}                         # removed id is gone, not pointing at an empty slot
 
 
+def test_empty_pool_is_reclaimed():
+    """When the last entity leaves a pool, that archetype is fully dropped from the world (not leaked)."""
+    world = World(components=[HasPosition, HasVelocity])
+    pos_key = world._make_key((HasPosition,))
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    pos_pool = world.pools[pos_key]
+    assert pos_key in world.pools                              # pool exists while it holds an entity
+
+    world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))  # empties the pos-only pool
+
+    assert pos_key not in world.pools                          # reclaimed from the archetype registry
+    assert pos_pool not in world.pool_to_components            # and released from the reverse map -> fully reclaimed
+
+
 def test_remove_last_index_drops_only_that_entity():
     """Removing the last row (no swap happens) must drop that id, not resurrect it at a now-dead slot."""
     world = World(components=[HasPosition])
@@ -226,7 +246,7 @@ def test_add_component_moves_entity_and_preserves_fields():
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
 
-    assert len(world.pools[world._make_key((HasPosition,))]) == 0           # left the position-only pool
+    assert world._make_key((HasPosition,)) not in world.pools               # position-only pool emptied -> reclaimed
     pos_vel = world.pools[world._make_key((HasPosition, HasVelocity))]
     assert len(pos_vel) == 1
     np.testing.assert_array_equal(pos_vel.position[0], [1.0, 2.0])          # carried-over value intact
@@ -255,7 +275,7 @@ def test_remove_component_narrows_archetype():
                            position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
     world.remove_component(eid, HasVelocity)
 
-    assert len(world.pools[world._make_key((HasPosition, HasVelocity))]) == 0  # left the richer pool
+    assert world._make_key((HasPosition, HasVelocity)) not in world.pools   # richer pool emptied -> reclaimed
     pos_only = world.pools[world._make_key((HasPosition,))]
     assert len(pos_only) == 1
     np.testing.assert_array_equal(pos_only.position[0], [1.0, 2.0])         # kept field survives
@@ -285,17 +305,14 @@ def test_add_duplicate_component_raises():
         world.add_component(eid, HasVelocity, velocity=np.array([9.0, 9.0], "float32"))
 
 
-def test_add_unknown_component_is_rejected_and_keeps_entity():
-    """Adding a component the world never registered must fail cleanly, leaving the entity untouched."""
+def test_add_unknown_component_raises():
+    """Adding a component the world never registered is rejected with a clear error."""
     world = World(components=[HasPosition, HasVelocity])        # HasRadius is NOT registered with this world
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
 
-    with pytest.raises(AssertionError):                        # a clear error, not a raw KeyError
+    with pytest.raises(AssertionError):
         world.add_component(eid, HasRadius, radius=np.array([5.0], "float32"))
 
-    assert eid in world._eid_to_pool_ix                        # a rejected migration must not destroy the entity
-    pool, ix = world._eid_to_pool_ix[eid]
-    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])  # original data still there
 
 def test_remove_absent_component_raises():
     """Removing a component the entity does not have is an error."""
@@ -319,3 +336,73 @@ def test_remove_entity_by_id():
     assert sum(len(pool) for pool in world.pools.values()) == 1            # counts conserved
     pool = world.query_and((HasPosition,))[0]
     np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])            # the kept entity remains
+
+
+def test_add_component_to_middle_sibling_keeps_all_ids():
+    """Migrating the middle of three siblings triggers a swap in the old pool; every id must still resolve to its row."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    ids = [world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32")) for i in range(3)]
+    world.add_component(ids[1], HasVelocity, velocity=np.array([9.0, 9.0], "float32"))  # middle one leaves the pool
+
+    assert sum(len(pool) for pool in world.pools.values()) == 3            # nobody lost
+    for eid, expected in zip(ids, ([0, 0], [1, 1], [2, 2])):
+        pool, ix = world._eid_to_pool_ix[eid]
+        np.testing.assert_array_equal(pool.position[ix], expected)         # each id still points at its own data
+
+
+def test_add_then_remove_component_round_trips():
+    """add_component then remove_component returns the entity to its original archetype, same id, data intact."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([5.0, 6.0], "float32"))
+    world.add_component(eid, HasVelocity, velocity=np.array([7.0, 8.0], "float32"))
+    world.remove_component(eid, HasVelocity)
+
+    pool, ix = world._eid_to_pool_ix[eid]
+    assert pool is world.pools[world._make_key((HasPosition,))]            # back in the position-only pool
+    assert world._make_key((HasPosition, HasVelocity)) not in world.pools   # richer pool emptied -> reclaimed
+    np.testing.assert_array_equal(pool.position[ix], [5.0, 6.0])           # original data survived the round trip
+
+
+def test_remove_component_lands_in_existing_pool_and_conserves_entities():
+    """remove_component moving an entity into an already-populated smaller pool keeps both entities intact."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    sibling = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    mover = world.add_entity(components=(HasPosition, HasVelocity),
+                             position=np.array([2.0, 2.0], "float32"), velocity=np.array([3.0, 3.0], "float32"))
+
+    world.remove_component(mover, HasVelocity)                             # mover joins sibling's pos-only pool
+
+    assert sum(len(pool) for pool in world.pools.values()) == 2            # both conserved
+    for eid, expected in ((sibling, [1.0, 1.0]), (mover, [2.0, 2.0])):
+        pool, ix = world._eid_to_pool_ix[eid]
+        assert pool is world.pools[world._make_key((HasPosition,))]
+        np.testing.assert_array_equal(pool.position[ix], expected)
+
+
+def test_add_component_reuses_existing_archetype_pool():
+    """Reaching an archetype via add_component lands in the same pool a direct add_entity would (order-independent)."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    direct = world.add_entity(components=(HasVelocity, HasPosition),
+                              position=np.array([1.0, 1.0], "float32"), velocity=np.array([2.0, 2.0], "float32"))
+    migrated = world.add_entity(components=(HasPosition,), position=np.array([3.0, 3.0], "float32"))
+    world.add_component(migrated, HasVelocity, velocity=np.array([4.0, 4.0], "float32"))
+
+    assert world._eid_to_pool_ix[direct][0] is world._eid_to_pool_ix[migrated][0]  # same pool object, no dup archetype
+    assert len(world.pools[world._make_key((HasPosition, HasVelocity))]) == 2
+
+
+def test_migrate_multi_field_component_preserves_all_fields():
+    """A component with several fields migrates with every field intact and correctly named in the new pool."""
+    world = World(components=[HasPosition, HasBox])
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.add_component(eid, HasBox, lo=np.array([0.0, 0.0], "float32"), hi=np.array([4.0, 4.0], "float32"))
+
+    pool, ix = world._eid_to_pool_ix[eid]
+    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])           # carried-over field
+    np.testing.assert_array_equal(pool.lo[ix], [0.0, 0.0])                 # both new fields land, by name
+    np.testing.assert_array_equal(pool.hi[ix], [4.0, 4.0])

@@ -54,6 +54,7 @@ class World:
     def remove_component(self, entity_id: EntityId, component: type[Component]):
         """Removes a component from an entity given its id"""
         entity, components = self._pop_from_pool(entity_id)
+        assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         for _field in self.component_to_field_names[component]:
             assert _field in entity.keys(), f"Field {component}/{_field} not in components: {components} ({entity_id=})"
             entity.pop(_field)
@@ -73,23 +74,28 @@ class World:
         return res
 
     def _pop_from_pool(self, entity_id: EntityId) -> tuple[dict[str, np.ndarray], list[type]]:
+        """common function that updates the entities inside a pool (after popswap) and removes them if they get empty"""
         old_pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
         entity = old_pool.pop_entity(pool_ix)
         components = self.pool_to_components[old_pool]
         id_which_was_last_in_pool = self._pool_ix_to_eid.pop((old_pool, len(old_pool)))
         if entity_id != id_which_was_last_in_pool:
-            self._eid_to_pool_ix[id_which_was_last_in_pool] = (old_pool, pool_ix) # we re-use the popped id (it's swapped)
+            self._eid_to_pool_ix[id_which_was_last_in_pool] = (old_pool, pool_ix) # we re-use the popped id (swapped)
             self._pool_ix_to_eid[(old_pool, pool_ix)] = id_which_was_last_in_pool
+        if len(old_pool) == 0:
+            del self.pools[self._make_key(components)]
+            del self.pool_to_components[old_pool]
         return entity, components
 
     def _get_entity_pool(self, components: list[type], **entity_fields) -> Pool:
-        assert len(components) > 0, f"Entity has no components: {self.component_names}"
+        assert len(cs := components) > 0, f"Entity has no components: {self.component_names}"
+        assert all(c in self.component_types for c in cs), f"Components '{cs}' not in {self.component_types}"
         expected_fields = set()
         for component in components:
             for _field in self.component_to_field_names[component]:
                 expected_fields.add(_field)
-                assert _field in entity_fields, f"Entity doenst't have '{component}/{_field}'"
-        assert (extra := (set(entity_fields) - expected_fields)) == set(), f"Extra fields: {extra}; {expected_fields=}"
+                assert _field in entity_fields, f"Entity doesn't have '{component}/{_field}'"
+        assert (extra := set(entity_fields) - expected_fields) == set(), f"Extra fields: {extra}; {expected_fields=}"
 
         if (key := self._make_key(components)) not in self.pools:
             fields = sum([self.component_to_field_names[component] for component in components], []) # merge fields

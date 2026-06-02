@@ -5,6 +5,15 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "master"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
+linter:
+  before_script:
+    - pip install -r requirements.txt
+    - export PYTHONPATH="$PYTHONPATH:."
+    - pip install ruff pylint
+  script:
+    - python -m pylint --rcfile=.pylintrc ecs/
+    - ruff check
+
 test_and_run:
   before_script:
     - pip install -r requirements.txt
