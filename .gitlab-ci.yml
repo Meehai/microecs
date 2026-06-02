@@ -8,6 +8,7 @@ workflow:
 test_and_run:
   before_script:
     - pip install -r requirements.txt
+    - export PYTHONPATH="$PYTHONPATH:."
   script:
     - python main.py --help
     - pytest test
