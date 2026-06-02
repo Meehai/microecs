@@ -8,7 +8,6 @@ import raylib as rl
 from loggez import loggez_logger as logger
 
 from ecs import World, TickSystem, Component
-from ecs.utils import Clock
 
 Point2D = tuple[float, float]
 DT = 1 / 100
