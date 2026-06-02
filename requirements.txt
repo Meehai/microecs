@@ -1,0 +1,5 @@
+numpy==2.2.0
+raylib==5.5.0
+loggez>=0.8
+pytest
+
