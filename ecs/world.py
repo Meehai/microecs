@@ -27,6 +27,9 @@ class World:
         self._last_id: EntityId = -1
         logger.debug(f"Created scene with components: {self.component_names}")
 
+    def update(self):
+        """commits the underlying pool changes from the systems between two updates. Should be called in main loop."""
+
     def add_entity(self, components: list[type[Component]], **kwargs) -> EntityId:
         """Adds an entity to the right pool based on components. Data sent as kwargs. Returns an entity id."""
         pool = self._get_entity_pool(components, **kwargs)

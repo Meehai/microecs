@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""01-hello-world.py The basic hello world for ECS. Creates some static balls. You can add some with the mouse."""
 from dataclasses import field
 from argparse import ArgumentParser, Namespace
 import random
@@ -21,45 +22,21 @@ class HasRadius(Component):
 class HasPosition2D(Component):
     position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 
-class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
-
 class HasColor(Component):
     color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32"})
 
 # systems
 
 class RenderSystem(TickSystem):
-    def on_tick(self, scene: World):
-        entity_pools = scene.query_and((HasRadius, HasPosition2D, HasColor))
+    def on_tick(self, world: World):
+        entity_pools = world.query_and((HasRadius, HasPosition2D, HasColor))
         for pool in entity_pools:
             for position, radius, color in zip(pool.position, pool.radius, pool.color):
                 rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
 
-class MotionSystem(TickSystem):
-    def on_tick(self, scene: World):
-        entity_pools = scene.query_and((HasMotion2D, HasPosition2D))
-        for pool in entity_pools:
-            pool.position[:] = pool.position + pool.velocity * DT # (N, 2)
-
-class WallBounceSystem(TickSystem):
-    def __init__(self, scene_size: tuple[int, int]):
-        self.scene_size = scene_size
-
-    def on_tick(self, scene: World):
-        entity_pools = scene.query_and((HasPosition2D, HasMotion2D, HasRadius))
-
-        for pool in entity_pools:
-            mask_velocity = np.zeros((len(pool.position), 2), bool)
-            mask_velocity[:, 0] = np.logical_or(pool.position[:, 0] - pool.radius[:, 0] < 0,
-                                                pool.position[:, 0] + pool.radius[:, 0] > self.scene_size[0])
-            mask_velocity[:, 1] = np.logical_or(pool.position[:, 1] - pool.radius[:, 0] < 0,
-                                                pool.position[:, 1] + pool.radius[:, 0] > self.scene_size[1])
-            pool.velocity[:] = np.where(mask_velocity, -pool.velocity, pool.velocity)
-
-class CollisionBounceSystem(TickSystem):
-    def on_tick(self, scene: World):
-        entity_pools = scene.query_and((HasPosition2D, HasMotion2D, HasRadius, HasColor))
+class CollisionSystem(TickSystem):
+    def on_tick(self, world: World):
+        entity_pools = world.query_and((HasPosition2D, HasRadius, HasColor))
 
         for pool in entity_pools:
             _red = np.array(rl.RED, dtype="int32")[None].repeat(len(pool), axis=0)
@@ -78,16 +55,14 @@ def main(args: Namespace):
     rl.InitWindow(800, 800, b"Entity Component Style + SoA (batched)")
     scene_size = (600, 600)
 
-    render_systems: list[TickSystem] = [RenderSystem()]
-    update_systems: list[TickSystem] = [MotionSystem(), WallBounceSystem(scene_size), CollisionBounceSystem()]
+    render_system = RenderSystem()
+    update_systems: list[TickSystem] = [CollisionSystem()]
 
-    scene = World(components=[HasRadius, HasPosition2D, HasMotion2D, HasColor])
+    world = World(components=[HasRadius, HasPosition2D, HasColor])
     for _ in range(args.n_objects):
-        radius = random.randint(3, 7)
+        radius = random.randint(5, 20)
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
-        velocity = (200 * random.random() * 2 - 1, 200 * random.random() * 2 - 1)
-        scene.add_entity(components=(HasRadius, HasPosition2D, HasMotion2D, HasColor),
-                         position=np.array(position, "float32"), velocity=np.array(velocity, "float32"),
+        world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
                          color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
 
     clock = Clock(dt=DT, max_ticks=MAX_SUBTICKS_PER_RENDER_TICK)
@@ -95,20 +70,27 @@ def main(args: Namespace):
         clock.wait()
         clock.tick()
 
+        if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+            radius = random.randint(5, 20)
+            position = rl.GetMousePosition().x, rl.GetMousePosition().y
+            world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
+                             color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
+
+
         for _ in clock.drain():
             logger.log_every_s(f"Applying {clock.accumulator // clock.dt} update ticks per render tick", "DEBUG", True)
-            _ = [system.on_tick(scene=scene) for system in update_systems]
+            _ = [system.on_tick(world=world) for system in update_systems]
 
         rl.BeginDrawing()
         rl.ClearBackground(rl.RAYWHITE)
         rl.DrawFPS(rl.GetScreenWidth() - 100, 0)
 
         rl.DrawRectangleLinesEx((0, 0, *scene_size), 2, rl.BLACK)
-        _ = [system.on_tick(scene=scene) for system in render_systems]
+        render_system.on_tick(world=world)
 
         rl.EndDrawing()
 
-        logger.log_every_s(f"FPS: {rl.GetFPS()}", "INFO")
+        logger.log_every_s(f"FPS: {rl.GetFPS()}", "DEBUG")
 
 if __name__ == "__main__":
     parser = ArgumentParser()

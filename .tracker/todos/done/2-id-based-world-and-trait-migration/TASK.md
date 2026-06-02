@@ -2,6 +2,33 @@
 
 **Created**: 2026-06-02
 **Priority**: 2
+**Status**: ✅ Done (2026-06-02)
+
+## Outcome
+
+Implemented on `World` using **component** terminology (the codebase was renamed `trait`→`component`
+mid-task, so the methods are `add_component` / `remove_component`, not `add_trait` / `remove_trait`).
+`add_entity` returns a stable id; `add_component` / `remove_component` migrate an entity between
+archetype pools keeping the **same** id; `remove_entity` drops it. Swap-remove bookkeeping verified
+for empty / last-index / middle rows.
+
+Bonus beyond scope: emptied pools are now **reclaimed** from both `pools` and `pool_to_components`,
+so archetypes don't leak.
+
+All "Done when" criteria covered in `test/test_world.py` (46 passing):
+- ids unique & stable: `test_add_entity_returns_unique_ids`, `test_add_component_keeps_entity_id`,
+  `test_id_resolves_after_sibling_removed`
+- migrate + preserve fields: `test_add_component_moves_entity_and_preserves_fields`,
+  `test_add_component_only_needs_new_fields`, `test_remove_component_narrows_archetype`,
+  `test_add_then_remove_component_round_trips`
+- removal + sibling resolves: `test_remove_entity_by_id`, `test_remove_last_index_drops_only_that_entity`,
+  `test_remove_middle_entity_repoints_swapped_id`
+- clear error on misuse: `test_add_duplicate_component_raises`, `test_remove_absent_component_raises`,
+  `test_add_unknown_component_raises`
+- reclamation: `test_empty_pool_is_reclaimed`
+
+Open follow-up (minor, undecided): removing an entity's **last** component errors via
+`_get_entity_pool([])` ("Entity has no components") — delete the entity vs reject cleanly is a design call.
 
 ## Why
 
