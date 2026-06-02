@@ -1,6 +1,6 @@
 """ecs.py - Primitives for Entity-Component-System (ECS) paradigm pattern"""
 import numpy as np
-from robosim.utils import logger
+from loggez import loggez_logger as logger
 
 from .pool import Pool, PoolKey, Shape
 
