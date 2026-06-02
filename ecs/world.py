@@ -33,9 +33,12 @@ class World:
 
     def _get_entity_pool(self, traits: list[type], **entity_fields) -> Pool:
         assert len(traits) > 0, f"Entity has no traits: {self.trait_names}"
+        expected_fields = set()
         for trait in traits:
             for _field in self.trait_to_field_names[trait]:
+                expected_fields.add(_field)
                 assert _field in entity_fields, f"Entity doenst't have '{trait}/{_field}'"
+        assert (extra := (set(entity_fields) - expected_fields)) == set(), f"Extra fields: {extra}; {expected_fields=}"
 
         if (key := self._make_key(traits)) not in self.pools:
             fields = sum([self.trait_to_field_names[trait] for trait in traits], []) # merge of all the fields

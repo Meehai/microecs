@@ -27,7 +27,6 @@ class HasPosition2D:
 @dataclass(kw_only=True)
 class HasMotion2D:
     velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
-    acceleration: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 
 @dataclass(kw_only=True)
 class HasColor:
@@ -77,6 +76,7 @@ class CollisionBounceSystem(TickSystem):
             _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(pool), axis=0)
             collisions = self._get_collisions(pool.position, pool.radius)
             pool.color[:] = np.where(collisions, _red, _black)
+            pool.velocity[:] = np.where(collisions, -pool.velocity, pool.velocity)
 
     def _get_collisions(self, positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
         dists = np.sqrt(((positions[:, None] - positions[None])**2).sum(-1))  # (N, 1, 2) - (1, N, 2) -> ... -> (N, N)
@@ -98,9 +98,9 @@ def main(args: Namespace):
         radius = random.randint(3, 7)
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
         velocity = (200 * random.random() * 2 - 1, 200 * random.random() * 2 - 1)
-        scene.add_entity(traits=(HasRadius, HasPosition2D, HasMotion2D, HasColor), radius=np.array([radius], "float32"),
+        scene.add_entity(traits=(HasRadius, HasPosition2D, HasMotion2D, HasColor),
                          position=np.array(position, "float32"), velocity=np.array(velocity, "float32"),
-                         acceleration=np.zeros((2, ), "float32"), color=np.array(rl.BLACK, dtype="int32"))
+                         color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
 
     clock = Clock(dt=DT, max_ticks=MAX_SUBTICKS_PER_RENDER_TICK)
     while not rl.WindowShouldClose():
