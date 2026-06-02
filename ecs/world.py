@@ -33,10 +33,8 @@ class World:
     def add_entity(self, components: list[type[Component]], **kwargs) -> EntityId:
         """Adds an entity to the right pool based on components. Data sent as kwargs. Returns an entity id."""
         pool = self._get_entity_pool(components, **kwargs)
-        pool_index = pool.add_entity(**kwargs)
         self._last_id += 1
-        self._eid_to_pool_ix[self._last_id] = (pool, pool_index)
-        self._pool_ix_to_eid[(pool, pool_index)] = self._last_id
+        self._add_to_pool(self._last_id, pool, **kwargs)
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):
@@ -50,9 +48,7 @@ class World:
         new_components = [*components, component]
         assert entity.keys().isdisjoint(kwargs), f"Duplicate keys: {entity.keys()} vs {kwargs.keys()}"
         new_pool: Pool = self._get_entity_pool(new_components, **entity, **kwargs)
-        new_pool_ix = new_pool.add_entity(**entity, **kwargs)
-        self._eid_to_pool_ix[entity_id] = (new_pool, new_pool_ix)
-        self._pool_ix_to_eid[(new_pool, new_pool_ix)] = entity_id
+        self._add_to_pool(entity_id, new_pool, **entity, **kwargs)
 
     def remove_component(self, entity_id: EntityId, component: type[Component]):
         """Removes a component from an entity given its id"""
@@ -63,9 +59,7 @@ class World:
             entity.pop(_field)
         new_components = [c for c in components if c != component]
         new_pool: Pool = self._get_entity_pool(new_components, **entity)
-        new_pool_ix = new_pool.add_entity(**entity)
-        self._eid_to_pool_ix[entity_id] = (new_pool, new_pool_ix)
-        self._pool_ix_to_eid[(new_pool, new_pool_ix)] = entity_id
+        self._add_to_pool(entity_id, new_pool, **entity)
 
     def query_and(self, component_types: list[type]) -> list[Pool]:
         """returns all the entities that have all the components"""
@@ -75,6 +69,12 @@ class World:
             if (archetype_key & key) == key: # key is subset of archetype_key
                 res.append(archetype_pool)
         return res
+
+    def _add_to_pool(self, entity_id: EntityId, pool: Pool, **kwargs):
+        """adds the item to the pool"""
+        pool_index = pool.add_entity(**kwargs)
+        self._eid_to_pool_ix[entity_id] = (pool, pool_index)
+        self._pool_ix_to_eid[(pool, pool_index)] = entity_id
 
     def _pop_from_pool(self, entity_id: EntityId) -> tuple[dict[str, np.ndarray], list[type]]:
         """common function that updates the entities inside a pool (after popswap) and removes them if they get empty"""
