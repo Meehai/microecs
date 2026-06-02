@@ -1,35 +1,30 @@
 #!/usr/bin/env python3
-from dataclasses import dataclass, field
-from abc import ABC, abstractmethod
+from dataclasses import field
 from argparse import ArgumentParser, Namespace
 import random
 import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from ecs import World, TickSystem
+from ecs import World, TickSystem, Component
 from ecs.utils import Clock
 
 Point2D = tuple[float, float]
 DT = 1 / 100
 MAX_SUBTICKS_PER_RENDER_TICK = 3
 
-# traits
+# components
 
-@dataclass(kw_only=True)
-class HasRadius: # for drawing circles basically
+class HasRadius(Component):
     radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32"})
 
-@dataclass(kw_only=True)
-class HasPosition2D:
+class HasPosition2D(Component):
     position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 
-@dataclass(kw_only=True)
-class HasMotion2D:
+class HasMotion2D(Component):
     velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 
-@dataclass(kw_only=True)
-class HasColor:
+class HasColor(Component):
     color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32"})
 
 # systems
@@ -86,13 +81,12 @@ def main(args: Namespace):
     render_systems: list[TickSystem] = [RenderSystem()]
     update_systems: list[TickSystem] = [MotionSystem(), WallBounceSystem(scene_size), CollisionBounceSystem()]
 
-    scene = World(traits=[HasRadius, HasPosition2D, HasMotion2D, HasColor])
-
+    scene = World(components=[HasRadius, HasPosition2D, HasMotion2D, HasColor])
     for _ in range(args.n_objects):
         radius = random.randint(3, 7)
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
         velocity = (200 * random.random() * 2 - 1, 200 * random.random() * 2 - 1)
-        scene.add_entity(traits=(HasRadius, HasPosition2D, HasMotion2D, HasColor),
+        scene.add_entity(components=(HasRadius, HasPosition2D, HasMotion2D, HasColor),
                          position=np.array(position, "float32"), velocity=np.array(velocity, "float32"),
                          color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
 
