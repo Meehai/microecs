@@ -2,6 +2,38 @@
 
 **Created**: 2026-06-02
 **Priority**: 3
+**Status**: ✅ Done (2026-06-02)
+
+## Outcome
+
+One deferred mode shipped: `add_entity` / `remove_entity` / `add_component` / `remove_component` queue a
+command and return; `world.update()` commits the buffer in enqueue order. Ids are minted eagerly so a
+spawn's id can be used by later commands in the same tick; rows materialize at commit. All "Done when"
+criteria are covered by `test/unit/test_world.py` (36 passing) and `test/integration/test_i_same_tick.py`
+(3 passing, same-tick cross-system corner cases). `examples/01-hello-world.py` commits with `world.update()`
+at the top of its loop.
+
+Three refinements landed beyond the original plan:
+
+1. **Eager id tracking (`_live_ids`).** A `set[EntityId]` = committed + pending-spawn − pending-despawn.
+   `remove_entity` / `add_component` / `remove_component` assert `id in _live_ids` **at the call**, so a
+   double-remove (or operating on an already-removed id) fails fast with a clear message instead of a
+   cryptic `KeyError` at commit. Tests: `test_remove_entity_twice_fails_on_second_call`,
+   `test_add_component_after_remove_entity_fails`, `test_remove_component_after_remove_entity_fails`,
+   `test_remove_unknown_entity_id_fails`.
+
+2. **Orphan-pool fix — resolve the pool at commit, never capture it.** Original `add_entity` resolved the
+   pool eagerly and captured that object in the deferred command; if an earlier-queued despawn reclaimed
+   that pool before commit, the newcomer landed in an orphaned, unregistered pool and silently vanished
+   from queries. Fixed by moving pool resolution into `_add_to_pool` (`world.py:83`), which calls
+   `_get_entity_pool(components)` at commit — recreating the pool if it was reclaimed. Test:
+   `test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick`.
+
+3. **Eager field validation, split cleanly.** `_get_entity_pool` was split into pure validation
+   (`_check_components_against_pool`, no side effects) and get-or-create (`_get_entity_pool`, takes only
+   `components`). `add_entity` validates eagerly so a bad/unknown component or stray field crashes at the
+   call site (the offending system), not at the main-loop `update()`. No empty-pool-before-commit wart,
+   since validation creates nothing. Test: `test_add_entity_rejects_field_from_an_unrequested_component`.
 
 ## Why
 
