@@ -27,6 +27,7 @@ class World:
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ix_to_eid: dict[tuple[Pool, int], EntityId] = {}
         self._last_id: EntityId = -1
+        self._live_ids: set[EntityId] = set() # 'eager' mode ids so e.g. calling remove_entity twice before update fails
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer: list[Callable] = []
         logger.debug(f"Created scene with components: {self.component_names}")
@@ -41,22 +42,28 @@ class World:
 
     def add_entity(self, components: list[type[Component]], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
-        pool = self._get_entity_pool(components, **kwargs)
+        self._check_components_against_pool(components, **kwargs)
         self._last_id += 1
-        self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id, pool=pool, **kwargs))
+        self._live_ids.add(self._last_id)
+        self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id,
+                                            components=components, **kwargs))
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):
         """Removes an entity based on its unique entity id. Lazy; call update()"""
+        assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
+        self._live_ids.remove(entity_id)
         self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
 
     def add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
         """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
+        assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_add_component, entity_id=entity_id, component=component, **kwargs))
 
     def remove_component(self, entity_id: EntityId, component: type[Component]):
         """Removes a component from an entity given its id. Lazy; call update()"""
+        assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
@@ -73,8 +80,9 @@ class World:
 
     # eager mode methods equivalent to add/remove entities and add/remove_components
 
-    def _add_to_pool(self, entity_id: EntityId, pool: Pool, **kwargs):
+    def _add_to_pool(self, entity_id: EntityId, components: list[type[Component]], **kwargs):
         """adds the item to the pool"""
+        pool = self._get_entity_pool(components)
         pool_index = pool.add_entity(**kwargs)
         self._eid_to_pool_ix[entity_id] = (pool, pool_index)
         self._pool_ix_to_eid[(pool, pool_index)] = entity_id
@@ -97,8 +105,8 @@ class World:
         entity, components = self._pop_from_pool(entity_id)
         new_components = [*components, component]
         assert entity.keys().isdisjoint(kwargs), f"Duplicate keys: {entity.keys()} vs {kwargs.keys()}"
-        new_pool: Pool = self._get_entity_pool(new_components, **entity, **kwargs)
-        self._add_to_pool(entity_id, new_pool, **entity, **kwargs)
+        self._check_components_against_pool(new_components, **entity, **kwargs)
+        self._add_to_pool(entity_id, new_components, **entity, **kwargs)
 
     def _do_remove_component(self, entity_id: EntityId, component: type[Component]):
         entity, components = self._pop_from_pool(entity_id)
@@ -106,12 +114,12 @@ class World:
             assert _field in entity.keys(), f"Field {component}/{_field} not in components: {components} ({entity_id=})"
             entity.pop(_field)
         new_components = [c for c in components if c != component]
-        new_pool: Pool = self._get_entity_pool(new_components, **entity)
-        self._add_to_pool(entity_id, new_pool, **entity)
+        self._check_components_against_pool(new_components, **entity)
+        self._add_to_pool(entity_id, new_components, **entity)
 
     # other low-level methods
 
-    def _get_entity_pool(self, components: list[type], **entity_fields) -> Pool:
+    def _check_components_against_pool(self, components: list[type[Component]], **entity_fields):
         assert len(cs := components) > 0, f"Entity has no components: {self.component_names}"
         assert all(c in self.component_types for c in cs), f"Components '{cs}' not in {self.component_types}"
         expected_fields = set()
@@ -121,6 +129,7 @@ class World:
                 assert _field in entity_fields, f"Entity doesn't have '{component}/{_field}'"
         assert (extra := set(entity_fields) - expected_fields) == set(), f"Extra fields: {extra}; {expected_fields=}"
 
+    def _get_entity_pool(self, components: list[type]) -> Pool:
         if (key := self._make_key(components)) not in self.pools:
             fields = sum([self.component_to_field_names[component] for component in components], []) # merge fields
             shapes = sum([self.component_to_shapes[component] for component in components], []) # merge shapes

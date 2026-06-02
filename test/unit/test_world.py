@@ -33,14 +33,14 @@ class HasBox(Component):  # two fields, to exercise multi-field merge/ordering a
 
 def test_add_entity_rejects_field_from_an_unrequested_component():
     """An entity declared with only HasPosition may not pass `velocity` (a field of the unrequested HasVelocity).
-    Field validation is eager (add_entity runs it at call time), so this raises before any update()."""
+    Validation is eager: the bad field crashes at the add_entity call, before any update()."""
     world = World(components=[HasPosition, HasVelocity])  # both components known to the world
 
     with pytest.raises(AssertionError, match="velocity"):
         world.add_entity(
-            components=(HasPosition,),                       # entity declares HasPosition only
-            position=np.array([1.0, 2.0], "float32"),       # required by HasPosition
-            velocity=np.array([3.0, 4.0], "float32"),       # extra: belongs to HasVelocity, not requested
+            components=(HasPosition,),                  # entity declares HasPosition only
+            position=np.array([1.0, 2.0], "float32"),   # required by HasPosition
+            velocity=np.array([3.0, 4.0], "float32"),   # extra: belongs to HasVelocity, not requested
         )
 
 
@@ -446,3 +446,83 @@ def test_migrate_multi_field_component_preserves_all_fields():
     np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])           # carried-over field
     np.testing.assert_array_equal(pool.lo[ix], [0.0, 0.0])                 # both new fields land, by name
     np.testing.assert_array_equal(pool.hi[ix], [4.0, 4.0])
+
+
+# --- eager id tracking -------------------------------------------------------------------------------------------
+# A structural op on an entity that is NOT currently live fails at the CALL (clear AssertionError), not later inside
+# update() as a cryptic KeyError. "Live" = committed or pending-spawn this tick, minus pending-despawn; World keeps
+# this in _live_ids. add_entity adds the new id; remove_entity removes it; add/remove_component just validate.
+
+
+def test_operate_on_uncommitted_spawn_same_tick():
+    """Boundary that must keep working: an id minted this tick is a valid handle BEFORE commit.
+    add_component on a not-yet-committed spawn lands correctly after a single update() (pending spawn == live)."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))  # queued, not committed
+    world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))              # operate pre-commit
+    world.update()
+
+    pool, ix = world._eid_to_pool_ix[eid]
+    assert pool is world.pools[world._make_key((HasPosition, HasVelocity))]
+    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])
+    np.testing.assert_array_equal(pool.velocity[ix], [3.0, 4.0])
+
+
+def test_remove_entity_twice_fails_on_second_call():
+    """Removing the same id twice in a tick: the second call targets an already-removed entity -> reject eagerly."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    world.remove_entity(eid)                                   # eid now logically gone (pending despawn)
+    with pytest.raises(AssertionError):
+        world.remove_entity(eid)                               # 2nd call must fail at the call site
+
+
+def test_add_component_after_remove_entity_fails():
+    """A system removes an entity; a later system tries to widen it the same tick -> reject eagerly."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.remove_entity(eid)
+    with pytest.raises(AssertionError):
+        world.add_component(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
+
+
+def test_remove_component_after_remove_entity_fails():
+    """A system removes an entity; a later system tries to narrow it the same tick -> reject eagerly."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    world.remove_entity(eid)
+    with pytest.raises(AssertionError):
+        world.remove_component(eid, HasVelocity)
+
+
+def test_remove_unknown_entity_id_fails():
+    """An id the world never handed out is not live -> remove_entity must reject it at the call, not at commit."""
+    world = World(components=[HasPosition])
+    with pytest.raises(AssertionError):
+        world.remove_entity(123)
+
+
+def test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick():
+    """Despawn the last entity of an archetype, then spawn a new one of the SAME archetype, same tick.
+    The despawn reclaims the pool at commit; the newcomer must still land in a live, queryable pool, not orphaned."""
+    world = World(components=[HasPosition])
+    old = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
+    world.update()
+
+    world.remove_entity(old)                                       # queued first: empties -> reclaims the pos pool
+    new = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    assert old not in world._eid_to_pool_ix
+    assert sum(len(pool) for pool in world.pools.values()) == 1    # exactly the newcomer, and it is visible
+    assert world._make_key((HasPosition,)) in world.pools          # its pool is live / registered (not orphaned)
+    pool, ix = world._eid_to_pool_ix[new]
+    np.testing.assert_array_equal(pool.position[ix], [1.0, 1.0])
