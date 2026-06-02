@@ -11,9 +11,11 @@ class Pool:
     Pool has no concept of entity ids
     """
     INITIAL_CAPACITY = 100
+    RESERVED_NAMES = {"size", "capacity", "fields", "shapes", "dtypes", "data"}
 
     def __init__(self, fields: list[str], shapes: list[Shape], dtypes: list[np.dtype]):
         assert len(fields) == len(shapes) == len(dtypes), (len(fields), len(shapes), len(dtypes))
+        assert not (set(fields) & Pool.RESERVED_NAMES), f"One of {fields=} in {Pool.RESERVED_NAMES}"
         self.fields = fields
         self.shapes = shapes
         self.dtypes = dtypes
@@ -53,19 +55,23 @@ class Pool:
             for _field, shape, dtype in zip(self.fields, self.shapes, self.dtypes):
                 old_data = self.data[_field]
                 self.data[_field] = np.empty(shape=(self.capacity, *shape), dtype=dtype)
-                self.data[_field][0:self.size+1] = old_data[0:self.size+1]
+                self.data[_field][0:self.size] = old_data[0:self.size]
 
     def pop_entity(self, entity_index: int) -> dict[str, np.ndarray]:
         """pops an entity given an index (NOT ID) inside this pool and returns the data"""
+        res = {_field: self.data[_field][entity_index].copy() for _field in self.fields}
         self.remove_entity(entity_index)
-        # note: makes use of the fact that remove_entity even when reallocating will copy the last element
-        return {_field: self.data[_field][self.size] for _field in self.fields}
+        return res
 
     def __getattr__(self, name):
-        data = self.__dict__.get("data")
-        if data is not None and name in data:
+        if (data := self.__dict__.get("data")) is not None and name in data:
             return data[name][0: self.size]
         raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        if (data := self.__dict__.get("data")) is not None and name in data:
+            raise ValueError(f"Cannot explicitly set anything to Pool. Use `pool.component[:] = ...` ({name=})")
+        super().__setattr__(name, value)
 
     def __len__(self):
         return self.size

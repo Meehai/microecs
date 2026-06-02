@@ -1,4 +1,4 @@
-"""ecs.py - Primitives for Entity-Component-System (ECS) paradigm pattern"""
+"""world.py - The world container for ECS. It manages all the pools (one per archetype). Entities are id-based."""
 import numpy as np
 from loggez import loggez_logger as logger
 

@@ -110,3 +110,30 @@ def test_remove_oob_raises():
     )
     with pytest.raises(AssertionError):
         pool.remove_entity(5)
+
+
+def test_rebind_field_raises_and_keeps_storage():
+    """Rebinding a field (pool.position = ...) must raise instead of silently detaching from SoA storage."""
+    pool = _pool_pos_vel()
+    pool.add_entity(
+        position=np.array([1.0, 2.0], "float32"),
+        velocity=np.zeros(2, "float32"),
+    )
+    with pytest.raises(ValueError):
+        pool.position = np.array([[9.0, 9.0]], "float32")
+    assert pool.position[0].tolist() == [1.0, 2.0]  # storage untouched, no shadow attribute
+
+    pool.position[:] = np.array([[3.0, 4.0]], "float32")  # in-place write still goes through
+    assert pool.position[0].tolist() == [3.0, 4.0]
+
+
+def test_reserved_field_names_raise():
+    """Field names clashing with Pool internals must be rejected at construction, not fail cryptically later."""
+    for reserved in Pool.RESERVED_NAMES:
+        with pytest.raises(AssertionError):
+            Pool(fields=[reserved], shapes=[(1,)], dtypes=["float32"])
+
+
+def test_reserved_name_mixed_with_valid_raises():
+    with pytest.raises(AssertionError):
+        Pool(fields=["position", "size"], shapes=[(2,), (1,)], dtypes=["float32", "float32"])

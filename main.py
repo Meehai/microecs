@@ -76,7 +76,7 @@ class CollisionBounceSystem(TickSystem):
             _red = np.array(rl.RED, dtype="int32")[None].repeat(len(pool), axis=0)
             _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(pool), axis=0)
             collisions = self._get_collisions(pool.position, pool.radius)
-            pool.color = np.where(collisions, _red, _black)
+            pool.color[:] = np.where(collisions, _red, _black)
 
     def _get_collisions(self, positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
         dists = np.sqrt(((positions[:, None] - positions[None])**2).sum(-1))  # (N, 1, 2) - (1, N, 2) -> ... -> (N, N)
