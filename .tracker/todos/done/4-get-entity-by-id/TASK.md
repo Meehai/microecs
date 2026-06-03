@@ -2,6 +2,27 @@
 
 **Created**: 2026-06-03
 **Priority**: 3
+**Status**: ✅ Done (2026-06-03)
+
+## Outcome
+
+Implemented as a read-only accessor returning `(EntityData, list[ComponentType])` — the entity's
+field values keyed by name, plus its component list. Resolves by id via `_eid_to_pool_ix`, so it
+survives swap-remove (id stays valid where the row index does not).
+
+Design calls settled:
+- **Copy vs view**: returns **views** into the SoA arrays (no `.copy()`), mutable in place.
+- **Unknown id**: guarded by `assert entity_id in self._eid_to_pool_ix` — clear error, house style.
+- **Uncommitted spawns**: only committed entities resolve (reads committed state; `update()` first).
+
+First pass shipped with two bugs (wrong `pool.data[pool_ix]` indexing → `KeyError`; a `.pop` that
+corrupted id bookkeeping on read). Caught in review (`REVIEW.md`) against the red test spec, fixed
+same day. All "Done when" criteria covered in `test/unit/test_world.py` (5 tests), full suite 66 green:
+- field data + components: `test_get_entity_returns_field_data_and_components`,
+  `test_get_entity_returns_all_fields_of_a_multi_component_entity`
+- read-only / id stable: `test_get_entity_is_read_only_and_id_still_resolves`
+- swap-remove safe: `test_get_entity_reads_current_row_after_sibling_swap_remove`
+- clear error: `test_get_entity_unknown_id_raises`
 
 ## Why
 

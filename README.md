@@ -1,6 +1,6 @@
 # MicroECS
 
-Minimal (<200 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
+Minimal (~200 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
 
 Usage:
 

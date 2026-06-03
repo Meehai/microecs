@@ -4,15 +4,17 @@ from functools import partial
 import numpy as np
 
 from .pool import Pool
-from .utils import Shape, EntityId, PoolKey, logger
+from .utils import Shape, EntityId, PoolKey, EntityData, logger
 from .component import Component
+
+ComponentType = type[Component]
 
 class World:
     """Generic container for pools of components. Newly added components are assigned a unique id and go in a pool"""
-    def __init__(self, components: list[type[Component]]):
+    def __init__(self, components: list[ComponentType]):
         self._check_components(components)
         self.pools: dict[PoolKey, Pool] = {}
-        self.pool_to_components: dict[Pool, list[type[Component]]] = {}
+        self.pool_to_components: dict[Pool, list[ComponentType]] = {}
         # components management
         self.component_names = [x.__name__ for x in components]
         self.component_types = list(components)
@@ -39,7 +41,7 @@ class World:
             fn()
         self._command_buffer.clear()
 
-    def add_entity(self, components: list[type[Component]], **kwargs) -> EntityId:
+    def add_entity(self, components: list[ComponentType], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
         self._check_components_against_pool(components, **kwargs)
         self._last_id += 1
@@ -54,19 +56,27 @@ class World:
         self._live_ids.remove(entity_id)
         self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
 
-    def add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
+    def get_entity(self, entity_id: EntityId) -> tuple[EntityData, list[ComponentType]]:
+        """Gets the entity (data) and its components (list of types) given an entity id. Used for 'object-like' ops"""
+        assert entity_id in self._eid_to_pool_ix, f"Entity id {entity_id} not found. Perhaps you didn't world.update()"
+        pool, pool_ix = self._eid_to_pool_ix[entity_id]
+        entity = {k: pool.data[k][pool_ix] for k in pool.fields}
+        components = self.pool_to_components[pool]
+        return entity, components
+
+    def add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
         """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
         assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_add_component, entity_id=entity_id, component=component, **kwargs))
 
-    def remove_component(self, entity_id: EntityId, component: type[Component]):
+    def remove_component(self, entity_id: EntityId, component: ComponentType):
         """Removes a component from an entity given its id. Lazy; call update()"""
         assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
-    def query_and(self, component_types: list[type]) -> list[Pool]:
+    def query_and(self, component_types: list[ComponentType]) -> list[Pool]:
         """returns all the entities that have all the components"""
         key = self._make_key(component_types)
         res = []
@@ -79,14 +89,14 @@ class World:
 
     # eager mode methods equivalent to add/remove entities and add/remove_components
 
-    def _add_to_pool(self, entity_id: EntityId, components: list[type[Component]], **kwargs):
+    def _add_to_pool(self, entity_id: EntityId, components: list[ComponentType], **kwargs):
         """adds the item to the pool"""
         pool = self._get_entity_pool(components)
         pool_index = pool.add_entity(**kwargs)
         self._eid_to_pool_ix[entity_id] = (pool, pool_index)
         self._pool_ix_to_eid[(pool, pool_index)] = entity_id
 
-    def _pop_from_pool(self, entity_id: EntityId) -> tuple[dict[str, np.ndarray], list[type]]:
+    def _pop_from_pool(self, entity_id: EntityId) -> tuple[EntityData, list[ComponentType]]:
         """common function that updates the entities inside a pool (after popswap) and removes them if they get empty"""
         old_pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
         entity = old_pool.pop_entity(pool_ix)
@@ -100,14 +110,14 @@ class World:
             del self.pool_to_components[old_pool]
         return entity, components
 
-    def _do_add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
+    def _do_add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
         entity, components = self._pop_from_pool(entity_id)
         new_components = [*components, component]
         assert entity.keys().isdisjoint(kwargs), f"Duplicate keys: {entity.keys()} vs {kwargs.keys()}"
         self._check_components_against_pool(new_components, **entity, **kwargs)
         self._add_to_pool(entity_id, new_components, **entity, **kwargs)
 
-    def _do_remove_component(self, entity_id: EntityId, component: type[Component]):
+    def _do_remove_component(self, entity_id: EntityId, component: ComponentType):
         entity, components = self._pop_from_pool(entity_id)
         for _field in self.component_to_field_names[component]:
             assert _field in entity.keys(), f"Field {component}/{_field} not in components: {components} ({entity_id=})"
@@ -118,7 +128,7 @@ class World:
 
     # other low-level methods
 
-    def _check_components_against_pool(self, components: list[type[Component]], **entity_fields):
+    def _check_components_against_pool(self, components: list[ComponentType], **entity_fields):
         assert len(cs := components) > 0, f"Entity has no components: {self.component_names}"
         assert all(c in self.component_types for c in cs), f"Components '{cs}' not in {self.component_types}"
         expected_fields = set()
@@ -128,7 +138,7 @@ class World:
                 assert _field in entity_fields, f"Entity doesn't have '{component}/{_field}'"
         assert (extra := set(entity_fields) - expected_fields) == set(), f"Extra fields: {extra}; {expected_fields=}"
 
-    def _get_entity_pool(self, components: list[type]) -> Pool:
+    def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
         if (key := self._make_key(components)) not in self.pools:
             fields = sum([self.component_to_field_names[component] for component in components], []) # merge fields
             shapes = sum([self.component_to_shapes[component] for component in components], []) # merge shapes
@@ -137,14 +147,14 @@ class World:
             self.pool_to_components[self.pools[key]] = components
         return self.pools[key]
 
-    def _make_key(self, components: list[type]) -> PoolKey:
+    def _make_key(self, components: list[ComponentType]) -> PoolKey:
         key = 0
         for component in components:
             assert component in self.component_types, f"Component '{component.__name__}' not in {self.component_names}"
             key |= self.component_to_bit[component]
         return key
 
-    def _check_components(self, components: list[type]):
+    def _check_components(self, components: list[ComponentType]):
         _dtypes = {"float32", "int32", "bool", "str", "object"}
         for component in components:
             assert hasattr(component, "__dataclass_fields__"), f"Component '{component}' is not a dataclass"

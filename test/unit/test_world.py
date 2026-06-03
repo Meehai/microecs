@@ -586,3 +586,73 @@ def test_distinct_objects_per_entity_survive_swap_remove():
     pool, ix = world._eid_to_pool_ix[b]
     assert len(pool) == 1
     assert pool.label[ix, 0] is second                            # the right object followed the right id
+
+
+# --- get_entity: read one entity's data + components by id -------------------------------------------------------
+# get_entity(eid) is a READ accessor: returns (field_data, components) for the entity at its current row, resolved by
+# id (not index). It must NOT mutate id bookkeeping -- the id has to keep resolving and the entity stays usable after.
+
+
+def test_get_entity_returns_field_data_and_components():
+    """The happy path: get_entity hands back the entity's field values plus its component list."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    entity, components = world.get_entity(eid)
+    np.testing.assert_array_equal(entity["position"], [1.0, 2.0])
+    assert set(components) == {HasPosition}
+
+
+def test_get_entity_returns_all_fields_of_a_multi_component_entity():
+    """Every field of a multi-component archetype comes back, keyed by field name."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    entity, components = world.get_entity(eid)
+    np.testing.assert_array_equal(entity["position"], [1.0, 2.0])
+    np.testing.assert_array_equal(entity["velocity"], [3.0, 4.0])
+    assert set(components) == {HasPosition, HasVelocity}
+
+
+def test_get_entity_is_read_only_and_id_still_resolves():
+    """get_entity must NOT consume the entity: the id keeps resolving, the call is repeatable, removal still works."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.get_entity(eid)
+
+    assert eid in world._eid_to_pool_ix                            # lookup intact (a read may not delete the mapping)
+    assert eid in world._live_ids
+    world.get_entity(eid)                                          # repeatable -> not consumed by the first read
+
+    world.remove_entity(eid)                                       # normal lifecycle still works afterwards
+    world.update()
+    assert eid not in world._eid_to_pool_ix
+
+
+def test_get_entity_reads_current_row_after_sibling_swap_remove():
+    """After a swap-remove relocates rows, get_entity(id) still returns each id's own data, not a neighbour's."""
+    world = World(components=[HasPosition])
+    a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))  # idx 0
+    b = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))  # idx 1
+    c = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))  # idx 2 (tail)
+    world.update()
+
+    world.remove_entity(a)                                         # c swaps into slot 0; b stays at slot 1
+    world.update()
+
+    entity_b, _ = world.get_entity(b)
+    entity_c, _ = world.get_entity(c)
+    np.testing.assert_array_equal(entity_b["position"], [1.0, 1.0])  # b unmoved
+    np.testing.assert_array_equal(entity_c["position"], [2.0, 2.0])  # c followed its id into the freed slot
+
+
+def test_get_entity_unknown_id_raises():
+    """An id the world never handed out has no data -> raise, not return an empty/garbage result."""
+    world = World(components=[HasPosition])
+    with pytest.raises((AssertionError, KeyError)):                # ideally a clear AssertionError, like the other ops
+        world.get_entity(123)
