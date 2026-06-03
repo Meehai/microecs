@@ -57,7 +57,7 @@ class WallBounceSystem(TickSystem):
                                                 pool.position[:, 1] + pool.radius[:, 0] > self.scene_size[1])
             pool.velocity[:] = np.where(mask_velocity, -pool.velocity, pool.velocity)
 
-class CollisionBounceSystem(TickSystem):
+class CollisionDetectionSystem(TickSystem):
     def on_tick(self, world: World):
         entity_pools = world.query_and((HasPosition2D, HasMotion2D, HasRadius, HasColor))
 
@@ -79,7 +79,7 @@ def main(args: Namespace):
     scene_size = (600, 600)
 
     render_systems: list[TickSystem] = [RenderSystem()]
-    update_systems: list[TickSystem] = [MotionSystem(), WallBounceSystem(scene_size), CollisionBounceSystem()]
+    update_systems: list[TickSystem] = [MotionSystem(), WallBounceSystem(scene_size), CollisionDetectionSystem()]
 
     world = World(components=[HasRadius, HasPosition2D, HasMotion2D, HasColor])
     for _ in range(args.n_objects):

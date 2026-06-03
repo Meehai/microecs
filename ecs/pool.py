@@ -8,7 +8,7 @@ PoolKey = int
 class Pool:
     """
     Pool is a dynamic array of entities data given a list of fields, shapes and dtypes (from traits).
-    Pool has no concept of entity ids
+    Pool has no concept of entity ids.
     """
     INITIAL_CAPACITY = 100
     RESERVED_NAMES = {"size", "capacity", "fields", "shapes", "dtypes", "data"}
@@ -29,11 +29,7 @@ class Pool:
     def add_entity(self, **entity_fields) -> int:
         """Adds an entity to the pool. All the fields required by this pool must be provided as kwargs"""
         if self.size == self.capacity:
-            self.capacity *= 2
-            for _field, shape, dtype in zip(self.fields, self.shapes, self.dtypes):
-                old_data = self.data[_field]
-                self.data[_field] = np.empty(shape=(self.capacity, *shape), dtype=dtype)
-                self.data[_field][0:len(old_data)] = old_data
+            self._realloc(self.capacity * 2)
             logger.debug(f"Capacity extended from {self.capacity // 2} to {self.capacity}")
 
         for _field, field_shape, field_dtype in zip(self.fields, self.shapes, self.dtypes):
@@ -52,17 +48,20 @@ class Pool:
         self.size -= 1
 
         if self.size < self.capacity / 4 and self.capacity > Pool.INITIAL_CAPACITY:
-            self.capacity = self.capacity // 2
-            for _field, shape, dtype in zip(self.fields, self.shapes, self.dtypes):
-                old_data = self.data[_field]
-                self.data[_field] = np.empty(shape=(self.capacity, *shape), dtype=dtype)
-                self.data[_field][0:self.size] = old_data[0:self.size]
+            self._realloc(self.capacity // 2)
 
     def pop_entity(self, entity_index: int) -> dict[str, np.ndarray]:
         """pops an entity given an index (NOT ID) inside this pool and returns the data"""
         res = {_field: self.data[_field][entity_index].copy() for _field in self.fields}
         self.remove_entity(entity_index)
         return res
+
+    def _realloc(self, new_capacity: int):
+        for _field, shape, dtype in zip(self.fields, self.shapes, self.dtypes):
+            old_data = self.data[_field]
+            self.data[_field] = np.empty(shape=(new_capacity, *shape), dtype=dtype)
+            self.data[_field][0:self.size] = old_data[0:self.size]
+        self.capacity = new_capacity
 
     def __getattr__(self, name):
         if (data := self.__dict__.get("data")) is not None and name in data:
