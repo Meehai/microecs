@@ -31,6 +31,10 @@ class HasBox(Component):  # two fields, to exercise multi-field merge/ordering a
     hi: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
 
 
+class HasLabel(Component):  # object-dtype field: holds one arbitrary Python object per entity
+    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object"})
+
+
 def test_add_entity_rejects_field_from_an_unrequested_component():
     """An entity declared with only HasPosition may not pass `velocity` (a field of the unrequested HasVelocity).
     Validation is eager: the bad field crashes at the add_entity call, before any update()."""
@@ -526,3 +530,59 @@ def test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick():
     assert world._make_key((HasPosition,)) in world.pools          # its pool is live / registered (not orphaned)
     pool, ix = world._eid_to_pool_ix[new]
     np.testing.assert_array_equal(pool.position[ix], [1.0, 1.0])
+
+
+# --- object-dtype components -------------------------------------------------------------------------------------
+# A component field may declare dtype "object": its storage holds arbitrary Python objects (dicts, callbacks, handles)
+# by reference rather than numeric data. Everything else (pools, migrations, swap-remove) must treat it like any field.
+
+
+def test_world_accepts_object_dtype_component():
+    """Construction validation allows dtype 'object'; the world records it for the field."""
+    world = World(components=[HasLabel])
+    assert world.component_to_dtypes[HasLabel] == ["object"]
+
+
+def test_object_component_stores_and_reads_back_the_same_object():
+    """The exact Python object passed in is readable back from the pool -- by identity, not just by value."""
+    world = World(components=[HasLabel])
+
+    payload = {"name": "drone-7", "tags": ["a", "b"]}
+    eid = world.add_entity(components=(HasLabel,), label=np.array([payload], dtype=object))
+    world.update()
+
+    pool, ix = world._eid_to_pool_ix[eid]
+    assert pool.label.dtype == object
+    assert pool.label[ix, 0] is payload                            # same reference, not a copy
+
+
+def test_object_component_survives_migration():
+    """add_component carries an object field over to the wider pool with its reference intact."""
+    world = World(components=[HasPosition, HasLabel])
+
+    obj = object()
+    eid = world.add_entity(components=(HasLabel,), label=np.array([obj], dtype=object))
+    world.add_component(eid, HasPosition, position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    pool, ix = world._eid_to_pool_ix[eid]
+    assert pool is world.pools[world._make_key((HasPosition, HasLabel))]
+    assert pool.label[ix, 0] is obj                                # object preserved across the archetype move
+    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])   # sibling numeric field set as usual
+
+
+def test_distinct_objects_per_entity_survive_swap_remove():
+    """Each entity keeps its own object; removing one swaps the tail in, and the survivor's object is unchanged."""
+    world = World(components=[HasLabel])
+
+    first, second = {"id": 1}, {"id": 2}
+    a = world.add_entity(components=(HasLabel,), label=np.array([first], dtype=object))   # idx 0
+    b = world.add_entity(components=(HasLabel,), label=np.array([second], dtype=object))  # idx 1 (tail)
+    world.update()
+
+    world.remove_entity(a)                                         # b's row swaps into slot 0
+    world.update()
+
+    pool, ix = world._eid_to_pool_ix[b]
+    assert len(pool) == 1
+    assert pool.label[ix, 0] is second                            # the right object followed the right id

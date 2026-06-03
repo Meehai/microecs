@@ -181,3 +181,21 @@ def test_reserved_field_names_raise():
 def test_reserved_name_mixed_with_valid_raises():
     with pytest.raises(AssertionError):
         Pool(fields=["position", "size"], shapes=[(2,), (1,)], dtypes=["float32", "float32"])
+
+
+def test_object_dtype_stores_python_objects_by_reference():
+    """An object-dtype field holds arbitrary Python objects, stored by reference (not copied)."""
+    pool = Pool(fields=["payload"], shapes=[(1,)], dtypes=["object"])
+    obj = {"hp": 10}
+    pool.add_entity(payload=np.array([obj], dtype=object))
+    assert pool.payload.dtype == object
+    assert pool.payload[0, 0] is obj  # the exact same object came back, not a copy
+
+
+def test_object_dtype_pop_returns_same_object():
+    """pop_entity hands back the stored object reference unchanged."""
+    pool = Pool(fields=["payload"], shapes=[(1,)], dtypes=["object"])
+    obj = object()
+    pool.add_entity(payload=np.array([obj], dtype=object))
+    popped = pool.pop_entity(0)
+    assert popped["payload"][0] is obj

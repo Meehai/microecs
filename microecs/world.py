@@ -1,5 +1,5 @@
 """world.py - The world container for ECS. It manages all the pools (one per archetype). Entities are id-based."""
-from typing import Callable
+from typing import Callable, get_type_hints
 from functools import partial
 import numpy as np
 
@@ -53,6 +53,8 @@ class World:
         assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
         self._live_ids.remove(entity_id)
         self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
+
+    # def get_entity(self, entity_id: EntityId) -> 
 
     def add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
         """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
@@ -145,11 +147,20 @@ class World:
         return key
 
     def _check_components(self, components: list[type]):
-        _dtypes = {"float32", "int32", "bool", "str"}
+        _dtypes = {"float32", "int32", "bool", "str", "object"}
         for component in components:
             assert hasattr(component, "__dataclass_fields__"), f"Component '{component}' is not a dataclass"
+            hints = get_type_hints(component) # make it work with from __future__ import annotations
             for field_name, _field in component.__dataclass_fields__.items():
-                assert _field.type == np.ndarray, f"Field '{field_name}' of '{component=}' not an array: {_field}"
+                assert hints[field_name] is np.ndarray, f"Field '{field_name}' of '{component=}' not an array: {_field}"
                 assert _field.metadata.keys() == {"shape", "dtype"}, _field.metadata
                 assert isinstance(_field.metadata["shape"], tuple), _field.metadata["shape"]
                 assert isinstance(fmd := _field.metadata["dtype"], str) and fmd in _dtypes, f"{fmd} not in {_dtypes}"
+
+    def __len__(self):
+        return len(self._live_ids)
+
+    def __repr__(self):
+        return (f"[World]\n- Entities: {len(self)} (last id: {self._last_id})"
+                f"\n- Components ({len(self.component_names)}): {self.component_names}"
+                f"\n- Pools: {len(self.pools)}\n- Command buffer: {len(self._command_buffer)}")
