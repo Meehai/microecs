@@ -11,7 +11,7 @@ linter:
     - export PYTHONPATH="$PYTHONPATH:."
     - pip install ruff pylint
   script:
-    - python -m pylint --rcfile=.pylintrc ecs/
+    - python -m pylint --rcfile=.pylintrc microecs/
     - ruff check
 
 test_and_run:
