@@ -1,6 +1,7 @@
-"""clock.py - raylib-based clock allowing to 'drain' it such as to keep a steady FPS rate and consitent physics"""
+"""utils.py - common utilities used by microecs. Mostly logger and types used across the code."""
 from loggez import make_logger
 
+PoolKey = int
 EntityId = int
 Shape = tuple[int, ...]
 

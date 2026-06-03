@@ -3,8 +3,8 @@ from typing import Callable
 from functools import partial
 import numpy as np
 
-from .pool import Pool, PoolKey
-from .utils import Shape, EntityId, logger
+from .pool import Pool
+from .utils import Shape, EntityId, PoolKey, logger
 from .component import Component
 
 class World:

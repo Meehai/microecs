@@ -2,8 +2,6 @@
 import numpy as np
 from .utils import Shape, logger
 
-PoolKey = int
-
 class Pool:
     """
     Pool is a dynamic array of entities data given a list of fields, shapes and dtypes (from traits).

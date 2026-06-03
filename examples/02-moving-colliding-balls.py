@@ -7,7 +7,6 @@ import raylib as rl
 from loggez import loggez_logger as logger
 
 from microecs import World, TickSystem, Component
-from microecs.utils import Clock
 
 Point2D = tuple[float, float]
 DT = 1 / 100
