@@ -54,8 +54,6 @@ class World:
         self._live_ids.remove(entity_id)
         self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
 
-    # def get_entity(self, entity_id: EntityId) -> 
-
     def add_component(self, entity_id: EntityId, component: type[Component], **kwargs):
         """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
         assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
