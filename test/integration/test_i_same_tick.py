@@ -11,7 +11,7 @@ in test/unit/test_world.py as eager-validation specs (they should fail at the ca
 from dataclasses import field
 import numpy as np
 
-from ecs import World, TickSystem, Component
+from microecs import World, TickSystem, Component
 
 
 class HasPosition(Component):

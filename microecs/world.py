@@ -2,10 +2,9 @@
 from typing import Callable
 from functools import partial
 import numpy as np
-from loggez import loggez_logger as logger
 
 from .pool import Pool, PoolKey
-from .utils import Shape, EntityId
+from .utils import Shape, EntityId, logger
 from .component import Component
 
 class World:

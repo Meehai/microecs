@@ -11,7 +11,7 @@ from dataclasses import field
 import numpy as np
 import pytest
 
-from ecs import World, Component
+from microecs import World, Component
 
 
 class HasPosition(Component):

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from ecs import Pool
+from microecs import Pool
 
 
 def _pool_pos_vel() -> Pool:

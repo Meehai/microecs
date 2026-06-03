@@ -6,12 +6,48 @@ import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from ecs import World, TickSystem, Component
-from ecs.utils import Clock
+from microecs import World, TickSystem, Component
+from microecs.utils import Clock
 
 Point2D = tuple[float, float]
 DT = 1 / 100
 MAX_SUBTICKS_PER_RENDER_TICK = 3
+
+# utils
+
+class Clock:
+    """clock used for physics with fixed DT in main loops"""
+
+    def __init__(self, dt: float, max_ticks: int):
+        self.dt = dt
+        self.max_ticks = max_ticks
+        self.prev_time = rl.GetTime()
+        self.accumulator = 0
+
+    def tick(self):
+        """tick once by adding the delta between prev frame and now"""
+        now = rl.GetTime()
+        frame_time = now - self.prev_time
+        self.prev_time = now
+        self.accumulator += frame_time
+
+    def drain(self):
+        """drain the accumulator. in main loop: for _ in clock.drain(): ..."""
+        n_ticks = 0
+        while self.accumulator >= self.dt and n_ticks < self.max_ticks:
+            yield
+            self.accumulator -= self.dt
+            n_ticks += 1
+        self.accumulator = min(self.accumulator, self.dt) # Drop residual debt instead of it piling up across frames
+
+    def wait(self):
+        """waits the leftover time in case the previous tick ran too fast to maintain consistent FPS"""
+        rl.WaitTime(max(self.dt - (rl.GetTime() - self.prev_time), 0))
+
+    def wait_and_tick(self):
+        """calls wait() then tick(). Put this at the beginning of the main loop :)"""
+        self.wait()
+        self.tick()
 
 # components
 

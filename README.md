@@ -1,25 +1,31 @@
-# Mini ECS
+# MicroECS
 
-Minimal Entity Component System in python, numpy and raylib.
+Minimal (<200 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
 
 Usage:
 
-- `pip install requirements.txt`
+- `pip install -r requirements.txt`
 - Sandbox: `python main.py`
 - Tests: `pytest test/`
 
-There are only three primitives: `Pool`, `World` and `System`.
+There are only four primitives (bottom up): `Component`,`Pool`, `World` and `System`.
 
-- `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components).
+- `Component` is a simple python dataclass holding only data. All entries must be numpy arrays with metadata fields: shape and dtype. We support 4 dtypes only: `int32`, `float32`, `str` and `bool`.
+- `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Usses `Components` metadata to construct contiguous arrays for all entities of the same type.
 - `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other.
 - `System` is an abstract class that queries the `World` for a subset of `Pools` matching some components. It updates the entities in these pools given some logic (e.g. collisions, motion physics or simply calls the drawing functions).
 
-Note: `Pool` operates on array indices, while `World` operates on entity IDs. This allows seamless movement between pools while the high-level systems still working as intended.
+Few relevant concepts:
+
+- `Pool` operates on array indices, while `World` operates on entity IDs (also integers). This allows seamless movement between pools while the high-level systems still working as intended.
+- All mutable operations on `World` are lazy. These are: `add_entity`, `remove_entity`, `add_component`, `remove_component`. They are added to a command buffer which is only executed when calling `world.update()`.
 
 Super simplified main loop structure:
 
 ```python
-from ecs import World, Component, TickSystem
+import numpy as np
+import raylib as rl
+from microecs import World, Component, TickSystem
 
 # components
 class HasPosition(Component):
