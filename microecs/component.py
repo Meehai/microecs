@@ -6,3 +6,5 @@ class Component:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         dataclass(kw_only=True)(cls)
+
+ComponentType = type[Component]

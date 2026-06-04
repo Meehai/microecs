@@ -5,9 +5,8 @@ import numpy as np
 
 from .pool import Pool
 from .utils import Shape, EntityId, PoolKey, EntityData, logger
-from .component import Component
-
-ComponentType = type[Component]
+from .component import ComponentType
+from .query_result import QueryResult
 
 class World:
     """Generic container for pools of components. Newly added components are assigned a unique id and go in a pool"""
@@ -76,14 +75,18 @@ class World:
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
-    def query_and(self, component_types: list[ComponentType]) -> list[Pool]:
-        """returns all the entities that have all the components"""
+    def query_and(self, component_types: list[ComponentType]) -> QueryResult:
+        """returns A QueryResult object with the entities that have all the requested components (entity ids too)."""
         key = self._make_key(component_types)
         res = []
         for archetype_key, archetype_pool in self.pools.items():
             if (archetype_key & key) == key: # key is subset of archetype_key
                 res.append(archetype_pool)
-        return res
+
+        field_names  = sum([self.component_to_field_names[c] for c in component_types], [])
+        field_shapes = sum([self.component_to_shapes[c]      for c in component_types], [])
+        field_dtypes = sum([self.component_to_dtypes[c]      for c in component_types], [])
+        return QueryResult(res, dict(zip(field_names, field_shapes)), dict(zip(field_names, field_dtypes)))
 
     # private stuff
 
