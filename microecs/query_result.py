@@ -70,10 +70,16 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         for v, chunk in zip(views, np.split(full, np.cumsum(self._lens)[:-1])):
             v[:] = chunk
 
-    # qr.position[:, 0] (or any >1 axis as well as slices not exact indices) is allowed. qr.position[0] is not.
     def __getitem__(self, key):
+        if isinstance(key, (int, np.integer)):       # qr.position[i] -> entity i's row, from its own pool
+            key = range(self.len)[key]               # numpy's exact int-index rule, for free: wraps neg, raises on OOB
+            pool_ix = int(np.searchsorted(self._bounds, key, side="right")) - 1
+            return self.parts[pool_ix][key - self._bounds[pool_ix]]
+
         if not (isinstance(key, tuple) and key and key[0] == slice(None)):
-            raise TypeError("entity-axis indexing crosses pools; use [:, k]. Use .numpy() to get a proper np.ndarray.")
+            raise TypeError("Unsupported indexing. Use .numpy() for a proper array. To set items, use qr.attr[:, k]=xxx"
+                            ". For fancy indexing qr[i, 0:3, k], use qr[i][0:3, k].")
+
         return _Field([part[key] for part in self.parts])
 
     def __iter__(self):
