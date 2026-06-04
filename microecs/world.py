@@ -25,7 +25,7 @@ class World:
         self.component_to_field_names: dict[type, list[str]] = {t: list(t.__dataclass_fields__) for t in components}
         # entity id management
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
-        self._pool_ix_to_eid: dict[tuple[Pool, int], EntityId] = {}
+        self._pool_ids: dict[Pool, list[EntityId]] = {}
         self._last_id: EntityId = -1
         self._live_ids: set[EntityId] = set() # 'eager' mode ids so e.g. calling remove_entity twice before update fails
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
@@ -84,9 +84,10 @@ class World:
                 res.append(archetype_pool)
 
         field_names  = sum([self.component_to_field_names[c] for c in component_types], [])
-        field_shapes = sum([self.component_to_shapes[c]      for c in component_types], [])
-        field_dtypes = sum([self.component_to_dtypes[c]      for c in component_types], [])
-        return QueryResult(res, dict(zip(field_names, field_shapes)), dict(zip(field_names, field_dtypes)))
+        field_shapes = dict(zip(field_names, sum([self.component_to_shapes[c] for c in component_types], [])))
+        field_dtypes = dict(zip(field_names, sum([self.component_to_dtypes[c] for c in component_types], [])))
+        entity_ids = np.array(sum((self._pool_ids[p] for p in res), []), dtype="int64")
+        return QueryResult(res, field_shapes=field_shapes, field_dtypes=field_dtypes, entity_ids=entity_ids)
 
     # private stuff
 
@@ -97,20 +98,22 @@ class World:
         pool = self._get_entity_pool(components)
         pool_index = pool.add_entity(**kwargs)
         self._eid_to_pool_ix[entity_id] = (pool, pool_index)
-        self._pool_ix_to_eid[(pool, pool_index)] = entity_id
+        self._pool_ids.setdefault(pool, []).append(entity_id)
+        assert len(self._pool_ids[pool]) == len(pool), (pool, len(self._pool_ids[pool]), len(pool))
 
     def _pop_from_pool(self, entity_id: EntityId) -> tuple[EntityData, list[ComponentType]]:
         """common function that updates the entities inside a pool (after popswap) and removes them if they get empty"""
         old_pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
         entity = old_pool.pop_entity(pool_ix)
         components = self.pool_to_components[old_pool]
-        id_which_was_last_in_pool = self._pool_ix_to_eid.pop((old_pool, len(old_pool)))
+        id_which_was_last_in_pool = self._pool_ids[old_pool].pop()
         if entity_id != id_which_was_last_in_pool:
             self._eid_to_pool_ix[id_which_was_last_in_pool] = (old_pool, pool_ix) # we re-use the popped id (swapped)
-            self._pool_ix_to_eid[(old_pool, pool_ix)] = id_which_was_last_in_pool
+            self._pool_ids[old_pool][pool_ix] = id_which_was_last_in_pool
         if len(old_pool) == 0:
             del self.pools[self._make_key(components)]
             del self.pool_to_components[old_pool]
+            del self._pool_ids[old_pool]
         return entity, components
 
     def _do_add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
@@ -158,7 +161,9 @@ class World:
         return key
 
     def _check_components(self, components: list[ComponentType]):
+        _query_result_reserved_names = _qres = sorted(vars(QueryResult([], {}, {}, [])))
         _dtypes = {"float32", "int32", "bool", "str", "object"}
+
         for component in components:
             assert hasattr(component, "__dataclass_fields__"), f"Component '{component}' is not a dataclass"
             hints = get_type_hints(component) # make it work with from __future__ import annotations
@@ -167,6 +172,7 @@ class World:
                 assert _field.metadata.keys() == {"shape", "dtype"}, _field.metadata
                 assert isinstance(_field.metadata["shape"], tuple), _field.metadata["shape"]
                 assert isinstance(fmd := _field.metadata["dtype"], str) and fmd in _dtypes, f"{fmd} not in {_dtypes}"
+                assert field_name not in _query_result_reserved_names, f"Field '{field_name}' in {_qres}"
 
     def __len__(self):
         return len(self._live_ids)

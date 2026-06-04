@@ -12,7 +12,7 @@ There are only 5 primitives (bottom up): `Component`, `Pool`, `QueryResult`, `Wo
 
 - `Component` is a simple python dataclass holding only data. All entries must be numpy arrays with metadata fields: shape and dtype. We support 5 dtypes only: `int32`, `float32`, `bool`, `str` and `object`.
 - `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Usses `Components` metadata to construct contiguous arrays for all entities of the same type.
-- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's `__array_function__` and `__array_ufunc__`. For all intents and purposes it should feel like a `(N, ...)` view over all the entities. If you need a numpy array (not all ops are supported, for e.g. indexing on the first axis), use `QueryResult.numpy()`.
+- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's `__array_function__` and `__array_ufunc__`. For all intents and purposes it should feel like a `(N, ...)` view over all the entities. If you need a numpy array (not all ops are supported, for e.g. indexing on the first axis), use `QueryResult.numpy()`. It also exposes `entity_ids`: a flat `(N,)` array of the matched entities' ids, in the same pool-by-pool order as the fields, so you can `zip(qr.entity_ids, qr.position)` or feed an id back to `world.get_entity` / `world.remove_entity`.
 - `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other.
 - `System` is an abstract class that queries the `World` for a subset of `Pools` matching some components. It updates the entities in these pools given some logic (e.g. collisions, motion physics or simply calls the drawing functions). They are merely a convention, not tied to `World` per se.
 
@@ -47,7 +47,7 @@ class MotionSystem(TickSystem)
     def on_tick(self, world: World): # must override
         qr = world.query_and((HasPosition, HasVelocity))
         qr.position[:] = qr.position + qr.velocity * DT # writes back to all the underlying pools using numpy's rules
-        # alternative, if you prefer per-pool update. May be faster in the extreme cases as it avoid the _Field creation
+        # Alternative for per-pool update. Less ergonomic, but maybe faster in extreme cases as it avoids the _Field obj
         for pool in qr.pool_list:
             pool.position[:] = pool.position + pool.velocity * DT
 
