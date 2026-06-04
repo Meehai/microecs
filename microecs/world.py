@@ -30,6 +30,7 @@ class World:
         self._live_ids: set[EntityId] = set() # 'eager' mode ids so e.g. calling remove_entity twice before update fails
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer: list[Callable] = []
+        self._cache: dict[PoolKey, QueryResult] = {}
         logger.debug(f"Created scene with components: {self.component_names}")
 
     # public api
@@ -38,7 +39,10 @@ class World:
         """commits the underlying pool changes from the systems between two updates. Should be called in main loop."""
         for fn in self._command_buffer:
             fn()
-        self._command_buffer.clear()
+
+        if len(self._command_buffer) > 0:
+            self._command_buffer.clear()
+            self._cache.clear()
 
     def add_entity(self, components: list[ComponentType], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
@@ -77,7 +81,10 @@ class World:
 
     def query_and(self, component_types: list[ComponentType]) -> QueryResult:
         """returns A QueryResult object with the entities that have all the requested components (entity ids too)."""
-        key = self._make_key(component_types)
+        # Note: we can cache the queries. The only time it can get invalidated (via public API) is at update().
+        if (key := self._make_key(component_types)) in self._cache:
+            return self._cache[key]
+
         res = []
         for archetype_key, archetype_pool in self.pools.items():
             if (archetype_key & key) == key: # key is subset of archetype_key
@@ -87,7 +94,9 @@ class World:
         field_shapes = dict(zip(field_names, sum([self.component_to_shapes[c] for c in component_types], [])))
         field_dtypes = dict(zip(field_names, sum([self.component_to_dtypes[c] for c in component_types], [])))
         entity_ids = np.array(sum((self._pool_ids[p] for p in res), []), dtype="int64")
-        return QueryResult(res, field_shapes=field_shapes, field_dtypes=field_dtypes, entity_ids=entity_ids)
+
+        self._cache[key] = QueryResult(res, field_shapes=field_shapes, field_dtypes=field_dtypes, entity_ids=entity_ids)
+        return self._cache[key]
 
     # private stuff
 

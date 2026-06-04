@@ -799,6 +799,112 @@ def test_query_result_entity_ids_track_rows_after_swap_remove():
         np.testing.assert_array_equal(world.get_entity(int(eid))[0]["position"], pos)
 
 
+def test_query_cache_returns_same_object_between_updates():
+    """Two query_and calls for the same components, with no mutating update between, return the SAME QueryResult
+    object -- the second is served from the cache, not rebuilt."""
+    world = World(components=[HasPosition])
+    world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
+    world.update()
+
+    first = world.query_and((HasPosition,))
+    second = world.query_and((HasPosition,))
+
+    assert first is second
+
+
+def test_noop_update_keeps_cache():
+    """An update() that commits nothing (empty command buffer) changes no pool, so the cache survives: a re-query
+    returns the same object cached before that update()."""
+    world = World(components=[HasPosition])
+    world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
+    world.update()
+
+    cached = world.query_and((HasPosition,))
+    world.update()                                  # empty buffer -> no structural change
+    again = world.query_and((HasPosition,))
+
+    assert again is cached
+
+
+def test_mutating_update_invalidates_cache():
+    """An update() that commits a structural change drops the cache: the next query is a fresh object whose len
+    and entity_ids reflect the new entity, not the stale cached result."""
+    world = World(components=[HasPosition])
+    a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
+    world.update()
+
+    before = world.query_and((HasPosition,))
+    assert len(before) == 1
+
+    b = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()                                  # mutating commit -> cache cleared
+    after = world.query_and((HasPosition,))
+
+    assert after is not before
+    assert len(after) == 2
+    assert set(after.entity_ids.tolist()) == {a, b}
+
+
+def test_cache_keyed_per_query():
+    """The cache is keyed by the query, so different component sets get independent entries and never collide:
+    query (HasPosition,) and query (HasVelocity,) are distinct objects, and each key keeps returning its own."""
+    world = World(components=[HasPosition, HasVelocity])
+    world.add_entity(components=(HasPosition, HasVelocity),
+                     position=np.array([0.0, 0.0], "float32"), velocity=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    pos = world.query_and((HasPosition,))
+    vel = world.query_and((HasVelocity,))
+
+    assert pos is not vel                           # distinct queries -> distinct cache entries
+    assert world.query_and((HasPosition,)) is pos   # each key returns its own cached result
+    assert world.query_and((HasVelocity,)) is vel
+
+
+def test_new_archetype_appears_after_invalidation():
+    """Spawning the first entity of a brand-new archetype and committing it must show up in a re-query: the new
+    pool is not masked by a stale cached result. (HasPosition,) matches both the position-only pool and the new
+    position+velocity pool."""
+    world = World(components=[HasPosition, HasVelocity])
+    world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
+    world.update()
+
+    before = world.query_and((HasPosition,))
+    assert len(before) == 1                         # only the position-only entity so far
+
+    world.add_entity(components=(HasPosition, HasVelocity),                       # brand-new archetype
+                     position=np.array([1.0, 1.0], "float32"), velocity=np.array([2.0, 2.0], "float32"))
+    world.update()
+    after = world.query_and((HasPosition,))
+
+    assert len(after) == 2                           # the new pool is visible after invalidation
+
+
+def test_no_stale_views_across_realloc():
+    """Growing a pool past its capacity makes Pool._realloc swap in a NEW backing array, so a cached query taken
+    before the growth must not be reused -- its views point at the old, freed array. After the committing
+    update() the re-query is a fresh object whose views write through to the live (reallocated) pool."""
+    world = World(components=[HasPosition])
+    for i in range(100):                            # fill exactly to INITIAL_CAPACITY (100)
+        world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32"))
+    world.update()
+
+    stale = world.query_and((HasPosition,))         # views into the capacity-100 backing array
+    assert len(stale) == 100
+
+    world.add_entity(components=(HasPosition,), position=np.array([999, 999], "float32"))  # forces _realloc(200)
+    world.update()                                  # mutating commit -> cache cleared
+    fresh = world.query_and((HasPosition,))
+
+    assert fresh is not stale                        # the pre-realloc result is not reused
+    assert len(fresh) == 101                          # sees the grown pool
+
+    fresh.position[:] = fresh.position + 1            # must land in the LIVE (reallocated) array
+    pool = next(iter(world.pools.values()))
+    np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])           # entity i=0 -> +1
+    np.testing.assert_array_equal(pool.position[100], [1000.0, 1000.0])   # the 101st entity -> +1
+
+
 _QUERYRESULT_RESERVED = sorted(vars(QueryResult([], {}, {}, np.array([], "int64"))))
 @pytest.mark.parametrize("reserved", _QUERYRESULT_RESERVED)
 def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserved):
