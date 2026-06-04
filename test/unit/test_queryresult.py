@@ -79,15 +79,20 @@ _FIELD_SHAPES = {"position": (2,), "velocity": (2,), "radius": (1,), "color": (4
 _FIELD_DTYPES = {"position": "float32", "velocity": "float32", "radius": "float32", "color": "int32"}
 
 
-def _query(pools: list[Pool], *fields: str) -> QueryResult:
-    """A QueryResult over `pools` for the named fields, carrying their (test-fixed) shapes and dtypes."""
-    return QueryResult(pools, {f: _FIELD_SHAPES[f] for f in fields}, {f: _FIELD_DTYPES[f] for f in fields})
+def _query(pools: list[Pool], *fields: str, entity_ids: list[int] = None) -> QueryResult:
+    """A QueryResult over `pools` for the named fields, carrying their (test-fixed) shapes and dtypes. `entity_ids`
+    default to 0..N-1 in pool-by-pool row order (World hands out the real ids; here any pool-aligned ids do)."""
+    n = sum(len(p) for p in pools)
+    ids = np.arange(n, dtype="int64") if entity_ids is None else np.array(entity_ids, dtype="int64")
+    return QueryResult(pools, {f: _FIELD_SHAPES[f] for f in fields}, {f: _FIELD_DTYPES[f] for f in fields}, ids)
 
 
 def test_len_sums_entities_across_pools():
-    """len(qr) is the total entity count across all pools (2 + 3 = 5), not the number of pools."""
+    """len(qr) is the total entity count across all pools (2 + 3 = 5), not the number of pools; entity_ids has
+    one entry per entity, so its length tracks len(qr)."""
     qr = _query([_pool_with(2), _pool_with(3)], "position")
     assert len(qr) == 5
+    assert len(qr.entity_ids) == 5
 
 
 def test_field_len_is_total_entities_across_pools():
@@ -200,15 +205,33 @@ def test_inplace_op_writes_through_to_pools():
 
 def test_iterating_fields_yields_each_entity_for_rendering():
     """Iterating fields with zip yields one entity per step across all pools in pool-by-pool order, with fields
-    aligned: entity k's position pairs with entity k's radius."""
+    aligned -- and `entity_ids` lines up too, so a render/id loop can `zip(qr.entity_ids, qr.position, qr.radius)`
+    and get entity k's id with entity k's data."""
     poolA = _drawable_pool([([0.0, 0.0], 5.0), ([1.0, 1.0], 6.0)])
     poolB = _drawable_pool([([2.0, 2.0], 7.0), ([3.0, 3.0], 8.0), ([4.0, 4.0], 9.0)])
-    qr = _query([poolA, poolB], "position", "radius")
+    qr = _query([poolA, poolB], "position", "radius", entity_ids=[10, 11, 20, 21, 22])  # A's ids, then B's
 
-    drawn = [(pos.tolist(), rad.item()) for pos, rad in zip(qr.position, qr.radius)]
+    drawn = [(eid.item(), pos.tolist(), rad.item())
+             for eid, pos, rad in zip(qr.entity_ids, qr.position, qr.radius)]
 
-    assert drawn == [([0.0, 0.0], 5.0), ([1.0, 1.0], 6.0),
-                     ([2.0, 2.0], 7.0), ([3.0, 3.0], 8.0), ([4.0, 4.0], 9.0)]
+    assert drawn == [(10, [0.0, 0.0], 5.0), (11, [1.0, 1.0], 6.0),
+                     (20, [2.0, 2.0], 7.0), (21, [3.0, 3.0], 8.0), (22, [4.0, 4.0], 9.0)]
+
+
+def test_entity_ids_is_a_flat_pool_by_pool_array():
+    """`qr.entity_ids` is a flat (N,) array over all matched entities, in the same pool-by-pool order as the
+    fields -- NOT a _Field. So entity-axis ops that _Field rejects (integer index, slice, np.isin) work here,
+    because the ids are materialized, not a stitched per-pool view."""
+    poolA = _drawable_pool([([0.0, 0.0], 5.0), ([1.0, 1.0], 6.0)])   # 2 entities
+    poolB = _drawable_pool([([2.0, 2.0], 7.0)])                      # 1 entity
+    qr = _query([poolA, poolB], "position", "radius", entity_ids=[10, 11, 20])
+
+    assert isinstance(qr.entity_ids, np.ndarray)
+    assert qr.entity_ids.shape == (len(qr),)                         # flat, one entry per entity (== 3)
+    assert qr.entity_ids.tolist() == [10, 11, 20]                    # pool A's ids first, then pool B's
+    assert int(qr.entity_ids[2]) == 20                               # entity-axis index -> allowed (unlike a _Field)
+    assert qr.entity_ids[0:2].tolist() == [10, 11]                   # slicing the entity axis -> allowed
+    assert np.isin(qr.entity_ids, [11, 20]).tolist() == [False, True, True]   # set membership -> allowed
 
 
 def test_component_axis_index_reads_a_per_pool_field():
@@ -347,14 +370,13 @@ def test_broadcast_row_or_scalar_writes_to_every_entity():
 
 
 def test_row_operand_broadcasts_like_numpy_when_e0_equals_total_entities():
-    """Regression for the (N == e0) footgun. Two pools, one entity each (N == 2), per-entity dim e0 == 2. A (2,)
-    row added to the field broadcasts onto every entity, exactly like a real (2, 2) numpy array:
+    """A (2,) row added to a 2-entity field broadcasts onto every entity, exactly like a real (2, 2) numpy
+    array, even when the row length equals the entity count (N == 2, per-entity dim e0 == 2):
 
         [[1, 1], [2, 2]] + [10, 20]  ->  [[11, 21], [12, 22]]      (row broadcast onto every entity)
 
-    The row has fewer dims than the field (ndim 1 < 2), so `_chunk` leaves it whole and numpy aligns it to the
-    component axis -- it is NOT split per entity just because its length equals N. (Per-entity values would
-    need shape (N, 1), exactly as numpy requires.)"""
+    The row has fewer dims than the field (ndim 1 < 2), so it aligns to the component axis and is not split
+    per entity. Per-entity values would need shape (N, 1), as numpy requires."""
     a = _pos_pool([[1.0, 1.0]])
     b = _pos_pool([[2.0, 2.0]])
     qr = _query([a, b], "position")
@@ -365,11 +387,11 @@ def test_row_operand_broadcasts_like_numpy_when_e0_equals_total_entities():
 
 
 def test_same_row_matches_numpy_when_total_entities_differs_from_e0():
-    """Companion to the (N == e0) case above, now with N != e0 (N == 3, e0 == 2) and uneven pool sizes. The
-    same (2,) row broadcasts onto every entity here too: `_chunk` keys off ndim (1 < 2), not the entity count,
-    so the result is stable regardless of how many entities exist -- correct whether or not N equals e0."""
+    """A (2,) row added to a field broadcasts onto every entity across uneven pools, exactly like numpy, when
+    the row length differs from the entity count (N == 3, per-entity dim e0 == 2). Broadcasting depends on the
+    row's ndim (1 < 2), not on the entity count."""
     a = _pos_pool([[1.0, 1.0]])
-    b = _pos_pool([[2.0, 2.0], [3.0, 3.0]])             # N == 3 now; e0 still 2
+    b = _pos_pool([[2.0, 2.0], [3.0, 3.0]])             # N == 3, e0 == 2
     qr = _query([a, b], "position")
 
     row = np.array([10.0, 20.0], "float32")
@@ -411,3 +433,14 @@ def test_empty_query_with_no_matched_pool_behaves_like_numpy():
 
     with pytest.raises(ValueError):
         qr.position[:] = (1.0, 2.0, 3.0)        # (3,) cannot broadcast into (0, 2)
+
+
+def test_repr_renders_and_reports_entity_count():
+    """repr(QueryResult) must render -- it's used in logs/debugging. Pins that it doesn't crash and shows the
+    entity count across pools (2 + 3 == 5)."""
+    qr = _query([_pool_with(2), _pool_with(3)], "position")
+
+    text = repr(qr)
+
+    assert "QueryResult" in text
+    assert "5" in text                          # total entities across the two pools

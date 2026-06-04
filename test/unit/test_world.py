@@ -8,10 +8,12 @@ add_component (so "bad fields" / "unknown component" still raise at the call). E
 knowable while migrating (duplicate / missing component) raise at commit, inside update().
 """
 from dataclasses import field
+import random
 import numpy as np
 import pytest
 
 from microecs import World, Component
+from microecs.query_result import QueryResult
 
 
 class HasPosition(Component):
@@ -181,7 +183,7 @@ def test_remove_entity_leaves_empty_pool():
     world.update()
 
     assert len(pool) == 0                                      # pool is empty
-    assert world._pool_ix_to_eid == {}                         # no dangling (pool, index) -> id mapping
+    assert len(world._pool_ids) == 0                           # no dangling pool_ids
     assert world._eid_to_pool_ix == {}                         # removed id is gone, not pointing at an empty slot
 
 
@@ -216,7 +218,7 @@ def test_remove_last_index_drops_only_that_entity():
     assert len(pool) == 1
     assert last not in world._eid_to_pool_ix                   # removed id gone, not pointing at a dead slot
     assert world._eid_to_pool_ix == {keep: (pool, 0)}          # only the survivor remains, at its row
-    assert world._pool_ix_to_eid == {(pool, 0): keep}          # reverse map agrees
+    assert world._pool_ids[pool] == [keep]                     # reverse map agrees
     np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])
 
 
@@ -236,7 +238,7 @@ def test_remove_middle_entity_repoints_swapped_id():
     assert b not in world._eid_to_pool_ix                      # removed id gone
     assert world._eid_to_pool_ix[a] == (pool, 0)               # a untouched
     assert world._eid_to_pool_ix[c] == (pool, 1)               # c re-pointed to the freed slot
-    assert world._pool_ix_to_eid == {(pool, 0): a, (pool, 1): c}  # reverse map consistent
+    assert world._pool_ids[pool] == [a, c]                     # reverse map consistent
     np.testing.assert_array_equal(pool.position[1], [2.0, 2.0])   # c's data now sits at slot 1
 
 
@@ -285,7 +287,7 @@ def test_add_component_moves_entity_and_preserves_fields():
 
 
 def test_add_component_keeps_entity_id():
-    """The id is the caller's stable handle (task 02): migrating via add_component must NOT change it."""
+    """The id is the caller's stable handle: migrating via add_component must NOT change it."""
     world = World(components=[HasPosition, HasVelocity])
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
@@ -656,3 +658,153 @@ def test_get_entity_unknown_id_raises():
     world = World(components=[HasPosition])
     with pytest.raises((AssertionError, KeyError)):                # ideally a clear AssertionError, like the other ops
         world.get_entity(123)
+
+
+# --- _pool_ids randomized churn: the reverse id-map must mirror the pools through every popswap ------------------
+
+_CHURN_COMPONENTS = {HasPosition: ("position", (2,)), HasVelocity: ("velocity", (2,)), HasRadius: ("radius", (1,))}
+
+
+def _rand_fields(comp, rng: random.Random) -> dict:
+    """Random field-data kwargs for one churn component (one (shape,) float32 field, name unique per component)."""
+    name, shape = _CHURN_COMPONENTS[comp]
+    return {name: np.array([rng.random() for _ in range(shape[0])], "float32")}
+
+
+def _assert_pool_ids_invariants(world: World):
+    """The reverse id-map mirrors the pools exactly: no orphan/missing lists, one id per row, every id sits at the
+    row it claims, and the union of all ids is precisely the live set (the command buffer is already committed)."""
+    assert {id(p) for p in world._pool_ids} == {id(p) for p in world.pools.values()}    # no orphan / missing lists
+    seen = set()
+    for pool, ids in world._pool_ids.items():
+        assert len(ids) == len(pool)                                                    # one id per row
+        for ix, eid in enumerate(ids):
+            assert world._eid_to_pool_ix[eid] == (pool, ix)                             # ids[ix] really sits at row ix
+            seen.add(eid)
+    assert seen == world._live_ids                                                      # exactly the live entities
+
+
+def test_pool_ids_stay_aligned_through_random_churn():
+    """500 seeded random ops (add / remove / add_component / remove_component) interleaved across archetypes. After
+    every commit the reverse id-map mirrors the pools AND each id's field data round-trips through get_entity -- so
+    no swap ever hands an id its neighbour's row."""
+    rng = random.Random(1234)
+    world = World(components=list(_CHURN_COMPONENTS))
+    shadow: dict[int, dict] = {}   # eid -> {field_name: data} we believe the world holds
+
+    for _ in range(500):
+        live = list(world._live_ids)
+        roll = rng.random()
+        if roll < 0.45 or not live:                                  # add a new entity (random archetype)
+            comps = rng.sample(list(_CHURN_COMPONENTS), rng.randint(1, 3))
+            data = {}
+            for c in comps:
+                data.update(_rand_fields(c, rng))
+            eid = world.add_entity(components=tuple(comps), **{k: v.copy() for k, v in data.items()})
+            shadow[eid] = {k: v.copy() for k, v in data.items()}
+        elif roll < 0.70:                                            # remove an entity (forces a popswap)
+            eid = rng.choice(live)
+            world.remove_entity(eid)
+            shadow.pop(eid)
+        elif roll < 0.85:                                            # grow an entity's archetype
+            eid = rng.choice(live)
+            missing = [c for c in _CHURN_COMPONENTS if _CHURN_COMPONENTS[c][0] not in shadow[eid]]
+            if missing:
+                c = rng.choice(missing)
+                d = _rand_fields(c, rng)
+                world.add_component(eid, c, **{k: v.copy() for k, v in d.items()})
+                shadow[eid].update({k: v.copy() for k, v in d.items()})
+        else:                                                        # shrink it (never below one component)
+            eid = rng.choice(live)
+            have = [c for c in _CHURN_COMPONENTS if _CHURN_COMPONENTS[c][0] in shadow[eid]]
+            if len(have) > 1:
+                c = rng.choice(have)
+                world.remove_component(eid, c)
+                shadow[eid].pop(_CHURN_COMPONENTS[c][0])
+        world.update()
+
+        _assert_pool_ids_invariants(world)
+        for eid, fields in shadow.items():
+            entity, _ = world.get_entity(eid)
+            for name, value in fields.items():
+                np.testing.assert_array_equal(entity[name], value)  # each id keeps its OWN data through every swap
+
+    assert len(world._live_ids) > 0                                  # sanity: the churn left a populated world
+
+
+# --- QueryResult.entity_ids: a flat (N,) integer array, pool-by-pool aligned with the qr.field parts -----------
+
+def test_query_result_entity_ids_is_flat_and_aligned_across_pools():
+    """qr.entity_ids is a flat (N,) integer array covering every matched entity across archetypes, in the same
+    pool-by-pool order as qr.position -- so zip(qr.entity_ids, qr.position) pairs each id with its own row."""
+    world = World(components=[HasPosition, HasVelocity])
+    a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
+    b = world.add_entity(components=(HasPosition, HasVelocity),
+                         position=np.array([1.0, 1.0], "float32"), velocity=np.array([9.0, 9.0], "float32"))
+    c = world.add_entity(components=(HasPosition, HasVelocity),
+                         position=np.array([2.0, 2.0], "float32"), velocity=np.array([8.0, 8.0], "float32"))
+    world.update()
+
+    qr = world.query_and((HasPosition,))                           # matches both archetypes -> two pools
+
+    assert isinstance(qr.entity_ids, np.ndarray)
+    assert np.issubdtype(qr.entity_ids.dtype, np.integer)
+    assert qr.entity_ids.shape == (len(qr),)                       # flat, one entry per entity
+    assert set(qr.entity_ids.tolist()) == {a, b, c}                # exactly the matched ids
+    for eid, pos in zip(qr.entity_ids, qr.position):               # id <-> row alignment, across pools
+        np.testing.assert_array_equal(world.get_entity(int(eid))[0]["position"], pos)
+
+
+def test_query_result_entity_ids_supports_flat_array_ops():
+    """entity_ids is a real ndarray, not a _Field: entity-axis indexing and fancy ops that _Field rejects --
+    qr.entity_ids[i], slicing, np.isin -- all work, because ids are materialized by World, not a per-pool view."""
+    world = World(components=[HasPosition])
+    ids = [world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32")) for i in range(4)]
+    world.update()
+
+    qr = world.query_and((HasPosition,))
+
+    assert int(qr.entity_ids[0]) in ids                            # entity-axis index -> allowed (unlike _Field)
+    assert qr.entity_ids[1:3].shape == (2,)                        # slicing the entity axis -> allowed
+    assert np.isin(qr.entity_ids, ids[:2]).sum() == 2              # fancy / set ops -> allowed
+
+
+def test_query_result_entity_ids_empty_query_is_empty_flat_array():
+    """A query that matches no pool yields an empty flat (0,) id array, mirroring an empty field -- not a crash."""
+    world = World(components=[HasPosition, HasVelocity])
+    world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
+    world.update()
+
+    qr = world.query_and((HasVelocity,))                           # nothing has velocity
+
+    assert len(qr) == 0
+    assert qr.entity_ids.shape == (0,)
+
+
+def test_query_result_entity_ids_track_rows_after_swap_remove():
+    """After a swap-remove relocates rows, qr.entity_ids still aligns with qr.position: each surviving id pairs
+    with its own (moved) data, never a neighbour's."""
+    world = World(components=[HasPosition])
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    b = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
+    c = world.add_entity(components=(HasPosition,), position=np.array([3.0, 3.0], "float32"))
+    world.update()
+    world.remove_entity(b)                                         # swap: c slides into b's slot
+    world.update()
+
+    qr = world.query_and((HasPosition,))
+
+    assert set(qr.entity_ids.tolist()) == {a, c}
+    for eid, pos in zip(qr.entity_ids, qr.position):
+        np.testing.assert_array_equal(world.get_entity(int(eid))[0]["position"], pos)
+
+
+_QUERYRESULT_RESERVED = sorted(vars(QueryResult([], {}, {}, np.array([], "int64"))))
+@pytest.mark.parametrize("reserved", _QUERYRESULT_RESERVED)
+def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserved):
+    """A component whose field is named like a QueryResult attribute must be rejected at world creation, rather
+    than be silently shadowed when queried."""
+    bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
+                                      reserved: field(metadata={"shape": (2,), "dtype": "float32"})})
+    with pytest.raises((AssertionError, ValueError)):
+        World(components=[bad])
