@@ -19,6 +19,20 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         """Creates a numpy array from the underlying pool parts"""
         return np.concatenate(self.parts)
 
+    def _chunk(self, x: T, i: int) -> T:
+        if isinstance(x, _Field):
+            return x.parts[i]
+        if isinstance(x, np.ndarray) and x.ndim == len(self.shape) and x.shape[0] == self.len:
+            return x[self._bounds[i]:self._bounds[i + 1]]
+        return x
+
+    def _apply_fn_on_parts(self, fn: Callable, op_args: list, **kwargs):
+        results = []
+        for i in range(len(self.parts)):
+            pool_args = [self._chunk(x, i) for x in op_args]
+            results.append(fn(*pool_args, **kwargs))
+        return _Field(results)
+
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         """wrapper forelementwise (python) primitives, e.g. qr.position[:] += 1"""
         if method != "__call__":
@@ -37,20 +51,6 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         if func not in self._PER_POOL_OK:
             return NotImplemented # add them manually
         return self._apply_fn_on_parts(func, args, **kwargs)
-
-    def _chunk(self, x: T, i: int) -> T:
-        if isinstance(x, _Field):
-            return x.parts[i]
-        if isinstance(x, np.ndarray) and x.ndim >= 1 and x.shape[0] == self.len:   # full-N raw -> slice per pool
-            return x[self._bounds[i]:self._bounds[i + 1]]
-        return x
-
-    def _apply_fn_on_parts(self, fn: Callable, op_args: list, **kwargs):
-        results = []
-        for i in range(len(self.parts)):
-            pool_args = [self._chunk(x, i) for x in op_args]
-            results.append(fn(*pool_args, **kwargs))
-        return _Field(results)
 
     # qr.position[:] = <field | scalar | per-entity broadcast>   -> scatter through the views
     def __setitem__(self, key, value):

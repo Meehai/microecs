@@ -58,6 +58,14 @@ def _ball_pool(rows: list[tuple[list[float], float]]) -> Pool:
     return pool
 
 
+def _pos_pool(rows: list[list[float]]) -> Pool:
+    """A pool of entities carrying only an explicit (2,) `position` (no other fields)."""
+    pool = Pool(fields=["position"], shapes=[(2,)], dtypes=["float32"])
+    for xy in rows:
+        pool.add_entity(position=np.array(xy, "float32"))
+    return pool
+
+
 def _all_pairs_collisions(positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
     """All-pairs collision over flat (N, 2) positions / (N, 1) radii; returns an (N, 1) bool mask of which
     entities overlap at least one other."""
@@ -336,6 +344,39 @@ def test_broadcast_row_or_scalar_writes_to_every_entity():
     qr.radius[:] = 0.0                                          # scalar -> every entity
     assert (a.radius == 0).all()
     assert (b.radius == 0).all()
+
+
+def test_row_operand_broadcasts_like_numpy_when_e0_equals_total_entities():
+    """Regression for the (N == e0) footgun. Two pools, one entity each (N == 2), per-entity dim e0 == 2. A (2,)
+    row added to the field broadcasts onto every entity, exactly like a real (2, 2) numpy array:
+
+        [[1, 1], [2, 2]] + [10, 20]  ->  [[11, 21], [12, 22]]      (row broadcast onto every entity)
+
+    The row has fewer dims than the field (ndim 1 < 2), so `_chunk` leaves it whole and numpy aligns it to the
+    component axis -- it is NOT split per entity just because its length equals N. (Per-entity values would
+    need shape (N, 1), exactly as numpy requires.)"""
+    a = _pos_pool([[1.0, 1.0]])
+    b = _pos_pool([[2.0, 2.0]])
+    qr = _query([a, b], "position")
+
+    got = (qr.position + np.array([10.0, 20.0], "float32")).numpy()
+
+    assert got.tolist() == [[11.0, 21.0], [12.0, 22.0]]     # numpy broadcast: the row lands on every entity
+
+
+def test_same_row_matches_numpy_when_total_entities_differs_from_e0():
+    """Companion to the (N == e0) case above, now with N != e0 (N == 3, e0 == 2) and uneven pool sizes. The
+    same (2,) row broadcasts onto every entity here too: `_chunk` keys off ndim (1 < 2), not the entity count,
+    so the result is stable regardless of how many entities exist -- correct whether or not N equals e0."""
+    a = _pos_pool([[1.0, 1.0]])
+    b = _pos_pool([[2.0, 2.0], [3.0, 3.0]])             # N == 3 now; e0 still 2
+    qr = _query([a, b], "position")
+
+    row = np.array([10.0, 20.0], "float32")
+    got = (qr.position + row).numpy()
+
+    assert got.tolist() == (qr.position.numpy() + row).tolist()          # matches numpy
+    assert got.tolist() == [[11.0, 21.0], [12.0, 22.0], [13.0, 23.0]]
 
 
 def test_empty_field_writes_behave_like_an_empty_numpy_block():
