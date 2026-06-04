@@ -101,6 +101,12 @@ class QueryResult:
             return _Field(data[name] or [np.empty((0, *self._field_shapes[name]), self._field_dtypes[name])])
         raise AttributeError(name)
 
+    def __setattr__(self, name, value):
+        if (data := self.__dict__.get("_data")) is not None and name in data:
+            getattr(self, name)[:] = value   # recarray semantics: assigning a field scatters into it
+            return
+        super().__setattr__(name, value)
+
     def __len__(self):
         return self._len
 

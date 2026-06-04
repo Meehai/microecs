@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from microecs import Pool, Component
-from microecs.query_result import QueryResult
+from microecs.query_result import QueryResult, _Field
 
 
 class HasPosition(Component):  # owns the `position` field the pools below carry
@@ -198,9 +198,29 @@ def test_inplace_op_writes_through_to_pools():
     qr = _query([slow, fast], "position", "velocity")
 
     qr.velocity *= 0.5
+    qr.velocity *= np.array([1])
+    qr.velocity[:] = qr.velocity * np.array([1])
+    qr.velocity = qr.velocity * np.array([1])
 
     assert (slow.velocity == [5.0, 0.0]).all()
     assert (fast.velocity == [0.0, 10.0]).all()
+
+
+def test_inplace_op_with_raw_operand_writes_through_and_matches_numpy_on_bad_shapes():
+    """`qr.position *= raw` with a RAW numpy operand writes through the pools: the operand broadcasts by numpy's
+    rules and the value Python rebinds is the in-place _Field result (not the raw array), so a raw operand never
+    looks like a stray field assignment. A non-broadcastable operand -- np.array([]) against (N, 2) -- raises
+    ValueError, exactly as `np.zeros((N, 2)) *= np.array([])` does."""
+    a = _pos_pool([[10.0, 20.0]])
+    b = _pos_pool([[30.0, 40.0], [50.0, 60.0]])
+    qr = _query([a, b], "position")
+
+    qr.position *= np.array([2.0, 3.0], "float32")          # raw (2,) row broadcasts onto every entity
+    assert a.position.tolist() == [[20.0, 60.0]]
+    assert b.position.tolist() == [[60.0, 120.0], [100.0, 180.0]]
+
+    with pytest.raises(ValueError):                         # (N, 2) *= (0,) can't broadcast -> numpy raises, so do we
+        qr.position *= np.array([], "float32")
 
 
 def test_iterating_fields_yields_each_entity_for_rendering():
@@ -433,6 +453,36 @@ def test_empty_query_with_no_matched_pool_behaves_like_numpy():
 
     with pytest.raises(ValueError):
         qr.position[:] = (1.0, 2.0, 3.0)        # (3,) cannot broadcast into (0, 2)
+
+
+def test_assigning_a_field_scatters_like_a_recarray():
+    """Assigning a field attribute writes THROUGH to the pools, exactly like np.recarray: `qr.position = X`
+    scatters X into every entity -- whether X is a computed _Field, a raw array, or a scalar -- and a
+    non-broadcastable value raises ValueError. Never a silent shadow, never a silent no-op. Each step is
+    cross-checked against an actual np.recarray running the same assignment."""
+    a, b = _pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])
+    qr = _query([a, b], "position")
+    rec = np.rec.array(np.zeros(3, dtype=[("position", "f4", (2,))]))    # the numpy yardstick
+    rec.position = [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+
+    qr.position = qr.position * 2                       # computed _Field -> writes through (not discarded)
+    rec.position = rec.position * 2
+    assert a.position.tolist() == [[2.0, 2.0]]
+    assert b.position.tolist() == [[4.0, 4.0], [6.0, 6.0]]
+    assert qr.position.numpy().tolist() == rec.position.tolist()
+
+    qr.position = np.array([7.0, 8.0], "float32")       # raw (2,) row -> broadcasts to every entity
+    rec.position = np.array([7.0, 8.0], "float32")
+    assert qr.position.numpy().tolist() == rec.position.tolist() == [[7.0, 8.0]] * 3
+
+    qr.position = 0.0                                   # scalar -> every entity
+    assert (a.position == 0).all() and (b.position == 0).all()
+
+    assert "position" not in vars(qr)                   # never shadowed; still served by __getattr__
+    assert isinstance(qr.position, _Field)
+
+    with pytest.raises(ValueError):                     # bad shape -> numpy rules, like recarray
+        qr.position = np.array([1.0, 2.0, 3.0], "float32")
 
 
 def test_repr_renders_and_reports_entity_count():
