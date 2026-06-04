@@ -28,20 +28,17 @@ class HasColor(Component):
 
 class RenderSystem(TickSystem):
     def on_tick(self, world: World):
-        entity_pools = world.query_and((HasRadius, HasPosition2D, HasColor))
-        for pool in entity_pools:
-            for position, radius, color in zip(pool.position, pool.radius, pool.color):
-                rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
+        qr = world.query_and((HasRadius, HasPosition2D, HasColor))
+        for position, radius, color in zip(qr.position, qr.radius, qr.color):
+            rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
 
 class CollisionSystem(TickSystem):
     def on_tick(self, world: World):
-        entity_pools = world.query_and((HasPosition2D, HasRadius, HasColor))
-
-        for pool in entity_pools:
-            _red = np.array(rl.RED, dtype="int32")[None].repeat(len(pool), axis=0)
-            _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(pool), axis=0)
-            collisions = self._get_collisions(pool.position, pool.radius)
-            pool.color[:] = np.where(collisions, _red, _black)
+        qr = world.query_and((HasPosition2D, HasRadius, HasColor))
+        _red = np.array(rl.RED, dtype="int32")[None].repeat(len(qr), axis=0)
+        _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(qr), axis=0)
+        collisions = self._get_collisions(qr.position.numpy(), qr.radius.numpy())
+        qr.color[:] = np.where(collisions, _red, _black)
 
     def _get_collisions(self, positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
         dists = np.sqrt(((positions[:, None] - positions[None])**2).sum(-1))  # (N, 1, 2) - (1, N, 2) -> ... -> (N, N)

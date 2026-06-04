@@ -75,7 +75,7 @@ def test_entity_lands_in_the_pool_keyed_by_its_components():
 
     key = world._make_key((HasPosition,))
     assert key in world.pools                                   # a pool with that exact key exists
-    assert world.pools[key] is world.query_and((HasPosition,))[0]  # and query_and finds the same pool
+    assert world.pools[key] is world.query_and((HasPosition,)).pool_list[0]  # and query_and finds the same pool
 
 
 def test_added_entity_field_values_are_stored():
@@ -85,7 +85,7 @@ def test_added_entity_field_values_are_stored():
     world.add_entity(components=(HasPosition,), position=np.array([1.5, 2.5], "float32"))
     world.update()
 
-    pool = world.query_and((HasPosition,))[0]
+    pool = world.query_and((HasPosition,)).pool_list[0]
     np.testing.assert_array_equal(pool.position[0], np.array([1.5, 2.5], "float32"))
 
 
@@ -98,7 +98,7 @@ def test_same_archetype_entities_share_a_single_pool():
     world.update()
 
     assert len(world.pools) == 1                                # still just one archetype
-    pool = world.query_and((HasPosition,))[0]
+    pool = world.query_and((HasPosition,)).pool_list[0]
     assert len(pool) == 3
     np.testing.assert_array_equal(pool.position, np.array([[0, 0], [1, 1], [2, 2]], "float32"))
 
@@ -113,7 +113,7 @@ def test_distinct_archetypes_get_distinct_pools():
     world.update()
 
     assert len(world.pools) == 2
-    assert len(world.query_and((HasPosition,))[0]) >= 1
+    assert len(world.query_and((HasPosition,)).pool_list[0]) >= 1
     pos_vel_pool = world.pools[world._make_key((HasPosition, HasVelocity))]
     assert len(pos_vel_pool) == 1
 
@@ -152,7 +152,7 @@ def test_query_and_is_empty_when_no_pool_has_the_component():
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.update()
 
-    assert world.query_and((HasVelocity,)) == []
+    assert len(world.query_and((HasVelocity,))) == 0
 
 
 def test_entities_are_conserved_across_pools():
@@ -174,7 +174,7 @@ def test_remove_entity_leaves_empty_pool():
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
     world.update()
-    pool = world.query_and((HasPosition,))[0]
+    pool = world.query_and((HasPosition,)).pool_list[0]
     assert len(pool) == 1
 
     world.remove_entity(eid)                                   # last entity out -> pool becomes empty
@@ -212,7 +212,7 @@ def test_remove_last_index_drops_only_that_entity():
     world.remove_entity(last)
     world.update()
 
-    pool = world.query_and((HasPosition,))[0]
+    pool = world.query_and((HasPosition,)).pool_list[0]
     assert len(pool) == 1
     assert last not in world._eid_to_pool_ix                   # removed id gone, not pointing at a dead slot
     assert world._eid_to_pool_ix == {keep: (pool, 0)}          # only the survivor remains, at its row
@@ -231,7 +231,7 @@ def test_remove_middle_entity_repoints_swapped_id():
     world.remove_entity(b)                                     # c slides from slot 2 into slot 1
     world.update()
 
-    pool = world.query_and((HasPosition,))[0]
+    pool = world.query_and((HasPosition,)).pool_list[0]
     assert len(pool) == 2
     assert b not in world._eid_to_pool_ix                      # removed id gone
     assert world._eid_to_pool_ix[a] == (pool, 0)               # a untouched
@@ -264,7 +264,7 @@ def test_id_resolves_after_sibling_removed():
     world.remove_entity(b)                                      # must drop b ([2,2]), not c, despite the earlier shuffle
     world.update()
 
-    pool = world.query_and((HasPosition,))[0]
+    pool = world.query_and((HasPosition,)).pool_list[0]
     assert len(pool) == 1
     np.testing.assert_array_equal(pool.position[0], [3.0, 3.0])  # only c remains
 
@@ -373,7 +373,7 @@ def test_remove_entity_by_id():
     world.update()
 
     assert sum(len(pool) for pool in world.pools.values()) == 1            # counts conserved
-    pool = world.query_and((HasPosition,))[0]
+    pool = world.query_and((HasPosition,)).pool_list[0]
     np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])            # the kept entity remains
 
 

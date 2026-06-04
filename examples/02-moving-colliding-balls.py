@@ -66,41 +66,36 @@ class HasColor(Component):
 
 class RenderSystem(TickSystem):
     def on_tick(self, world: World):
-        entity_pools = world.query_and((HasRadius, HasPosition2D, HasColor))
-        for pool in entity_pools:
-            for position, radius, color in zip(pool.position, pool.radius, pool.color):
-                rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
+        qr = world.query_and((HasRadius, HasPosition2D, HasColor))
+        for position, radius, color in zip(qr.position, qr.radius, qr.color):
+            rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
 
 class MotionSystem(TickSystem):
     def on_tick(self, world: World):
-        entity_pools = world.query_and((HasMotion2D, HasPosition2D))
-        for pool in entity_pools:
-            pool.position[:] = pool.position + pool.velocity * DT # (N, 2)
+        qr = world.query_and((HasMotion2D, HasPosition2D))
+        qr.position[:] = qr.position + qr.velocity * DT # (N, 2)
 
 class WallBounceSystem(TickSystem):
     def __init__(self, scene_size: tuple[int, int]):
         self.scene_size = scene_size
 
     def on_tick(self, world: World):
-        entity_pools = world.query_and((HasPosition2D, HasMotion2D, HasRadius))
-
-        for pool in entity_pools:
-            mask_velocity = np.zeros((len(pool.position), 2), bool)
-            mask_velocity[:, 0] = np.logical_or(pool.position[:, 0] - pool.radius[:, 0] < 0,
-                                                pool.position[:, 0] + pool.radius[:, 0] > self.scene_size[0])
-            mask_velocity[:, 1] = np.logical_or(pool.position[:, 1] - pool.radius[:, 0] < 0,
-                                                pool.position[:, 1] + pool.radius[:, 0] > self.scene_size[1])
-            pool.velocity[:] = np.where(mask_velocity, -pool.velocity, pool.velocity)
+        qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius))
+        mask_velocity = np.zeros((len(qr.position), 2), bool)
+        mask_velocity[:, 0] = np.logical_or(qr.position[:, 0] - qr.radius[:, 0] < 0,
+                                            qr.position[:, 0] + qr.radius[:, 0] > self.scene_size[0])
+        mask_velocity[:, 1] = np.logical_or(qr.position[:, 1] - qr.radius[:, 0] < 0,
+                                            qr.position[:, 1] + qr.radius[:, 0] > self.scene_size[1])
+        qr.velocity[:] = np.where(mask_velocity, -qr.velocity, qr.velocity)
 
 class CollisionDetectionSystem(TickSystem):
     def on_tick(self, world: World):
-        entity_pools = world.query_and((HasPosition2D, HasMotion2D, HasRadius, HasColor))
+        qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius, HasColor))
 
-        for pool in entity_pools:
-            _red = np.array(rl.RED, dtype="int32")[None].repeat(len(pool), axis=0)
-            _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(pool), axis=0)
-            collisions = self._get_collisions(pool.position, pool.radius)
-            pool.color[:] = np.where(collisions, _red, _black)
+        _red = np.array(rl.RED, dtype="int32")[None].repeat(len(qr), axis=0)
+        _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(qr), axis=0)
+        collisions = self._get_collisions(qr.position.numpy(), qr.radius.numpy())
+        qr.color[:] = np.where(collisions, _red, _black)
 
     def _get_collisions(self, positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
         dists = np.sqrt(((positions[:, None] - positions[None])**2).sum(-1))  # (N, 1, 2) - (1, N, 2) -> ... -> (N, N)
