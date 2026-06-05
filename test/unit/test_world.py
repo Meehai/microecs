@@ -608,7 +608,7 @@ def test_migrate_multi_field_component_preserves_all_fields():
 # --- eager id tracking -------------------------------------------------------------------------------------------
 # A structural op on an entity that is NOT currently live fails at the CALL (clear AssertionError), not later inside
 # update() as a cryptic KeyError. "Live" = committed or pending-spawn this tick, minus pending-despawn; World keeps
-# this in _live_ids. add_entity adds the new id; remove_entity removes it; add/remove_component just validate.
+# this in live_ids. add_entity adds the new id; remove_entity removes it; add/remove_component just validate.
 
 
 def test_operate_on_uncommitted_spawn_same_tick():
@@ -779,7 +779,7 @@ def test_get_entity_is_read_only_and_id_still_resolves():
     world.get_entity(eid)
 
     assert eid in world._eid_to_pool_ix                            # lookup intact (a read may not delete the mapping)
-    assert eid in world._live_ids
+    assert eid in world.live_ids
     world.get_entity(eid)                                          # repeatable -> not consumed by the first read
 
     world.remove_entity(eid)                                       # normal lifecycle still works afterwards
@@ -832,7 +832,7 @@ def _assert_pool_ids_invariants(world: World):
         for ix, eid in enumerate(ids):
             assert world._eid_to_pool_ix[eid] == (pool, ix)                             # ids[ix] really sits at row ix
             seen.add(eid)
-    assert seen == world._live_ids                                                      # exactly the live entities
+    assert seen == world.live_ids                                                      # exactly the live entities
 
 
 def test_pool_ids_stay_aligned_through_random_churn():
@@ -844,7 +844,7 @@ def test_pool_ids_stay_aligned_through_random_churn():
     shadow: dict[int, dict] = {}   # eid -> {field_name: data} we believe the world holds
 
     for _ in range(500):
-        live = list(world._live_ids)
+        live = list(world.live_ids)
         roll = rng.random()
         if roll < 0.45 or not live:                                  # add a new entity (random archetype)
             comps = rng.sample(list(_CHURN_COMPONENTS), rng.randint(1, 3))
@@ -880,7 +880,7 @@ def test_pool_ids_stay_aligned_through_random_churn():
             for name, value in fields.items():
                 np.testing.assert_array_equal(entity[name], value)  # each id keeps its OWN data through every swap
 
-    assert len(world._live_ids) > 0                                  # sanity: the churn left a populated world
+    assert len(world.live_ids) > 0                                  # sanity: the churn left a populated world
 
 
 # --- QueryResult.entity_ids: a flat (N,) integer array, pool-by-pool aligned with the qr.field parts -----------

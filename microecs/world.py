@@ -35,7 +35,7 @@ class World:
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ids: dict[Pool, list[EntityId]] = {}
         self._last_id: EntityId = -1
-        self._live_ids: set[EntityId] = set() # 'eager' mode ids so e.g. calling remove_entity twice before update fails
+        self.live_ids: set[EntityId] = set() # 'eager' mode ids so e.g. calling remove_entity twice before update fails
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer: list[Callable] = []
         self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # include+exclude key
@@ -56,7 +56,7 @@ class World:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
         self._check_components_against_pool(components, **kwargs)
         self._last_id += 1
-        self._live_ids.add(self._last_id)
+        self.live_ids.add(self._last_id)
         self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id,
                                             components=components, **kwargs))
         logger.debug(f"Created entity. ID: {self._last_id}. Components: {[c.__name__ for c in components]}")
@@ -64,8 +64,8 @@ class World:
 
     def remove_entity(self, entity_id: EntityId):
         """Removes an entity based on its unique entity id. Lazy; call update()"""
-        assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
-        self._live_ids.remove(entity_id)
+        assert entity_id in self.live_ids, f"Entity id: {entity_id} not in {self.live_ids=}"
+        self.live_ids.remove(entity_id)
         self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
 
     def get_entity(self, entity_id: EntityId) -> tuple[EntityData, list[ComponentType]]:
@@ -78,13 +78,13 @@ class World:
 
     def add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
         """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
-        assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
+        assert entity_id in self.live_ids, f"Entity id: {entity_id} not in {self.live_ids=}"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_add_component, entity_id=entity_id, component=component, **kwargs))
 
     def remove_component(self, entity_id: EntityId, component: ComponentType):
         """Removes a component from an entity given its id. Lazy; call update()"""
-        assert entity_id in self._live_ids, f"Entity id: {entity_id} not in {self._live_ids=}"
+        assert entity_id in self.live_ids, f"Entity id: {entity_id} not in {self.live_ids=}"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
@@ -209,7 +209,7 @@ class World:
                 assert f.name not in qr_reserved_names, f"Field '{f.name}' in {qr_reserved_names}"
 
     def __len__(self):
-        return len(self._live_ids)
+        return len(self.live_ids)
 
     def __repr__(self):
         return (f"[World]\n- Entities: {len(self)} (last id: {self._last_id})"
