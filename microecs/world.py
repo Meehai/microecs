@@ -1,6 +1,7 @@
 """world.py - The world container for ECS. It manages all the pools (one per archetype). Entities are id-based."""
 from typing import Callable, get_type_hints
 from functools import partial
+from dataclasses import fields
 import numpy as np
 
 from .pool import Pool
@@ -23,12 +24,13 @@ class World:
         # components management
         self.component_names = [x.__name__ for x in components]
         self.component_types = list(components)
-        self.component_to_bit: dict[type, int] = {t: 2**i for i, t in enumerate(components)} # unique bit for querying
-        self.component_to_shapes: dict[type, list[Shape]] = {
-            t: [f.metadata["shape"] for f in t.__dataclass_fields__.values()] for t in components}
-        self.component_to_dtypes: dict[type, list[str]] = {
-            t: [f.metadata["dtype"] for f in t.__dataclass_fields__.values()] for t in components}
-        self.component_to_field_names: dict[type, list[str]] = {t: list(t.__dataclass_fields__) for t in components}
+        self.component_to_bit: dict[ComponentType, int] = {t: 2**i for i, t in enumerate(components)} # bit for querying
+        self.component_to_shapes: dict[ComponentType, list[Shape]] = {
+            c: [f.metadata["shape"] for f in fields(c)] for c in components}
+        self.component_to_dtypes: dict[ComponentType, list[str]] = {
+            c: [f.metadata["dtype"] for f in fields(c)] for c in components}
+        self.component_to_field_names: dict[ComponentType, list[str]] = {
+            c: [f.name for f in fields(c)] for c in components}
         # entity id management
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ids: dict[Pool, list[EntityId]] = {}
@@ -175,10 +177,10 @@ class World:
 
     def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
         if (key := self._make_key(components)) not in self.pools:
-            fields = sum([self.component_to_field_names[component] for component in components], []) # merge fields
+            _fields = sum([self.component_to_field_names[component] for component in components], []) # merge fields
             shapes = sum([self.component_to_shapes[component] for component in components], []) # merge shapes
             dtypes = sum([self.component_to_dtypes[component] for component in components], []) # merge dtypes
-            self.pools[key] = Pool(fields, shapes, dtypes)
+            self.pools[key] = Pool(_fields, shapes, dtypes)
             self.pool_to_components[self.pools[key]] = components
         return self.pools[key]
 
@@ -190,18 +192,20 @@ class World:
         return key
 
     def _check_components(self, components: list[ComponentType]):
-        _query_result_reserved_names = _qres = sorted(vars(QueryResult([], {}, {}, [])))
-        _dtypes = {"float32", "int32", "bool", "str", "object"}
+        qr_reserved_names = _qres = sorted(vars(QueryResult([], {}, {}, [])))
+        dtypes = {"float32", "int32", "bool", "str", "object"}
+        expected_fields = {"shape", "dtype", *self.extra_field_metadata}
 
         for component in components:
-            assert hasattr(component, "__dataclass_fields__"), f"Component '{component}' is not a dataclass"
+            cn = component.__name__
+            assert hasattr(component, "__dataclass_fields__"), f"Component '{cn}' is not a dataclass"
             hints = get_type_hints(component) # make it work with from __future__ import annotations
-            for field_name, _field in component.__dataclass_fields__.items():
-                assert hints[field_name] is np.ndarray, f"Field '{field_name}' of '{component=}' not an array: {_field}"
-                assert _field.metadata.keys() == {"shape", "dtype", *self.extra_field_metadata}, _field.metadata
-                assert isinstance(_field.metadata["shape"], tuple), _field.metadata["shape"]
-                assert isinstance(fmd := _field.metadata["dtype"], str) and fmd in _dtypes, f"{fmd} not in {_dtypes}"
-                assert field_name not in _query_result_reserved_names, f"Field '{field_name}' in {_qres}"
+            for f in fields(component):
+                assert hints[f.name] is np.ndarray, f"Field '{f.name}' of '{component=}' not an array: {f}"
+                assert f.metadata.keys() == (ef:=expected_fields), f"Field {f.name}: {f.metadata} vs {ef}"
+                assert isinstance(f.metadata["shape"], tuple), f.metadata["shape"]
+                assert isinstance(fmd := f.metadata["dtype"], str) and fmd in dtypes, f"{fmd} not in {dtypes}"
+                assert f.name not in qr_reserved_names, f"Field '{f.name}' in {qr_reserved_names}"
 
     def __len__(self):
         return len(self._live_ids)
