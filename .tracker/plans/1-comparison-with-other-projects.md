@@ -19,9 +19,11 @@ query view) is **rare**: of ~15 Python ECS libraries surveyed, only two others d
 - **Efficient?** Yes, for bulk same-archetype numeric work — 1–2 orders of magnitude over the
   per-entity Python loops that esper/snecs/tcod-ecs/ecs-pattern use.
 - **Good?** Yes — clean single-responsibility split, strong tests, careful numpy-protocol impl.
-- **Nice?** Mostly. Two ergonomic taxes: verbose component defs (shape/dtype metadata leaks),
-  and AND-only queries.
-- **Biggest gap:** query expressiveness (no `none_of` / optional / tags).
+- **Nice?** Mostly. One ergonomic tax left: verbose component defs (shape/dtype metadata leaks).
+  Query expressiveness — once the biggest gap — now does **AND + NOT** (`exclude=`) and **tags**.
+- **Biggest gap (mostly closed):** query NOT (`exclude=`) and tag components **shipped**; only `any_of`
+  (OR) / optional remain, and those are **deferred by choice** (no current need; they'd break the
+  aligned cross-pool column — see Part 4).
 - **Best-in-class trait:** all four structural ops deferred through one commit point.
 
 ---
@@ -33,8 +35,8 @@ query view) is **rare**: of ~15 Python ECS libraries surveyed, only two others d
 | Mechanism | Where | Verdict |
 |---|---|---|
 | SoA storage, one numpy array per field per archetype | `pool.py:23` | ✅ cache-friendly, the whole point |
-| Bitmask archetype keys, subset query `(arch & key) == key` | `world.py:90` | ✅ simple, correct |
-| Query result **cached** between updates | `world.py:85`, `world.py:45` | ✅ steady-state queries are O(1) |
+| Bitmask keys; match `(arch & inc) == inc and (arch & exc) == 0` (AND + NOT) | `world.py:110` | ✅ simple, correct |
+| Query result **cached** between updates (keyed by include+exclude) | `world.py:98`, `world.py:51` | ✅ steady-state queries are O(1) |
 | Deferred command buffer (no iterator invalidation) | `world.py:38-45` | ✅ same approach as flecs/bevy |
 | Vectorized cross-pool write | `query_result.py:56-71` | ✅ the differentiator |
 
@@ -100,7 +102,9 @@ class Velocity(xx.Component):
     value: xx.Vec2
 ```
 
-**(b) Query is AND-only** (`query_and`). No `without` / optional / tags. Biggest gap (see Part 4).
+**(b) Query expressiveness** — *was* AND-only; now `world.query(A, B, exclude=[C, D])` does **AND + NOT**,
+and field-less **tags** work as archetype bits (`class Frozen(Component): pass`). `any_of` (OR) / optional
+are deferred by choice (Part 4).
 
 ---
 
@@ -159,13 +163,15 @@ qr.position[:] = qr.position + qr.velocity * DT
 
 Nobody else defers all four ops through one commit point. **Keep this — genuine strength.**
 
-### Query expressiveness — microecs is weakest
+### Query expressiveness — microecs now does AND + NOT + tags
 ```python
-microecs:   world.query_and((A, B))                            # AND only
+microecs:   world.query(A, B, exclude=[C, D])                  # AND + NOT (+ field-less tags)
 snecs:      query([A]).filter((B | C) & ~D)                    # AND / OR / NOT
 tcod-ecs:   registry.Q.all_of([A]).none_of([B]).any_of([C])    # AND / NOT / OR + relations + tags
 flecs:      world.query("A, B, !C, ?D")                        # full DSL + relationships
 ```
+Only `any_of` (OR) / optional are still missing vs snecs/tcod-ecs — **deferred by choice** (Part 4); the
+rest (relationships, query DSL) are explicit non-goals.
 
 ---
 
@@ -173,19 +179,18 @@ flecs:      world.query("A, B, !C, ?D")                        # full DSL + rela
 
 ### Need (prioritized)
 
-1. **Query exclusion (`none_of`)** — the #1 gap. Target API `query_and((A, B), none_of=(C,))`. The
-   bitmask makes it cheap: a second `none_of` mask + require `(arch & none_mask) == 0` alongside the
-   existing `(arch & key) == key` (`world.py:90`). Clean because exposed fields stay exactly the
-   `all_of` fields → the contiguous `_Field` view is unaffected. High value, low complexity, grug.
-   → **task 8.** Note: **`any_of` (OR) and optional are NOT this task** — an OR/optional component is
-   present in some matched pools but not others, which breaks the aligned cross-pool column; that
-   needs a separate design.
-2. **Zero-size tag components** (`Player`, `Frozen`, `Dead`) — **already work** (verified by
-   `test/manual/tag-components-probe/probe.py`): a field-less `@dataclass` component is a valid
-   archetype bit with no pool array; pure-tag entities, tag-as-filter, and tag migration all pass
-   today. So the work is **tests + README**, not implementation. → **task 9.**
+1. ✅ **Query exclusion** — **shipped** (task 8, done 2026-06-05). Landed as `query(A, B, exclude=[C, D])`
+   (renamed from the proposed `query_and(..., none_of=)`): a second `exclude` mask + `(arch & exc) == 0`
+   alongside `(arch & inc) == inc` (`world.py:110`), composite `(include, exclude)` cache key. Exposed
+   fields stay the include fields → the `_Field` view is unaffected. (A cache-hit bug — returning the
+   `_cache` dict instead of the entry — was found and fixed alongside.)
+2. ✅ **Zero-size tag components** (`Player`, `Frozen`, `Dead`) — **shipped** (task 9, done 2026-06-05).
+   Already worked (a field-less component is a valid archetype bit); pinned with tests + documented in
+   README. Compose naturally with `exclude=` (e.g. `query(Position, exclude=[Frozen])`).
 3. **Single-component get/set by id** without copying all fields — completes the "object-like ops"
-   story `get_entity` started. Minor.
+   story `get_entity` started. **Still open, minor** — `World` exposes no `get_component`/`set_component`;
+   `get_entity` still copies all fields (`world.py:68`). (Adjacent, shipped: task 10's `qr.field[i]`
+   single-entity read on a QueryResult — a different access path.) The only remaining "need" item.
 
 ### Don't need (scope discipline — matches CLAUDE.md minimalism)
 
@@ -196,19 +201,27 @@ flecs:      world.query("A, B, !C, ?D")                        # full DSL + rela
 - **System scheduler / dependency graph / parallelism** — systems are deliberately a convention.
   xecs's Rust parallelism is exactly what makes it un-minimal.
 - **Serialization** — nice-to-have, not core. `object` dtype + pickle covers escape hatches.
+- **`any_of` (OR) / optional components** — **deferred by choice** (not "won't do", just "not yet"): no
+  current use case, and they break microecs's aligned cross-pool `_Field` column — a component present in
+  some matched pools but absent in others can't form one `(N, …)` view. Revisit only when a concrete need
+  lands (would need per-pool optional views or a sentinel fill).
 
 ---
 
 ## Part 5 — Recommended follow-up tasks
 
-1. **[task 8](../todos/open/8-query-exclusion-none-of/TASK.md)** — `none_of` exclusion on `query_and`
-   (open, Priority 1). Bitmask `none_mask` + composite cache key. `any_of`/optional explicitly
-   deferred (SoA field-misalignment). Implementation task for the IC; tester writes the specs.
-2. **[task 9](../todos/open/9-tag-components/TASK.md)** — zero-field tag components (open, Priority 2).
-   Already work; task is to pin them with tests + document them. Tester-heavy.
+1. ✅ **[task 8](../todos/done/8-query-exclusion-none-of/TASK.md)** — query exclusion. **Done (2026-06-05).**
+   Shipped as `query(A, B, exclude=[C, D])` + composite cache key; a cache-hit bug was fixed alongside.
+2. ✅ **[task 9](../todos/done/9-tag-components/TASK.md)** — zero-field tag components. **Done (2026-06-05).**
+   Pinned with tests + a README note.
 3. **README "Comparison / positioning" section** — *(not yet filed)* name xecs + manifoldx as the
    closest peers; state the honest perf caveat (vectorization wins *within* archetype; per-entity
    libs win on churn / branchy logic; native ECS win on raw structural ops).
+4. **Single-component get/set by id** — *(not filed; minor)* the one remaining "need" from Part 4: a
+   `get_component`/`set_component` fast path so reading one field for one entity doesn't copy the whole
+   entity via `get_entity`.
+5. **(deferred) `any_of` / optional query** — *(not filed; no current need)* per Part 4; revisit when a
+   concrete use case appears.
 
 ---
 

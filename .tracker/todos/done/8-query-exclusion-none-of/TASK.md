@@ -1,7 +1,49 @@
 # Query exclusion — `none_of` on `query_and`
 
 **Created**: 2026-06-04
+**Updated**: 2026-06-05 (done)
 **Priority**: 1
+**Status**: ✅ Done (2026-06-05) — shipped as `query(*include, exclude=[...])` (the larger rename option, **no**
+`query_and` alias kept): `query_and` → `query`, include is varargs, exclusion is a keyword-only list `exclude`.
+Cache keyed by the composite `(include_key, exclude_key)`. A cache-hit-returns-the-dict bug found en route was
+fixed too. 134 tests green.
+
+## What landed
+
+**API** (`world.py:88-119`, dev) — diverged from the proposal below (`query_and(..., none_of=)`):
+
+```python
+def query(self, *include: ComponentType, exclude: list[ComponentType] | None = None) -> QueryResult:
+    include_key = self._make_key(include)
+    exclude_key = self._make_key(exclude or [])
+    if (key := (include_key, exclude_key)) in self._cache:
+        return self._cache[key]
+    ...
+    if (archetype_key & include_key) == include_key and (archetype_key & exclude_key) == 0:
+        res.append(archetype_pool)
+```
+
+- Call sites are `query(A, B, exclude=[C, D])`. The tuple/list include form was **dropped**; tests, both
+  examples, and the README were migrated to varargs.
+- Cache key is the composite `(include_key, exclude_key)` — same-include / different-exclude no longer collide.
+- Fixed in passing: the cache **hit** returned the whole `_cache` dict instead of `self._cache[key]`; 3
+  pre-existing cache tests were red because of it.
+
+**Tests** (tester, `test/unit/test_world.py`) — the checklist below, by the name actually shipped:
+
+| task checklist item | shipped test |
+|---|---|
+| excludes_archetype | `test_query_exclude_drops_pools_that_carry_the_excluded_component`, `test_query_exclude_multiple_components` |
+| empty_is_unchanged | `test_query_exclude_unmatched_component_is_a_noop`, `test_query_exclude_none_matches_empty_exclude` |
+| spans_multiple_pools | `test_query_exclude_spans_multiple_pools` |
+| cache_keyed_separately | `test_query_include_and_exclude_are_distinct_cache_entries` |
+| cache_invalidated_on_mutation | `test_query_exclude_cache_invalidated_on_mutation` |
+| unregistered_component_raises | `test_query_exclude_unregistered_component_raises` |
+| contradiction_is_empty | `test_query_exclude_contradiction_is_empty` |
+| with_tag_component | `test_query_exclude_tag_component` |
+
+> Naming note: the title and the design below say `query_and` / `none_of` (the original proposal). The code
+> shipped as `query` / `exclude`. Kept verbatim for history.
 
 ## Why
 

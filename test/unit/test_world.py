@@ -247,6 +247,67 @@ def test_query_exclude_none_matches_empty_exclude():
     assert world.query(HasPosition, exclude=None) is world.query(HasPosition, exclude=[])
 
 
+def test_query_exclude_spans_multiple_pools():
+    """exclude can leave more than one surviving archetype. With {Pos}, {Pos,Vel}, {Pos,Frozen}, excluding
+    Frozen keeps the first two pools; a vectorised write through qr.position scatters back per pool and
+    entity_ids stays aligned with the rows."""
+    world = World(components=[HasPosition, HasVelocity, Frozen])
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    b = world.add_entity(components=(HasPosition, HasVelocity),
+                         position=np.array([2.0, 2.0], "float32"), velocity=np.array([0.0, 0.0], "float32"))
+    world.add_entity(components=(HasPosition, Frozen), position=np.array([3.0, 3.0], "float32"))
+    world.update()
+
+    qr = world.query(HasPosition, exclude=[Frozen])
+    assert len(qr.pool_list) == 2                              # two archetypes survive the Frozen exclusion
+    assert sorted(qr.entity_ids.tolist()) == sorted([a, b])    # the Frozen entity is gone
+
+    qr.position[:] = qr.position + 10.0                        # vectorised write across both surviving pools
+    for eid, pos in zip(qr.entity_ids, qr.position):           # scattered back, id-aligned per pool
+        np.testing.assert_array_equal(world.get_entity(int(eid))[0]["position"], pos)
+
+
+def test_query_exclude_cache_invalidated_on_mutation():
+    """The excluding query is cached, but a mutating update() drops it: after a Frozen entity is added and
+    committed, re-querying with exclude=[Frozen] is a fresh object that still excludes it."""
+    world = World(components=[HasPosition, Frozen])
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    before = world.query(HasPosition, exclude=[Frozen])
+    assert before.entity_ids.tolist() == [a]
+
+    world.add_entity(components=(HasPosition, Frozen), position=np.array([2.0, 2.0], "float32"))
+    world.update()                                             # mutating commit -> cache cleared
+    after = world.query(HasPosition, exclude=[Frozen])
+
+    assert after is not before                                 # fresh object, not the stale cached one
+    assert after.entity_ids.tolist() == [a]                    # the new Frozen entity is still excluded
+
+
+def test_query_exclude_unregistered_component_raises():
+    """Excluding a component the world never registered is an error, surfaced by _make_key's assert -- the
+    same guard that protects the include side. (HasRadius is not registered in this world.)"""
+    world = World(components=[HasPosition])
+    world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    with pytest.raises(AssertionError, match="not in"):
+        world.query(HasPosition, exclude=[HasRadius])
+
+
+def test_query_exclude_contradiction_is_empty():
+    """include and exclude overlapping is a contradiction: a pool can't both have and lack HasPosition, so the
+    result is empty -- not a crash. (archetype & exclude) != 0 for every otherwise-matching pool."""
+    world = World(components=[HasPosition])
+    world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    qr = world.query(HasPosition, exclude=[HasPosition])
+    assert len(qr) == 0
+    assert qr.entity_ids.tolist() == []
+
+
 def test_entities_are_conserved_across_pools():
     """Summing len over all pools equals the number of entities added."""
     world = World(components=[HasPosition, HasVelocity])
