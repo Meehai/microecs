@@ -36,7 +36,7 @@ class World:
         self._live_ids: set[EntityId] = set() # 'eager' mode ids so e.g. calling remove_entity twice before update fails
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer: list[Callable] = []
-        self._cache: dict[PoolKey, QueryResult] = {}
+        self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # include+exclude key
         logger.debug(f"Created scene with components: {self.component_names}")
 
     # public api
@@ -85,20 +85,34 @@ class World:
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
-    def query_and(self, component_types: list[ComponentType]) -> QueryResult:
-        """returns A QueryResult object with the entities that have all the requested components (entity ids too)."""
+    def query(self, *include: ComponentType, exclude: list[ComponentType] | None = None) -> QueryResult:
+        """
+        Queries the world for entities that match the include set of components.
+        Syntax: `world.query(A, B, exclude=[C, D])` is, in logic form, a chain of 'ands': `A & B & ~C & ~D`.
+        Return: A `QueryResult` object with the entities that have all the requested components. Has `EntityIds` too.
+        """
+
         # Note: we can cache the queries. The only time it can get invalidated (via public API) is at update().
-        if (key := self._make_key(component_types)) in self._cache:
+        include_key = self._make_key(include)
+        exclude_key = self._make_key(exclude or [])
+        if (key := (include_key, exclude_key)) in self._cache:
             return self._cache[key]
 
+        # archetype_key = (1 0 0 1 1) &
+        #           key = (1 0 0 0 1)
+        #              -> (1 0 0 0 1) OK
+        # but
+        # archetype_key = (1 0 0 1 1) &
+        #           key = (1 0 1 0 0)
+        #              -> (1 0 0 0 0) NOT OK
         res = []
         for archetype_key, archetype_pool in self.pools.items():
-            if (archetype_key & key) == key: # key is subset of archetype_key
+            if (archetype_key & include_key) == include_key and (archetype_key & exclude_key) == 0:
                 res.append(archetype_pool)
 
-        field_names  = sum([self.component_to_field_names[c] for c in component_types], [])
-        field_shapes = dict(zip(field_names, sum([self.component_to_shapes[c] for c in component_types], [])))
-        field_dtypes = dict(zip(field_names, sum([self.component_to_dtypes[c] for c in component_types], [])))
+        field_names = sum([self.component_to_field_names[c] for c in include], [])
+        field_shapes = dict(zip(field_names, sum([self.component_to_shapes[c] for c in include], [])))
+        field_dtypes = dict(zip(field_names, sum([self.component_to_dtypes[c] for c in include], [])))
         entity_ids = np.array(sum((self._pool_ids[p] for p in res), []), dtype="int64")
 
         self._cache[key] = QueryResult(res, field_shapes=field_shapes, field_dtypes=field_dtypes, entity_ids=entity_ids)

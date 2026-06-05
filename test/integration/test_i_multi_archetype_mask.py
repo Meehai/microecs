@@ -32,7 +32,7 @@ class WallBounceSystem:
         self.scene_size = scene_size
 
     def __call__(self, world):
-        qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius))
+        qr = world.query(HasPosition2D, HasMotion2D, HasRadius)
         mask_velocity = np.zeros((len(qr.position), 2), bool)
         mask_velocity[:, 0] = np.logical_or(qr.position[:, 0] - qr.radius[:, 0] < 0,
                                             qr.position[:, 0] + qr.radius[:, 0] > self.scene_size[0])

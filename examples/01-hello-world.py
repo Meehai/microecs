@@ -29,13 +29,13 @@ class HasColor(Component):
 
 class RenderSystem:
     def __call__(self, world: World):
-        qr = world.query_and((HasRadius, HasPosition2D, HasColor))
+        qr = world.query(HasRadius, HasPosition2D, HasColor)
         for position, radius, color in zip(qr.position, qr.radius, qr.color):
             rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
 
 class CollisionSystem:
     def __call__(self, world: World):
-        qr = world.query_and((HasPosition2D, HasRadius, HasColor))
+        qr = world.query(HasPosition2D, HasRadius, HasColor)
         _red = np.array(rl.RED, dtype="int32")[None].repeat(len(qr), axis=0)
         _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(qr), axis=0)
         collisions = self._get_collisions(qr.position.numpy(), qr.radius.numpy())

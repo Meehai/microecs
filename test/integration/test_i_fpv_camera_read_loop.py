@@ -2,7 +2,7 @@
 
 robosim drives cameras one entity at a time:
 
-    qr = world.query_and([HasPose, HasFPV])
+    qr = world.query(HasPose, HasFPV)
     for i in range(len(qr)):
         cam, pose = qr.fpv_camera[i].item(), qr.pose[i]
         cam.set_position(position=pose[0:3, 3], up=pose[0:3, 1],
@@ -13,7 +13,6 @@ it's a genuine per-entity loop. These tests drive it over a query that spans two
 iterating the fields (`zip(qr.fpv_camera, qr.pose)`) and by integer index (`qr.pose[i]`), with each `pose` a
 real (4, 4) view sliced by column.
 """
-from abc import ABC, abstractmethod
 from dataclasses import field
 import numpy as np
 
@@ -59,7 +58,7 @@ class FPVCameraSystem:
     Object fields come back as 0-d arrays, so `.item()` unwraps to the camera; `pose` is a (4, 4) view sliced
     by column."""
     def __call__(self, world: World):
-        qr = world.query_and((HasPose, HasFPV))
+        qr = world.query(HasPose, HasFPV)
         for cam, pose in zip(qr.fpv_camera, qr.pose):
             cam.item().set_position(position=pose[0:3, 3], up=pose[0:3, 1],
                                     target=pose[0:3, 3] + pose[0:3, 2])
@@ -100,7 +99,7 @@ def test_object_component_unwraps_with_item_during_iteration():
     """Iterating an object-dtype field yields 0-d arrays; `.item()` hands back the very camera object that was
     stored, not a copy, so calling methods on it mutates the real object."""
     world, cam_a, cam_b = _world_with_two_cameras()
-    qr = world.query_and((HasPose, HasFPV))
+    qr = world.query(HasPose, HasFPV)
 
     cams = [boxed.item() for boxed in qr.fpv_camera]
 
@@ -112,7 +111,7 @@ def test_fpv_camera_indexed_read_matches_robosim_spelling():
     """robosim's indexed spelling: `qr.pose[i]` returns entity i's own (4, 4) pose and `qr.fpv_camera[i].item()`
     returns its camera object, out of whichever pool the entity lives in."""
     world, cam_a, _ = _world_with_two_cameras()
-    qr = world.query_and((HasPose, HasFPV))
+    qr = world.query(HasPose, HasFPV)
 
     pose0 = qr.pose[0]                                      # entity 0's (4, 4) pose
     assert pose0.shape == (4, 4)

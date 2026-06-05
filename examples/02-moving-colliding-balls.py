@@ -67,13 +67,13 @@ class HasColor(Component):
 
 class RenderSystem:
     def __call__(self, world: World):
-        qr = world.query_and((HasRadius, HasPosition2D, HasColor))
+        qr = world.query(HasRadius, HasPosition2D, HasColor)
         for position, radius, color in zip(qr.position, qr.radius, qr.color):
             rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
 
 class MotionSystem:
     def __call__(self, world: World):
-        qr = world.query_and((HasMotion2D, HasPosition2D))
+        qr = world.query(HasMotion2D, HasPosition2D)
         qr.position[:] = qr.position + qr.velocity * DT # (N, 2)
 
 class WallBounceSystem:
@@ -81,7 +81,7 @@ class WallBounceSystem:
         self.scene_size = scene_size
 
     def __call__(self, world: World):
-        qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius))
+        qr = world.query(HasPosition2D, HasMotion2D, HasRadius)
         mask_velocity = np.zeros((len(qr.position), 2), bool)
         mask_velocity[:, 0] = np.logical_or(qr.position[:, 0] - qr.radius[:, 0] < 0,
                                             qr.position[:, 0] + qr.radius[:, 0] > self.scene_size[0])
@@ -91,7 +91,7 @@ class WallBounceSystem:
 
 class CollisionDetectionSystem:
     def __call__(self, world: World):
-        qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius, HasColor))
+        qr = world.query(HasPosition2D, HasMotion2D, HasRadius, HasColor)
 
         _red = np.array(rl.RED, dtype="int32")[None].repeat(len(qr), axis=0)
         _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(qr), axis=0)

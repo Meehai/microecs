@@ -74,8 +74,10 @@ semantics, with sharp edges rejected rather than silently wrong.
   else is `NotImplemented`. Documented, but hit often → forces `.numpy()`.
 - `from typing import Callable, T` (`query_result.py:2`) imports the *private* `typing.T`. Works,
   fragile.
-- `TickSystem.on_tick(self, scene)` (`system.py:9`) names the param `scene`, but examples call
-  `on_tick(world=world)` and override with `(self, world)`. ABC vs. convention disagree. Cosmetic.
+- **Resolved** (was an ABC-vs-convention nit): `system.py` and the `TickSystem` ABC were removed, so a
+  system is now purely a convention — any callable taking `world` (examples use
+  `class XSystem: def __call__(self, world)`). The old `on_tick(self, scene)` param-naming disagreement
+  is gone; `microecs` exports only `Component, Pool, QueryResult, World` (4 primitives).
 
 ### Nice — mostly
 

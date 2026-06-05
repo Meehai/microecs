@@ -31,7 +31,7 @@ from microecs import World, Component
 
 # components
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"}) # 'shape' + 'dtype' are always required
 class HasVelocity(Component):
     velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 class HasColor(Component):
@@ -39,14 +39,14 @@ class HasColor(Component):
 
 # systems: Note they are a convention!
 class RenderSystem:
-    def __call__(self, world: World): # must override
-        query_result = world.query_and((HasPosition, HasColor)) # contiguous-like view of all entities matching
+    def __call__(self, world: World):
+        query_result = world.query(HasPosition, HasColor, exclude=[]) # contiguous-like view of all entities matching
         for position, color in zip(query_result.position, query_result.color): # draw each entity
             DrawEntity(position, color)
 
 class MotionSystem:
-    def __call__(self, world: World): # must override
-        qr = world.query_and((HasPosition, HasVelocity))
+    def __call__(self, world: World):
+        qr = world.query(HasPosition, HasVelocity) # 'exclude' is optional
         qr.position[:] = qr.position + qr.velocity * DT # writes back to all the underlying pools using numpy's rules
         # Alternative for per-pool update. Less ergonomic, but maybe faster in extreme cases as it avoids the _Field obj
         for pool in qr.pool_list:

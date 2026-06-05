@@ -85,7 +85,7 @@ def test_entity_lands_in_the_pool_keyed_by_its_components():
 
     key = world._make_key((HasPosition,))
     assert key in world.pools                                   # a pool with that exact key exists
-    assert world.pools[key] is world.query_and((HasPosition,)).pool_list[0]  # and query_and finds the same pool
+    assert world.pools[key] is world.query(HasPosition).pool_list[0]  # and query finds the same pool
 
 
 def test_added_entity_field_values_are_stored():
@@ -95,7 +95,7 @@ def test_added_entity_field_values_are_stored():
     world.add_entity(components=(HasPosition,), position=np.array([1.5, 2.5], "float32"))
     world.update()
 
-    pool = world.query_and((HasPosition,)).pool_list[0]
+    pool = world.query(HasPosition).pool_list[0]
     np.testing.assert_array_equal(pool.position[0], np.array([1.5, 2.5], "float32"))
 
 
@@ -108,7 +108,7 @@ def test_same_archetype_entities_share_a_single_pool():
     world.update()
 
     assert len(world.pools) == 1                                # still just one archetype
-    pool = world.query_and((HasPosition,)).pool_list[0]
+    pool = world.query(HasPosition).pool_list[0]
     assert len(pool) == 3
     np.testing.assert_array_equal(pool.position, np.array([[0, 0], [1, 1], [2, 2]], "float32"))
 
@@ -123,7 +123,7 @@ def test_distinct_archetypes_get_distinct_pools():
     world.update()
 
     assert len(world.pools) == 2
-    assert len(world.query_and((HasPosition,)).pool_list[0]) >= 1
+    assert len(world.query(HasPosition).pool_list[0]) >= 1
     pos_vel_pool = world.pools[world._make_key((HasPosition, HasVelocity))]
     assert len(pos_vel_pool) == 1
 
@@ -142,8 +142,8 @@ def test_component_order_does_not_create_a_second_pool():
     assert len(next(iter(world.pools.values()))) == 2
 
 
-def test_query_and_returns_all_pools_that_are_supersets():
-    """query_and((HasPosition,)) returns every pool containing HasPosition, not just the pos-only one."""
+def test_query_returns_all_pools_that_are_supersets():
+    """query(HasPosition) returns every pool containing HasPosition, not just the pos-only one."""
     world = World(components=[HasPosition, HasVelocity, HasRadius])
 
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
@@ -151,18 +151,100 @@ def test_query_and_returns_all_pools_that_are_supersets():
                      position=np.array([3.0, 4.0], "float32"), velocity=np.array([5.0, 6.0], "float32"))
     world.update()
 
-    assert len(world.query_and((HasPosition,))) == 2            # both pools contain HasPosition
-    assert len(world.query_and((HasPosition, HasVelocity))) == 1  # only the richer pool has both
+    assert len(world.query(HasPosition)) == 2            # both pools contain HasPosition
+    assert len(world.query(HasPosition, HasVelocity)) == 1  # only the richer pool has both
 
 
-def test_query_and_is_empty_when_no_pool_has_the_component():
+def test_query_is_empty_when_no_pool_has_the_component():
     """Querying a component that no existing pool carries returns no pools."""
     world = World(components=[HasPosition, HasVelocity])
 
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.update()
 
-    assert len(world.query_and((HasVelocity,))) == 0
+    assert len(world.query(HasVelocity)) == 0
+
+
+def test_query_exclude_drops_pools_that_carry_the_excluded_component():
+    """exclude=[HasVelocity] keeps only pools that have HasPosition AND lack HasVelocity: the pos-only entity
+    stays, the pos+vel one is filtered out. Without the exclude both would match."""
+    world = World(components=[HasPosition, HasVelocity])
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.add_entity(components=(HasPosition, HasVelocity),
+                     position=np.array([3.0, 4.0], "float32"), velocity=np.array([5.0, 6.0], "float32"))
+    world.update()
+
+    assert len(world.query(HasPosition)) == 2                       # both pools have HasPosition
+    narrowed = world.query(HasPosition, exclude=[HasVelocity])     # ...but only one lacks HasVelocity
+    assert narrowed.entity_ids.tolist() == [a]
+
+
+def test_query_exclude_tag_component():
+    """The common case: a tag as the exclude filter. query(HasPosition, exclude=[Frozen]) skips every
+    frozen entity and returns only the un-tagged ones."""
+    world = World(components=[HasPosition, Frozen])
+    moving = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.add_entity(components=(HasPosition, Frozen), position=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    qr = world.query(HasPosition, exclude=[Frozen])
+    assert qr.entity_ids.tolist() == [moving]                         # the frozen one is excluded
+
+
+def test_query_exclude_unmatched_component_is_a_noop():
+    """Excluding a component that no matching pool carries removes nothing: the result equals the un-excluded
+    query. exclude only ever subtracts, it can't invent matches."""
+    world = World(components=[HasPosition, HasVelocity])
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    b = world.add_entity(components=(HasPosition,), position=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    qr = world.query(HasPosition, exclude=[HasVelocity])          # no pos-only pool has velocity
+    assert sorted(qr.entity_ids.tolist()) == sorted([a, b])
+
+
+def test_query_exclude_multiple_components():
+    """exclude is satisfied only by pools that carry NONE of the excluded bits. With four archetypes, excluding
+    both HasVelocity and Frozen leaves the single pool that has neither."""
+    world = World(components=[HasPosition, HasVelocity, Frozen])
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.add_entity(components=(HasPosition, HasVelocity),
+                     position=np.array([2.0, 2.0], "float32"), velocity=np.array([0.0, 0.0], "float32"))
+    world.add_entity(components=(HasPosition, Frozen), position=np.array([3.0, 3.0], "float32"))
+    world.add_entity(components=(HasPosition, HasVelocity, Frozen),
+                     position=np.array([4.0, 4.0], "float32"), velocity=np.array([0.0, 0.0], "float32"))
+    world.update()
+
+    qr = world.query(HasPosition, exclude=[HasVelocity, Frozen])
+    assert qr.entity_ids.tolist() == [a]                             # only the pos-only pool survives both filters
+
+
+def test_query_include_and_exclude_are_distinct_cache_entries():
+    """The cache key is (include, exclude), so the same include with and without an exclude are independent
+    entries: each re-query returns its OWN cached object, never the other and never the cache dict itself."""
+    world = World(components=[HasPosition, HasVelocity])
+    world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.add_entity(components=(HasPosition, HasVelocity),
+                     position=np.array([3.0, 4.0], "float32"), velocity=np.array([5.0, 6.0], "float32"))
+    world.update()
+
+    wide = world.query(HasPosition)                               # no exclude -> exclude_key 0
+    narrow = world.query(HasPosition, exclude=[HasVelocity])     # same include, different exclude
+
+    assert wide is not narrow                                        # distinct keys -> distinct entries
+    assert len(wide) == 2 and len(narrow) == 1
+    assert world.query(HasPosition) is wide                       # each key keeps returning its own result
+    assert world.query(HasPosition, exclude=[HasVelocity]) is narrow
+
+
+def test_query_exclude_none_matches_empty_exclude():
+    """exclude=None is the default and means 'exclude nothing' -- identical key to exclude=[], so both hit the
+    same cache entry and return the same object."""
+    world = World(components=[HasPosition])
+    world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    assert world.query(HasPosition, exclude=None) is world.query(HasPosition, exclude=[])
 
 
 def test_entities_are_conserved_across_pools():
@@ -184,7 +266,7 @@ def test_remove_entity_leaves_empty_pool():
 
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
     world.update()
-    pool = world.query_and((HasPosition,)).pool_list[0]
+    pool = world.query(HasPosition).pool_list[0]
     assert len(pool) == 1
 
     world.remove_entity(eid)                                   # last entity out -> pool becomes empty
@@ -222,7 +304,7 @@ def test_remove_last_index_drops_only_that_entity():
     world.remove_entity(last)
     world.update()
 
-    pool = world.query_and((HasPosition,)).pool_list[0]
+    pool = world.query(HasPosition).pool_list[0]
     assert len(pool) == 1
     assert last not in world._eid_to_pool_ix                   # removed id gone, not pointing at a dead slot
     assert world._eid_to_pool_ix == {keep: (pool, 0)}          # only the survivor remains, at its row
@@ -241,7 +323,7 @@ def test_remove_middle_entity_repoints_swapped_id():
     world.remove_entity(b)                                     # c slides from slot 2 into slot 1
     world.update()
 
-    pool = world.query_and((HasPosition,)).pool_list[0]
+    pool = world.query(HasPosition).pool_list[0]
     assert len(pool) == 2
     assert b not in world._eid_to_pool_ix                      # removed id gone
     assert world._eid_to_pool_ix[a] == (pool, 0)               # a untouched
@@ -274,7 +356,7 @@ def test_id_resolves_after_sibling_removed():
     world.remove_entity(b)                                      # must drop b ([2,2]), not c, despite the earlier shuffle
     world.update()
 
-    pool = world.query_and((HasPosition,)).pool_list[0]
+    pool = world.query(HasPosition).pool_list[0]
     assert len(pool) == 1
     np.testing.assert_array_equal(pool.position[0], [3.0, 3.0])  # only c remains
 
@@ -383,7 +465,7 @@ def test_remove_entity_by_id():
     world.update()
 
     assert sum(len(pool) for pool in world.pools.values()) == 1            # counts conserved
-    pool = world.query_and((HasPosition,)).pool_list[0]
+    pool = world.query(HasPosition).pool_list[0]
     np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])            # the kept entity remains
 
 
@@ -753,7 +835,7 @@ def test_query_result_entity_ids_is_flat_and_aligned_across_pools():
                          position=np.array([2.0, 2.0], "float32"), velocity=np.array([8.0, 8.0], "float32"))
     world.update()
 
-    qr = world.query_and((HasPosition,))                           # matches both archetypes -> two pools
+    qr = world.query(HasPosition)                           # matches both archetypes -> two pools
 
     assert isinstance(qr.entity_ids, np.ndarray)
     assert np.issubdtype(qr.entity_ids.dtype, np.integer)
@@ -770,7 +852,7 @@ def test_query_result_entity_ids_supports_flat_array_ops():
     ids = [world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32")) for i in range(4)]
     world.update()
 
-    qr = world.query_and((HasPosition,))
+    qr = world.query(HasPosition)
 
     assert int(qr.entity_ids[0]) in ids                            # entity-axis index -> allowed (unlike _Field)
     assert qr.entity_ids[1:3].shape == (2,)                        # slicing the entity axis -> allowed
@@ -783,7 +865,7 @@ def test_query_result_entity_ids_empty_query_is_empty_flat_array():
     world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
     world.update()
 
-    qr = world.query_and((HasVelocity,))                           # nothing has velocity
+    qr = world.query(HasVelocity)                           # nothing has velocity
 
     assert len(qr) == 0
     assert qr.entity_ids.shape == (0,)
@@ -800,7 +882,7 @@ def test_query_result_entity_ids_track_rows_after_swap_remove():
     world.remove_entity(b)                                         # swap: c slides into b's slot
     world.update()
 
-    qr = world.query_and((HasPosition,))
+    qr = world.query(HasPosition)
 
     assert set(qr.entity_ids.tolist()) == {a, c}
     for eid, pos in zip(qr.entity_ids, qr.position):
@@ -808,14 +890,14 @@ def test_query_result_entity_ids_track_rows_after_swap_remove():
 
 
 def test_query_cache_returns_same_object_between_updates():
-    """Two query_and calls for the same components, with no mutating update between, return the SAME QueryResult
+    """Two query calls for the same components, with no mutating update between, return the SAME QueryResult
     object -- the second is served from the cache, not rebuilt."""
     world = World(components=[HasPosition])
     world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
     world.update()
 
-    first = world.query_and((HasPosition,))
-    second = world.query_and((HasPosition,))
+    first = world.query(HasPosition)
+    second = world.query(HasPosition)
 
     assert first is second
 
@@ -827,9 +909,9 @@ def test_noop_update_keeps_cache():
     world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
     world.update()
 
-    cached = world.query_and((HasPosition,))
+    cached = world.query(HasPosition)
     world.update()                                  # empty buffer -> no structural change
-    again = world.query_and((HasPosition,))
+    again = world.query(HasPosition)
 
     assert again is cached
 
@@ -841,12 +923,12 @@ def test_mutating_update_invalidates_cache():
     a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
     world.update()
 
-    before = world.query_and((HasPosition,))
+    before = world.query(HasPosition)
     assert len(before) == 1
 
     b = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
     world.update()                                  # mutating commit -> cache cleared
-    after = world.query_and((HasPosition,))
+    after = world.query(HasPosition)
 
     assert after is not before
     assert len(after) == 2
@@ -861,12 +943,12 @@ def test_cache_keyed_per_query():
                      position=np.array([0.0, 0.0], "float32"), velocity=np.array([1.0, 1.0], "float32"))
     world.update()
 
-    pos = world.query_and((HasPosition,))
-    vel = world.query_and((HasVelocity,))
+    pos = world.query(HasPosition)
+    vel = world.query(HasVelocity)
 
     assert pos is not vel                           # distinct queries -> distinct cache entries
-    assert world.query_and((HasPosition,)) is pos   # each key returns its own cached result
-    assert world.query_and((HasVelocity,)) is vel
+    assert world.query(HasPosition) is pos   # each key returns its own cached result
+    assert world.query(HasVelocity) is vel
 
 
 def test_new_archetype_appears_after_invalidation():
@@ -877,13 +959,13 @@ def test_new_archetype_appears_after_invalidation():
     world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
     world.update()
 
-    before = world.query_and((HasPosition,))
+    before = world.query(HasPosition)
     assert len(before) == 1                         # only the position-only entity so far
 
     world.add_entity(components=(HasPosition, HasVelocity),                       # brand-new archetype
                      position=np.array([1.0, 1.0], "float32"), velocity=np.array([2.0, 2.0], "float32"))
     world.update()
-    after = world.query_and((HasPosition,))
+    after = world.query(HasPosition)
 
     assert len(after) == 2                           # the new pool is visible after invalidation
 
@@ -897,12 +979,12 @@ def test_no_stale_views_across_realloc():
         world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32"))
     world.update()
 
-    stale = world.query_and((HasPosition,))         # views into the capacity-100 backing array
+    stale = world.query(HasPosition)         # views into the capacity-100 backing array
     assert len(stale) == 100
 
     world.add_entity(components=(HasPosition,), position=np.array([999, 999], "float32"))  # forces _realloc(200)
     world.update()                                  # mutating commit -> cache cleared
-    fresh = world.query_and((HasPosition,))
+    fresh = world.query(HasPosition)
 
     assert fresh is not stale                        # the pre-realloc result is not reused
     assert len(fresh) == 101                          # sees the grown pool
@@ -962,11 +1044,11 @@ def test_tag_component_is_valid_and_queryable():
     pure = world.add_entity((Frozen,))                      # pure tag: no data at all
     world.update()
 
-    qr = world.query_and((HasPosition, Frozen))             # tag as a filter: only the tagged entity, position exposed
+    qr = world.query(HasPosition, Frozen)             # tag as a filter: only the tagged entity, position exposed
     assert qr.entity_ids.tolist() == [tagged]
     np.testing.assert_array_equal(qr.position.numpy(), [[1.0, 2.0]])
 
-    qr_tag = world.query_and((Frozen,))                     # tag-only query spans {Pos,Frozen} + pure {Frozen} pools
+    qr_tag = world.query(Frozen)                     # tag-only query spans {Pos,Frozen} + pure {Frozen} pools
     assert sorted(qr_tag.entity_ids.tolist()) == sorted([tagged, pure])
     assert qr_tag._fields == []                             # a tag exposes no fields
     assert len(qr_tag) == 2
@@ -978,18 +1060,18 @@ def test_tag_component_add_remove_migrates():
     world = World([HasPosition, Frozen])
     eid = world.add_entity((HasPosition,), position=np.array([5.0, 6.0], "float32"))
     world.update()
-    assert world.query_and((Frozen,)).entity_ids.tolist() == []
+    assert world.query(Frozen).entity_ids.tolist() == []
 
     world.add_component(eid, Frozen)                        # tag carries no data
     world.update()
-    assert world.query_and((Frozen,)).entity_ids.tolist() == [eid]
+    assert world.query(Frozen).entity_ids.tolist() == [eid]
     data, comps = world.get_entity(eid)
     np.testing.assert_array_equal(data["position"], [5.0, 6.0])  # data preserved across the migration
     assert Frozen in comps
 
     world.remove_component(eid, Frozen)
     world.update()
-    assert world.query_and((Frozen,)).entity_ids.tolist() == []
+    assert world.query(Frozen).entity_ids.tolist() == []
     data, _ = world.get_entity(eid)
     np.testing.assert_array_equal(data["position"], [5.0, 6.0])  # id stable, data still there
 
@@ -1001,7 +1083,7 @@ def test_zero_dim_array_field_roundtrips():
     world.add_entity((HasScale,), scale=np.array(4.0, "float32"))
     world.update()
 
-    qr = world.query_and((HasScale,))
+    qr = world.query(HasScale)
     np.testing.assert_array_equal(qr.scale.numpy(), [2.5, 4.0])  # (N,) contiguous view over the 0-d field
 
     data, _ = world.get_entity(e0)
