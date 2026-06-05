@@ -2,6 +2,36 @@
 
 **Created**: 2026-06-04
 **Priority**: 3
+**Status**: ✅ Done (2026-06-04) — `range(self.len)[key]` + `searchsorted`, numpy-exact, 120 tests green.
+
+## What landed
+
+`_Field.__getitem__` (`query_result.py:73-77`) handles a bare integer key:
+
+```python
+if isinstance(key, (int, np.integer)):
+    key = range(self.len)[key]                                   # numpy-exact: negative wrap + IndexError on OOB
+    pool_ix = int(np.searchsorted(self._bounds, key, side="right")) - 1
+    return self.parts[pool_ix][key - self._bounds[pool_ix]]
+```
+
+- **numpy-faithful at every boundary** (checked against `np.concatenate(parts)[i]`): negative-in-range wraps,
+  both-sign out-of-range raises `IndexError`, empty query raises `IndexError`. The index rule is delegated to
+  Python's `range`, not re-derived by hand — which is what killed the earlier `% len` wrap / `% 0`
+  ZeroDivision bugs.
+- Returns a **view** into the entity's pool, so single-entity write-through (`qr.pose[i][...] = v`) works with
+  no `__setitem__` change.
+- O(log P) pool lookup via the existing `_bounds`; **no extra state** — the considered O(N) `ix_to_pool_ix`
+  map was dropped.
+- `qr.field[:, k]` still returns a `_Field`; entity slices/masks still raise `TypeError` — unchanged.
+
+All "Done when" criteria met. 120 tests green:
+- `test/unit/test_queryresult.py`: `test_single_entity_read_routes_index_to_right_pool`,
+  `..._returns_a_writeable_view`, `..._positive_out_of_range_raises`,
+  `..._negative_out_of_range_raises_like_numpy`, `..._on_empty_query_raises`; rejection narrowed to
+  slices/masks in `test_entity_axis_index_stays_rejected` / `test_unsupported_ops_are_rejected`.
+- `test/integration/test_i_fpv_camera_read_loop.py`: robosim's FPV loop via iteration + indexed read across
+  two archetypes.
 
 ## Why
 

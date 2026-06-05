@@ -9,8 +9,14 @@ from .component import ComponentType
 from .query_result import QueryResult
 
 class World:
-    """Generic container for pools of components. Newly added components are assigned a unique id and go in a pool"""
-    def __init__(self, components: list[ComponentType]):
+    """
+    Generic container for pools of components. Newly added components are assigned a unique id and go in a pool
+    Parameters
+    - components The list of components that the world accepts
+    - extra_field_metadata The list of required extra metadata for each field besides shape and dtype.
+    """
+    def __init__(self, components: list[ComponentType], extra_field_metadata: list[str] | None = None):
+        self.extra_field_metadata = extra_field_metadata or []
         self._check_components(components)
         self.pools: dict[PoolKey, Pool] = {}
         self.pool_to_components: dict[Pool, list[ComponentType]] = {}
@@ -178,7 +184,7 @@ class World:
             hints = get_type_hints(component) # make it work with from __future__ import annotations
             for field_name, _field in component.__dataclass_fields__.items():
                 assert hints[field_name] is np.ndarray, f"Field '{field_name}' of '{component=}' not an array: {_field}"
-                assert _field.metadata.keys() == {"shape", "dtype"}, _field.metadata
+                assert _field.metadata.keys() == {"shape", "dtype", *self.extra_field_metadata}, _field.metadata
                 assert isinstance(_field.metadata["shape"], tuple), _field.metadata["shape"]
                 assert isinstance(fmd := _field.metadata["dtype"], str) and fmd in _dtypes, f"{fmd} not in {_dtypes}"
                 assert field_name not in _query_result_reserved_names, f"Field '{field_name}' in {_qres}"

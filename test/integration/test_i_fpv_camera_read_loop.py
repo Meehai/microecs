@@ -13,11 +13,11 @@ it's a genuine per-entity loop. These tests drive it over a query that spans two
 iterating the fields (`zip(qr.fpv_camera, qr.pose)`) and by integer index (`qr.pose[i]`), with each `pose` a
 real (4, 4) view sliced by column.
 """
+from abc import ABC, abstractmethod
 from dataclasses import field
 import numpy as np
 
-from microecs import World, TickSystem, Component
-
+from microecs import World, Component
 
 class FakeCamera:
     """Stand-in for robosim's camera: records the last set_position call so the test can read it back."""
@@ -53,12 +53,12 @@ _IDENTITY = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]       # up=+Y (col1), forward=+Z (
 _ROT_X_90 = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]      # up=+Z (col1), forward=-Y (col2)
 
 
-class FPVCameraSystem(TickSystem):
+class FPVCameraSystem:
     """robosim's camera driver, via field iteration.
 
     Object fields come back as 0-d arrays, so `.item()` unwraps to the camera; `pose` is a (4, 4) view sliced
     by column."""
-    def on_tick(self, world: World):
+    def __call__(self, world: World):
         qr = world.query_and((HasPose, HasFPV))
         for cam, pose in zip(qr.fpv_camera, qr.pose):
             cam.item().set_position(position=pose[0:3, 3], up=pose[0:3, 1],
@@ -88,7 +88,7 @@ def test_fpv_camera_per_entity_loop_drives_each_camera_across_two_archetypes():
     pool_b = world.pools[world._make_key((HasFPV, HasPose, HasName))]
     assert len(pool_a) == 1 and len(pool_b) == 1            # the query really spans two pools
 
-    FPVCameraSystem().on_tick(world)
+    FPVCameraSystem()(world)
 
     # cam_a: identity pose at (1,0,0) -> up=+Y, forward=+Z, target = pos + forward
     assert cam_a.seen == ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0])

@@ -8,8 +8,7 @@ the velocities are _Field (per-pool views). Per-pool dispatch splits the full-N 
 from dataclasses import field
 import numpy as np
 
-from microecs import World, TickSystem, Component
-
+from microecs import World, Component
 
 class HasPosition2D(Component):
     position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
@@ -27,12 +26,12 @@ class HasColor(Component):
     color: np.ndarray = field(metadata={"shape": (4,), "dtype": "int32"})
 
 
-class WallBounceSystem(TickSystem):
+class WallBounceSystem:
     """Verbatim idiom from example 02: a raw (N, 2) mask built per column, then a mixed np.where write-back."""
     def __init__(self, scene_size):
         self.scene_size = scene_size
 
-    def on_tick(self, world):
+    def __call__(self, world):
         qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius))
         mask_velocity = np.zeros((len(qr.position), 2), bool)
         mask_velocity[:, 0] = np.logical_or(qr.position[:, 0] - qr.radius[:, 0] < 0,
@@ -67,7 +66,7 @@ def test_full_n_mask_writes_back_across_two_archetypes():
     pool_b = world.pools[world._make_key((HasPosition2D, HasMotion2D, HasRadius, HasColor))]
     assert len(pool_a) == 2 and len(pool_b) == 2          # the query really spans two pools
 
-    WallBounceSystem(scene).on_tick(world)
+    WallBounceSystem(scene)(world)
 
     np.testing.assert_array_equal(pool_a.velocity, [[-3.0, 3.0], [3.0, 3.0]])   # e1 x-bounced, e2 untouched
     np.testing.assert_array_equal(pool_b.velocity, [[-3.0, 3.0], [3.0, -3.0]])  # e3 x-bounced, e4 y-bounced

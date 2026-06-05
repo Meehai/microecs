@@ -11,7 +11,7 @@ in test/unit/test_world.py as eager-validation specs (they should fail at the ca
 from dataclasses import field
 import numpy as np
 
-from microecs import World, TickSystem, Component
+from microecs import World, Component
 
 
 class HasPosition(Component):
@@ -25,39 +25,38 @@ class HasVelocity(Component):
 class HasRadius(Component):
     radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32"})
 
-
-class SpawnSystem(TickSystem):
+class SpawnSystem:
     """Spawns one entity, recording its eager id into `sink` so later systems can act on it this tick."""
     def __init__(self, components, fields, sink):
         self.components, self.fields, self.sink = components, fields, sink
 
-    def on_tick(self, world):
+    def __call__(self, world):
         self.sink.append(world.add_entity(components=self.components, **self.fields))
 
 
-class DespawnSystem(TickSystem):
+class DespawnSystem:
     def __init__(self, ids):
         self.ids = ids
 
-    def on_tick(self, world):
+    def __call__(self, world):
         for eid in list(self.ids):
             world.remove_entity(eid)
 
 
-class AddComponentSystem(TickSystem):
+class AddComponentSystem:
     def __init__(self, ids, component, fields):
         self.ids, self.component, self.fields = ids, component, fields
 
-    def on_tick(self, world):
+    def __call__(self, world):
         for eid in list(self.ids):
             world.add_component(eid, self.component, **self.fields)
 
 
-class RemoveComponentSystem(TickSystem):
+class RemoveComponentSystem:
     def __init__(self, ids, component):
         self.ids, self.component = ids, component
 
-    def on_tick(self, world):
+    def __call__(self, world):
         for eid in list(self.ids):
             world.remove_component(eid, self.component)
 
@@ -65,7 +64,7 @@ class RemoveComponentSystem(TickSystem):
 def _run_systems(world, systems):
     """Run each system's on_tick (queuing structural changes), then commit once -- a single tick."""
     for system in systems:
-        system.on_tick(world)
+        system(world)
     world.update()
 
 

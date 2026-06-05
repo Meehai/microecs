@@ -2,6 +2,25 @@
 
 **Created**: 2026-06-04
 **Priority**: 2
+**Status**: ✅ Done (2026-06-05) — tag behavior pinned by tests + README note; 67 tests green.
+
+## What landed
+
+Field-less tags already worked (the probe proved it); this task **guaranteed** it with tests and
+**documented** it.
+
+- Tests (tester), `test/unit/test_world.py`:
+  - `test_tag_component_is_valid_and_queryable` — `class Frozen(Component): pass` registers with empty
+    field/shape/dtype maps; pure-tag `add_entity((Frozen,))` needs no data; the tag works as a query
+    filter (`(HasPosition, Frozen)` exposes `position`) and as a tag-only query (`(Frozen,)`) spanning
+    the fielded `{Pos,Frozen}` pool and the pure `{Frozen}` pool; `qr._fields == []`; untagged excluded.
+  - `test_tag_component_add_remove_migrates` — `add_component` / `remove_component` of a tag migrates
+    the entity between archetypes and round-trips its data + id.
+- README: the `Component` bullet now states a field-less component is a valid tag.
+
+Coverage note: pins the core matrix, not every sub-test the spec listed. Left out as low-value (flag if
+wanted): the Pool-level field-less grow/shrink past `INITIAL_CAPACITY`, and the two-distinct-tag-
+archetypes case. `none_of` exclusion of tags stays in task 8.
 
 ## Surprise finding (verified, not assumed)
 

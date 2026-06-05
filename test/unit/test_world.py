@@ -37,6 +37,14 @@ class HasLabel(Component):  # object-dtype field: holds one arbitrary Python obj
     label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object"})
 
 
+class Frozen(Component):  # zero-field tag: a marker with no data, queried/filtered on as an archetype bit
+    pass
+
+
+class HasScale(Component):  # 0-d array field: exactly one scalar per entity (shape ())
+    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32"})
+
+
 def test_add_entity_rejects_field_from_an_unrequested_component():
     """An entity declared with only HasPosition may not pass `velocity` (a field of the unrequested HasVelocity).
     Validation is eager: the bad field crashes at the add_entity call, before any update()."""
@@ -914,3 +922,88 @@ def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserv
                                       reserved: field(metadata={"shape": (2,), "dtype": "float32"})})
     with pytest.raises((AssertionError, ValueError)):
         World(components=[bad])
+
+
+def test_extra_field_metadata_required_strictly_on_every_field():
+    """extra_field_metadata makes named metadata keys mandatory on every field, checked strictly (==).
+
+    A field's metadata must equal EXACTLY {shape, dtype, *extra_field_metadata}:
+      - a plain world (no extras) wants exactly {shape, dtype}
+      - a world(extra=["serializable"]) wants exactly {shape, dtype, serializable}
+    so each component is valid in exactly ONE of the two worlds. 2 components x 2 worlds = 4 cases,
+    of which 2 raise: a required key missing, OR an undeclared extra key present.
+    """
+    class Plain(Component):    # field carries only the always-required keys
+        a: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+
+    class Serial(Component):   # same field, plus the extra "serializable" key
+        b: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "serializable": True})
+
+    World([Plain])                                          # ok: {shape,dtype} == {shape,dtype}
+    World([Serial], extra_field_metadata=["serializable"])  # ok: {shape,dtype,ser} == {shape,dtype,ser}
+
+    with pytest.raises(AssertionError):                     # missing the required "serializable"
+        World([Plain], extra_field_metadata=["serializable"])
+    with pytest.raises(AssertionError):                     # carries "serializable" the world never declared
+        World([Serial])
+
+
+def test_tag_component_is_valid_and_queryable():
+    """A field-less component is a valid 'tag': it registers with empty field/shape/dtype maps, needs no data
+    on add, lands in its own (pure-tag) pool, and is usable both as a query filter and a tag-only query."""
+    world = World([HasPosition, Frozen])
+
+    assert world.component_to_field_names[Frozen] == []     # registers with empty per-field maps
+    assert world.component_to_shapes[Frozen] == []
+    assert world.component_to_dtypes[Frozen] == []
+
+    tagged = world.add_entity((HasPosition, Frozen), position=np.array([1.0, 2.0], "float32"))
+    plain = world.add_entity((HasPosition,), position=np.array([3.0, 4.0], "float32"))
+    pure = world.add_entity((Frozen,))                      # pure tag: no data at all
+    world.update()
+
+    qr = world.query_and((HasPosition, Frozen))             # tag as a filter: only the tagged entity, position exposed
+    assert qr.entity_ids.tolist() == [tagged]
+    np.testing.assert_array_equal(qr.position.numpy(), [[1.0, 2.0]])
+
+    qr_tag = world.query_and((Frozen,))                     # tag-only query spans {Pos,Frozen} + pure {Frozen} pools
+    assert sorted(qr_tag.entity_ids.tolist()) == sorted([tagged, pure])
+    assert qr_tag._fields == []                             # a tag exposes no fields
+    assert len(qr_tag) == 2
+    assert plain not in qr_tag.entity_ids.tolist()          # the untagged entity is excluded
+
+
+def test_tag_component_add_remove_migrates():
+    """Adding/removing a tag migrates the entity between archetypes and round-trips its data + id."""
+    world = World([HasPosition, Frozen])
+    eid = world.add_entity((HasPosition,), position=np.array([5.0, 6.0], "float32"))
+    world.update()
+    assert world.query_and((Frozen,)).entity_ids.tolist() == []
+
+    world.add_component(eid, Frozen)                        # tag carries no data
+    world.update()
+    assert world.query_and((Frozen,)).entity_ids.tolist() == [eid]
+    data, comps = world.get_entity(eid)
+    np.testing.assert_array_equal(data["position"], [5.0, 6.0])  # data preserved across the migration
+    assert Frozen in comps
+
+    world.remove_component(eid, Frozen)
+    world.update()
+    assert world.query_and((Frozen,)).entity_ids.tolist() == []
+    data, _ = world.get_entity(eid)
+    np.testing.assert_array_equal(data["position"], [5.0, 6.0])  # id stable, data still there
+
+
+def test_zero_dim_array_field_roundtrips():
+    """A field with shape () (a 0-d / scalar array) is valid: it stores, queries as (N,) and round-trips per entity."""
+    world = World([HasScale])
+    e0 = world.add_entity((HasScale,), scale=np.array(2.5, "float32"))
+    world.add_entity((HasScale,), scale=np.array(4.0, "float32"))
+    world.update()
+
+    qr = world.query_and((HasScale,))
+    np.testing.assert_array_equal(qr.scale.numpy(), [2.5, 4.0])  # (N,) contiguous view over the 0-d field
+
+    data, _ = world.get_entity(e0)
+    assert data["scale"].shape == ()                            # still a 0-d scalar per entity
+    np.testing.assert_array_equal(data["scale"], 2.5)

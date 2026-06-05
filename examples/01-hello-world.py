@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """01-hello-world.py The basic hello world for ECS. Creates some static balls. You can add some with the mouse."""
 from dataclasses import field
+from typing import Callable
 from argparse import ArgumentParser, Namespace
 import random
 import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from microecs import World, TickSystem, Component
+from microecs import World, Component
 
 Point2D = tuple[float, float]
 DT = 1 / 100
@@ -26,14 +27,14 @@ class HasColor(Component):
 
 # systems
 
-class RenderSystem(TickSystem):
-    def on_tick(self, world: World):
+class RenderSystem:
+    def __call__(self, world: World):
         qr = world.query_and((HasRadius, HasPosition2D, HasColor))
         for position, radius, color in zip(qr.position, qr.radius, qr.color):
             rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
 
-class CollisionSystem(TickSystem):
-    def on_tick(self, world: World):
+class CollisionSystem:
+    def __call__(self, world: World):
         qr = world.query_and((HasPosition2D, HasRadius, HasColor))
         _red = np.array(rl.RED, dtype="int32")[None].repeat(len(qr), axis=0)
         _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(qr), axis=0)
@@ -52,7 +53,7 @@ def main(args: Namespace):
     scene_size = (600, 600)
 
     render_system = RenderSystem()
-    update_systems: list[TickSystem] = [CollisionSystem()]
+    update_systems: list[Callable] = [CollisionSystem()]
 
     world = World(components=[HasRadius, HasPosition2D, HasColor])
     for _ in range(args.n_objects):
@@ -69,14 +70,14 @@ def main(args: Namespace):
             world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
                              color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
 
-        _ = [system.on_tick(world=world) for system in update_systems]
+        _ = [system(world=world) for system in update_systems]
 
         rl.BeginDrawing()
         rl.ClearBackground(rl.RAYWHITE)
         rl.DrawFPS(rl.GetScreenWidth() - 100, 0)
 
         rl.DrawRectangleLinesEx((0, 0, *scene_size), 2, rl.BLACK)
-        render_system.on_tick(world=world)
+        render_system(world=world)
 
         rl.EndDrawing()
 

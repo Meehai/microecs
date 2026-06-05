@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 from dataclasses import field
+from typing import Callable
 from argparse import ArgumentParser, Namespace
 import random
 import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from microecs import World, TickSystem, Component
+from microecs import World, Component
 
 Point2D = tuple[float, float]
 DT = 1 / 100
@@ -64,22 +65,22 @@ class HasColor(Component):
 
 # systems
 
-class RenderSystem(TickSystem):
-    def on_tick(self, world: World):
+class RenderSystem:
+    def __call__(self, world: World):
         qr = world.query_and((HasRadius, HasPosition2D, HasColor))
         for position, radius, color in zip(qr.position, qr.radius, qr.color):
             rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
 
-class MotionSystem(TickSystem):
-    def on_tick(self, world: World):
+class MotionSystem:
+    def __call__(self, world: World):
         qr = world.query_and((HasMotion2D, HasPosition2D))
         qr.position[:] = qr.position + qr.velocity * DT # (N, 2)
 
-class WallBounceSystem(TickSystem):
+class WallBounceSystem:
     def __init__(self, scene_size: tuple[int, int]):
         self.scene_size = scene_size
 
-    def on_tick(self, world: World):
+    def __call__(self, world: World):
         qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius))
         mask_velocity = np.zeros((len(qr.position), 2), bool)
         mask_velocity[:, 0] = np.logical_or(qr.position[:, 0] - qr.radius[:, 0] < 0,
@@ -88,8 +89,8 @@ class WallBounceSystem(TickSystem):
                                             qr.position[:, 1] + qr.radius[:, 0] > self.scene_size[1])
         qr.velocity[:] = np.where(mask_velocity, -qr.velocity, qr.velocity)
 
-class CollisionDetectionSystem(TickSystem):
-    def on_tick(self, world: World):
+class CollisionDetectionSystem:
+    def __call__(self, world: World):
         qr = world.query_and((HasPosition2D, HasMotion2D, HasRadius, HasColor))
 
         _red = np.array(rl.RED, dtype="int32")[None].repeat(len(qr), axis=0)
@@ -108,8 +109,8 @@ def main(args: Namespace):
     rl.InitWindow(800, 800, b"Entity Component Style + SoA (batched)")
     scene_size = (600, 600)
 
-    render_systems: list[TickSystem] = [RenderSystem()]
-    update_systems: list[TickSystem] = [MotionSystem(), WallBounceSystem(scene_size), CollisionDetectionSystem()]
+    render_systems: list[Callable] = [RenderSystem()]
+    update_systems: list[Callable] = [MotionSystem(), WallBounceSystem(scene_size), CollisionDetectionSystem()]
 
     world = World(components=[HasRadius, HasPosition2D, HasMotion2D, HasColor])
     for _ in range(args.n_objects):
@@ -127,14 +128,14 @@ def main(args: Namespace):
 
         for _ in clock.drain():
             logger.log_every_s(f"Applying {clock.accumulator // clock.dt} update ticks per render tick", "DEBUG", True)
-            _ = [system.on_tick(world=world) for system in update_systems]
+            _ = [system(world=world) for system in update_systems]
 
         rl.BeginDrawing()
         rl.ClearBackground(rl.RAYWHITE)
         rl.DrawFPS(rl.GetScreenWidth() - 100, 0)
 
         rl.DrawRectangleLinesEx((0, 0, *scene_size), 2, rl.BLACK)
-        _ = [system.on_tick(world=world) for system in render_systems]
+        _ = [system(world=world) for system in render_systems]
 
         rl.EndDrawing()
 
