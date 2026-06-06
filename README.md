@@ -140,3 +140,21 @@ Three things to take from it:
 **Rule of thumb:** keep systems vectorized and push branches into `np.where` / `np.clip`. If a
 workload is *irreducibly* per-entity (data-dependent control flow), plain python objects beat
 microecs ~15× — use them there. microecs is the right tool for **vectorizable** simulation.
+
+### Per-entity systems (e.g. rendering, foreign APIs)
+
+Not every system vectorizes. A renderer calls a draw function *per primitive*; same for any
+per-entity foreign API. That's a per-entity *system* inside an otherwise-vectorized app — you
+don't drop the ECS for it, you loop it the cheap way: `zip()` the fields you need (row-views
+straight from the pool buffers, the ~15× path above), never `qr.f[i]` (~95×) or `get_entity`
+(~35×).
+
+```python
+qr = world.query(HasPosition, HasColor, HasRadius)
+for pos, color, radius in zip(qr.position, qr.color, qr.radius):     # one entity per step, fields aligned
+    rl.DrawCircle(int(pos[0]), int(pos[1]), float(radius[0]), color) # per-entity by necessity (no "draw all")
+```
+
+Here the draw call dwarfs the row-extraction, so the 15× barely shows — but `zip` is the cleanest
+path and sidesteps the traps. (The "use plain objects" advice above is for when the *whole
+workload* is per-entity, not a single per-entity system like this one.)
