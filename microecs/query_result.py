@@ -6,8 +6,6 @@ from .utils import Shape
 from .pool import Pool
 
 class _Field(np.lib.mixins.NDArrayOperatorsMixin):
-    _PER_POOL_OK = {np.where, np.clip}
-
     def __init__(self, parts: list[np.ndarray]):
         self.parts = parts
         self._lens = [len(p) for p in self.parts]
@@ -27,14 +25,20 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         return x
 
     def _apply_fn_on_parts(self, fn: Callable, op_args: list, **kwargs):
+        # op args can be 1 element (-qr.velocity), 2 elements (qr.position * 0.1), 3 elements (np.where(a, b, c)), etc.
+        # all of them must be chunked based on how many we have in this _Field so each subpart is called independently.
         results = []
-        for i in range(len(self.parts)):
+        for i, part in enumerate(self.parts):
             pool_args = [self._chunk(x, i) for x in op_args]
-            results.append(fn(*pool_args, **kwargs))
+            part_result: _Field = fn(*pool_args, **kwargs)
+            # we expect f(arr(N, ...)) -> arr(N, ...) where N = number of items in the pool
+            # for e.g. np.linalg.norm(velocity, axis=1) should do (N, 2) -> (N, 1) so the first axis is preserved
+            assert len(part_result) == part.shape[0], f"Result: {part_result.shape} vs {part.shape}"
+            results.append(part_result)
         return _Field(results)
 
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
-        """wrapper forelementwise (python) primitives, e.g. qr.position[:] += 1"""
+        """wrapper for elementwise (python) primitives, e.g. qr.position[:] += 1"""
         if method != "__call__":
             return NotImplemented
         if out is None:
@@ -48,8 +52,6 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
 
     def __array_function__(self, func: Callable, _types, args: list, kwargs: dict):
         """wrapper for elementwise numpy functions, e.g. qr.velocity[:] = np.where(mask, -qr.velocity, qr.velocity)"""
-        if func not in self._PER_POOL_OK:
-            return NotImplemented # add them manually
         return self._apply_fn_on_parts(func, args, **kwargs)
 
     # qr.position[:] = <field | scalar | per-entity broadcast>   -> scatter through the views

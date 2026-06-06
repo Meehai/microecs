@@ -2,6 +2,33 @@
 
 **Created**: 2026-06-05
 **Priority**: 3
+**Status**: ✅ Done (2026-06-06) — `examples/03-serialization.py` ships the serialize pattern; suite 188 green.
+
+## What landed
+
+`examples/03-serialization.py` demonstrates the design pattern end to end: `world_to_dict` walks
+`world.live_ids` → `get_entity` → each component's `fields()`, skipping `serializable: False`;
+`world_from_dict` rebuilds via factory + `add_entity`. Both at module level, JSON via `json.dump`.
+
+Divergences from the original spec below (all **dev's call**, recorded for honesty):
+
+- **Built as a raylib GUI, not headless.** The spec asked for "no raylib, pure numpy, CI-smoke
+  `--help`". The dev instead made it an interactive demo: bouncing balls, mouse-click to add,
+  **F5 = save**, **F6 = load** `state.json`. More illustrative, but it imports `raylib` at module
+  top, so it is **not importable in CI** and `--help` needs raylib.
+- **Consequence — serialization unit tests not added.** The `test_serialization_roundtrip` /
+  `_excluded` / `_json_is_valid` / `_help_exits_zero` cases in §Tests assumed an importable headless
+  module; they don't apply to the GUI form. Round-trip was verified **manually** (F5→F6 produces and
+  reloads `examples/state.json`, now gitignored). If headless coverage is wanted later, the module
+  needs a lazy `raylib` import inside `main()` — tracked as a follow-up if it matters.
+- **Keystone present.** `serializable: False` is shown: `HasMagnitude.magnitude` (a derived
+  `(1,)` field) is excluded from the dump; the data fields survive the round-trip.
+
+**Spun-off work (separate from the example).** The example's `np.linalg.norm(qr.velocity, axis=1)`
+exposed the `_Field` whitelist as too narrow. That was removed (any numpy func now runs per-pool,
+guarded by `result.shape[0] == rows` in `query_result.py`), and the numpy-parity contract was
+documented (README §"The field (`_Field`) numpy contract") and pinned by **two new suites**:
+`test/unit/test_field_numpy_parity.py` and `test/unit/test_field_shape_invariant.py`.
 
 ## Why
 

@@ -12,8 +12,8 @@ There are only 4 primitives (bottom up): `Component`, `Pool`, `QueryResult`, `Wo
 
 - `Component` is a simple python dataclass holding only data. All entries must be numpy arrays with metadata fields: shape and dtype. We support 5 dtypes only: `int32`, `float32`, `bool`, `str` and `object`. A component with no fields is a valid **tag** for querying (e.g. `class Frozen(Component): pass`).
 - `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Usses `Components` metadata to construct contiguous arrays for all entities of the same type.
-- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's `__array_function__` and `__array_ufunc__`. For all intents and purposes it should feel like a `(N, ...)` view over all the entities. If you need a numpy array (not all ops are supported, for e.g. indexing on the first axis), use `QueryResult.numpy()`. It also exposes `entity_ids`: a flat `(N,)` array of the matched entities' ids, in the same pool-by-pool order as the fields, so you can `zip(qr.entity_ids, qr.position)` or feed an id back to `world.get_entity` / `world.remove_entity`.
-- `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other. A `World` can also require extra metadata keys on every field via `World(extra_field_metadata=["serializable"])`, to enforce component-level behavior such as field serialization.
+- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's `__array_function__` and `__array_ufunc__`. For all intents and purposes it should feel like a `(N, ...)` view over all the entities. If you need a numpy array (not all ops are supported, for e.g. indexing on the first axis), use `QueryResult.numpy()` (see [the field numpy contract](#the-field-_field-numpy-contract) below). It also exposes `entity_ids`: a flat `(N,)` array of the matched entities' ids, in the same pool-by-pool order as the fields, so you can `zip(qr.entity_ids, qr.position)` or feed an id back to `world.get_entity` / `world.remove_entity`.
+- `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other. A `World` can also require extra metadata keys on every field via `World(extra_metadata=["serializable"])`, to enforce component-level behavior such as field serialization.
 
 Few relevant concepts:
 
@@ -31,7 +31,8 @@ from microecs import World, Component
 
 # components
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"}) # 'shape' + 'dtype' are always required
+    # 'shape' + 'dtype' are always required. For additional metadata (e.g. examples/03-serialization) use extra_metadata
+    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 class HasVelocity(Component):
     velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 class HasColor(Component):
@@ -56,7 +57,7 @@ def main():
     render_system: list[Callable] = RenderSystem()
     update_systems: list[Callable] = [MotionSystem()]
 
-    world = World(components=[HasPosition, HasColor, HasVelocity], extra_field_metadata=None)
+    world = World(components=[HasPosition, HasColor, HasVelocity], extra_metadata=None) # extra_metadata is optional
     for _ in range(n_objects):
         # NOTE: world.{add/remove}_{entity/component} are lazy. They take effect after the first world.update() call.
         world.add_entity(components=(HasPosition, HasVelocity, HasColor), # tuple of components (types)
@@ -75,3 +76,32 @@ def main():
         render_system(world=world)
         rl.EndDrawing()
 ```
+
+## The field (`_Field`) numpy contract
+
+`qr.position` returns a `_Field`: a view over the matching pools that behaves like one `(N, *e)`
+numpy array (e.g. `(N, 2)` for a `(2,)` field). It applies each op **per pool** and stitches the
+result back. So the contract is exactly:
+
+> Any op that treats rows independently behaves **identically to numpy** on the concatenated
+> `(N, *e)` array — same values, same shape, and the same error on bad shapes.
+
+That covers elementwise math and ufuncs, broadcasting (every operand shape numpy accepts, and it
+raises on the ones numpy rejects), comparisons, `np.where` / `np.clip`, batched `np.matmul`,
+**feature-axis** reductions/indexing (`np.linalg.norm(qr.velocity, axis=1)`, `qr.pose[:, 0]`), and
+write-back broadcasting (`qr.position[:] = <scalar | (*e,) | (N, *e)>`). Pinned in
+`test/unit/test_field_numpy_parity.py`.
+
+Edge cases worth knowing:
+
+- **Not a full ndarray — these *raise*, never lie.** Entity-axis indexing beyond a single
+  `qr.f[i]` (`qr.f[:]`, `qr.f[2:4]`, `qr.f[mask]`, fancy), partial entity writes, and ndarray
+  methods/attrs (`.sum()`, `.mean()`, `.dtype`, `.ndim`, `.T`). Need any of these? Materialize
+  first with `qr.f.numpy()`.
+- **Axis-0 ops are per-pool, not global (footgun).** `np.sort` / `np.cumsum` / `np.sum` over
+  `axis=0` run *within each pool* and reset at pool boundaries — they do **not** see all entities
+  at once, so they differ from numpy. They're allowed, but if you want a global result, do
+  `qr.f.numpy()` first. A reduction that collapses the entity axis is rejected when its length no
+  longer matches the pool's row count.
+- **Operands must come from the same query.** Alignment is per-pool, not by flat index, so don't
+  mix a `_Field` from one `world.query(...)` into an op on another.

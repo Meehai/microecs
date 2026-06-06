@@ -1067,10 +1067,10 @@ def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserv
         World(components=[bad])
 
 
-def test_extra_field_metadata_required_strictly_on_every_field():
-    """extra_field_metadata makes named metadata keys mandatory on every field, checked strictly (==).
+def test_extra_metadata_required_strictly_on_every_field():
+    """extra_metadata makes named metadata keys mandatory on every field, checked strictly (==).
 
-    A field's metadata must equal EXACTLY {shape, dtype, *extra_field_metadata}:
+    A field's metadata must equal EXACTLY {shape, dtype, *extra_metadata}:
       - a plain world (no extras) wants exactly {shape, dtype}
       - a world(extra=["serializable"]) wants exactly {shape, dtype, serializable}
     so each component is valid in exactly ONE of the two worlds. 2 components x 2 worlds = 4 cases,
@@ -1083,10 +1083,10 @@ def test_extra_field_metadata_required_strictly_on_every_field():
         b: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "serializable": True})
 
     World([Plain])                                          # ok: {shape,dtype} == {shape,dtype}
-    World([Serial], extra_field_metadata=["serializable"])  # ok: {shape,dtype,ser} == {shape,dtype,ser}
+    World([Serial], extra_metadata=["serializable"])  # ok: {shape,dtype,ser} == {shape,dtype,ser}
 
     with pytest.raises(AssertionError):                     # missing the required "serializable"
-        World([Plain], extra_field_metadata=["serializable"])
+        World([Plain], extra_metadata=["serializable"])
     with pytest.raises(AssertionError):                     # carries "serializable" the world never declared
         World([Serial])
 

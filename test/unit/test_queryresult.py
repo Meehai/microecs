@@ -177,10 +177,15 @@ def test_inplace_op_with_full_n_raw_operand_splits_across_pools():
 
 def test_unsupported_ops_are_rejected():
     """Operations with no per-pool meaning raise instead of returning a wrong result: a cross-pool reduction
-    (np.sum) and a masked/partial write (qr.velocity[mask] = 0) both raise."""
+    (np.sum) and a masked/partial write (qr.velocity[mask] = 0) both raise.
+
+    Note: the whitelist in __array_function__ was removed -- any numpy func now runs per-pool and is policed by
+    the `result.shape[0] == rows` guard in _apply_fn_on_parts. A full reduction yields a scalar, so that guard's
+    `shape[0]` raises IndexError today (not the old NotImplemented->TypeError). A clean AssertionError would need
+    an `ndim >= 1` guard -- see test_field_shape_invariant.py::test_op_breaking_entity_axis_raises."""
     qr = _query([_moving_pool(2, [1.0, 0.0]), _moving_pool(3, [0.0, 2.0])], "position", "velocity")
 
-    with pytest.raises(TypeError):     # a reduction must combine across pools -> not an elementwise op
+    with pytest.raises((IndexError, AssertionError)):  # reduction collapses the entity axis -> guard rejects it
         np.sum(qr.velocity)
 
     with pytest.raises(Exception):     # partial write; only whole `[:]` assignment is allowed

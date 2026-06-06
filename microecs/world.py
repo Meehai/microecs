@@ -14,10 +14,11 @@ class World:
     Generic container for pools of components. Newly added components are assigned a unique id and go in a pool
     Parameters
     - components The list of components that the world accepts
-    - extra_field_metadata The list of required extra metadata for each field besides shape and dtype.
+    - extra_metadata The list of required extra metadata for each field besides shape and dtype.
     """
-    def __init__(self, components: list[ComponentType], extra_field_metadata: list[str] | None = None):
-        self.extra_field_metadata = extra_field_metadata or []
+    def __init__(self, components: list[ComponentType], extra_metadata: list[str] | None = None):
+        self.extra_metadata = extra_metadata or []
+        assert isinstance(self.extra_metadata, list), type(self.extra_metadata)
         self._check_components(components)
         self.pools: dict[PoolKey, Pool] = {}
         self.pool_to_components: dict[Pool, list[ComponentType]] = {}
@@ -173,7 +174,7 @@ class World:
         for component in components:
             for _field in self.component_to_field_names[component]:
                 expected_fields.add(_field)
-                assert _field in entity_fields, f"Entity doesn't have '{component}/{_field}'"
+                assert _field in entity_fields, f"Entity doesn't have '{component.__name__}/{_field}'"
         assert (extra := set(entity_fields) - expected_fields) == set(), f"Extra fields: {extra}; {expected_fields=}"
 
     def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
@@ -195,18 +196,18 @@ class World:
     def _check_components(self, components: list[ComponentType]):
         qr_reserved_names = _qres = sorted(vars(QueryResult([], {}, {}, [])))
         dtypes = {"float32", "int32", "bool", "str", "object"}
-        expected_fields = {"shape", "dtype", *self.extra_field_metadata}
+        expected_meta = {"shape", "dtype", *self.extra_metadata}
 
         for component in components:
             cn = component.__name__
             assert hasattr(component, "__dataclass_fields__"), f"Component '{cn}' is not a dataclass"
             hints = get_type_hints(component) # make it work with from __future__ import annotations
             for f in fields(component):
-                assert hints[f.name] is np.ndarray, f"Field '{f.name}' of '{component=}' not an array: {f}"
-                assert f.metadata.keys() == (ef:=expected_fields), f"Field {f.name}: {f.metadata} vs {ef}"
+                assert hints[f.name] is np.ndarray, f"Field '{cn}/{f.name}' not an array: {f}"
+                assert f.name not in qr_reserved_names, f"Field '{cn}/{f.name}' in {qr_reserved_names}"
+                assert f.metadata.keys() == expected_meta, f"Field '{cn}/{f.name}':\n{f.metadata} vs\n{expected_meta}"
                 assert isinstance(f.metadata["shape"], tuple), f.metadata["shape"]
                 assert isinstance(fmd := f.metadata["dtype"], str) and fmd in dtypes, f"{fmd} not in {dtypes}"
-                assert f.name not in qr_reserved_names, f"Field '{f.name}' in {qr_reserved_names}"
 
     def __len__(self):
         return len(self.live_ids)
