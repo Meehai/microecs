@@ -186,10 +186,10 @@ def test_op_breaking_entity_axis_raises():
     qr = world.query(HasVelocity)
     with pytest.raises(AssertionError):                      # axis=0 -> (2,), rows mismatch -> line 36
         np.sum(qr.velocity, axis=0)
-    # NOTE for dev: a full reduction yields a numpy scalar, so `part_result.shape[0]` raises
-    # IndexError instead of a clean AssertionError. Guard `ndim >= 1` in _apply_fn_on_parts for a
-    # better message; widen/adjust this raises() if you do.
-    with pytest.raises((AssertionError, IndexError)):
+    # NOTE for dev: a full reduction yields a numpy scalar, so `len(part_result)` (query_result.py:36)
+    # raises TypeError ("no len()") instead of a clean AssertionError. Guard `ndim >= 1` in
+    # _apply_fn_on_parts for a better message; widen/adjust this raises() if you do.
+    with pytest.raises((AssertionError, TypeError)):
         np.sum(qr.velocity)
 
 

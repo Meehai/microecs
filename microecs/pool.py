@@ -31,6 +31,7 @@ class Pool:
 
         for _field, field_shape, field_dtype in zip(self.fields, self.shapes, self.dtypes):
             new_item: np.ndarray = entity_fields[_field] # checked in World._get_entity_pool(entity).
+            assert isinstance(new_item, np.ndarray), f"{_field=} {new_item=} {type(new_item)}"
             assert new_item.shape == field_shape, f"{_field=} {new_item=}, {new_item.shape=}, {field_shape=}"
             assert np.issubdtype(new_item.dtype, field_dtype), f"{_field=} {new_item=} {new_item.dtype=} {field_dtype=}"
             self.data[_field][self.size] = new_item

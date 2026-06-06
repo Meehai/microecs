@@ -105,3 +105,38 @@ Edge cases worth knowing:
   longer matches the pool's row count.
 - **Operands must come from the same query.** Alignment is per-pool, not by flat index, so don't
   mix a `_Field` from one `world.query(...)` into an op on another.
+
+## Benchmark: ECS vs OOP
+
+The same physics step -- `pos += vel*dt` over N=100k entities split across 2 pools -- computed 8
+ways, all verified to produce the identical result. Reproduce with
+`python test/manual/perf/bench_ecs_vs_oop.py` (it prints `{mode: avg_seconds_per_step}`).
+
+| pattern | ns/entity | vs OOP-scalar |
+|---|---:|---:|
+| `micro-ecs-pool-vectorized` — `for pool: pool.f[:] = pool.f + …` | 0.9 | **52× faster** |
+| `micro-ecs-vectorized` — `qr.f[:] = qr.f + …` (the `_Field`) | 1.8 | **27× faster** |
+| **`oop-scalar`** — `for o: o.x += o.vx*dt` (python floats) | 48 | 1× (baseline) |
+| `oop-numpy` — objects holding `(2,)` numpy arrays | 605 | 13× slower |
+| `micro-ecs-zip-rows` — `for p, v in zip(qr.pos, qr.vel)` | 744 | 15× slower |
+| `micro-ecs-pool-loop` — `for pool: for i: pool.f[i]` | 870 | 18× slower |
+| `micro-ecs-get-entity` — `world.get_entity(eid)` per entity | 1674 | 35× slower |
+| `micro-ecs-index` — `qr.f[i]` per entity (an `np.searchsorted` each) | 4573 | 95× slower |
+
+*Intel Core Ultra 7 165H, single-threaded, python 3.12 / numpy 2.2. ns/entity = seconds/step ÷ N.*
+
+Three things to take from it:
+
+1. **Vectorized wins big.** Batched ops (`_Field` or per-pool) run at 1–2 ns/entity — **27–52×
+   faster** than the *fastest* OOP loop. Same for data-parallel branches: an `np.where` clamp or
+   bounce is ~34× faster than a per-entity `if`.
+2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **15–95× slower**
+   than idiomatic float-based OOP — because microecs is numpy-backed, so a per-entity step pays
+   numpy's tiny-array overhead (`oop-numpy` shows the same ~13× tax). One unavoidable per-entity
+   pass (~750 ns/entity) costs ~500× a vectorized op (~1.5 ns) and will dominate the frame.
+3. **If you must loop, loop right.** `zip`-rows (15×) < pool-loop (18×) < `get_entity` (35×) <
+   `qr.f[i]` (95× — never in a hot loop; `qr.f[i] += …` also raises, you must bind the row first).
+
+**Rule of thumb:** keep systems vectorized and push branches into `np.where` / `np.clip`. If a
+workload is *irreducibly* per-entity (data-dependent control flow), plain python objects beat
+microecs ~15× — use them there. microecs is the right tool for **vectorizable** simulation.
