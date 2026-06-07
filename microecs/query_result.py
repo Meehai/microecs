@@ -91,6 +91,9 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
     def __len__(self):
         return self.len
 
+    def __repr__(self):
+        return f"[Field] Shape: {self.shape} (across {len(self.parts)} pools)"
+
 class QueryResult:
     """A list of pools seen as a contiguous view. Fields (qr.position) implement array interface to look like numpy"""
     def __init__(self, pool_list: list[Pool], field_shapes: dict[str, Shape], field_dtypes: dict[str, np.dtype],

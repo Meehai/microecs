@@ -811,6 +811,157 @@ def test_get_entity_unknown_id_raises():
         world.get_entity(123)
 
 
+# --- set_entity_data: write one entity's single field by id ------------------------------------------------------
+# set_entity_data(eid, field, value) is the WRITE counterpart to get_entity: it resolves an id to its current
+# (pool, row) and writes one field straight into the pool buffer. It is EAGER (no command buffer, no update()) and
+# non-vectorised -- "use rarely". The contract: resolve by id (not index), touch only the named field, leave id
+# bookkeeping untouched.
+
+
+def test_set_entity_data_writes_field_value_by_id():
+    """The happy path: set a field by id, read the new value back (via get_entity and via the pool)."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.set_entity_data(eid, "position", np.array([9.0, 8.0], "float32"))
+
+    np.testing.assert_array_equal(world.get_entity(eid)[0]["position"], [9.0, 8.0])
+    pool, ix = world._eid_to_pool_ix[eid]
+    np.testing.assert_array_equal(pool.position[ix], [9.0, 8.0])   # the actual pool row was overwritten
+
+
+def test_set_entity_data_is_eager_visible_without_update():
+    """Unlike add/remove (command-buffered), set_entity_data writes immediately: the value is there before any
+    further update() -- it is a direct pool write, not a queued command."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()                                                 # commits the spawn only
+
+    world.set_entity_data(eid, "position", np.array([5.0, 5.0], "float32"))
+
+    np.testing.assert_array_equal(world.get_entity(eid)[0]["position"], [5.0, 5.0])  # no second update() needed
+    assert world._command_buffer == []                             # nothing was queued
+
+
+def test_set_entity_data_only_updates_the_named_field():
+    """Writing one field of a multi-field entity leaves the entity's other fields untouched."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    world.set_entity_data(eid, "velocity", np.array([7.0, 7.0], "float32"))
+
+    entity, _ = world.get_entity(eid)
+    np.testing.assert_array_equal(entity["velocity"], [7.0, 7.0])  # the targeted field changed
+    np.testing.assert_array_equal(entity["position"], [1.0, 2.0])  # the sibling field is untouched
+
+
+def test_set_entity_data_targets_correct_row_after_swap_remove():
+    """The core safety property: writes resolve by id, not by index. After a swap-remove relocates rows, setting
+    by id must hit the moved entity's CURRENT row -- never a neighbour's."""
+    world = World(components=[HasPosition])
+    a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))  # idx 0
+    b = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))  # idx 1
+    c = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))  # idx 2 (tail)
+    world.update()
+
+    world.remove_entity(a)                                         # c swaps into slot 0; b stays at slot 1
+    world.update()
+
+    world.set_entity_data(c, "position", np.array([20.0, 20.0], "float32"))   # by id, after the relocation
+
+    np.testing.assert_array_equal(world.get_entity(c)[0]["position"], [20.0, 20.0])  # c got the write
+    np.testing.assert_array_equal(world.get_entity(b)[0]["position"], [1.0, 1.0])    # b (its neighbour) untouched
+
+
+def test_set_entity_data_is_visible_through_query_view():
+    """The write lands in the live pool buffer, so a vectorised query view reads the new value -- set_entity_data
+    and query see the same storage."""
+    world = World(components=[HasPosition])
+    a = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
+    world.update()
+
+    world.set_entity_data(a, "position", np.array([9.0, 9.0], "float32"))
+
+    qr = world.query(HasPosition)
+    row = {int(eid): pos for eid, pos in zip(qr.entity_ids, qr.position.numpy())}
+    np.testing.assert_array_equal(row[a], [9.0, 9.0])              # the query view reflects the single-entity write
+
+
+def test_set_entity_data_copies_numeric_value_not_aliases():
+    """numpy slot-assignment copies into the pre-allocated buffer: mutating the source array afterwards must NOT
+    leak into the stored row."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    src = np.array([5.0, 6.0], "float32")
+    world.set_entity_data(eid, "position", src)
+    src[:] = [999.0, 999.0]                                        # mutate the source after the call
+
+    np.testing.assert_array_equal(world.get_entity(eid)[0]["position"], [5.0, 6.0])  # stored value is independent
+
+
+def test_set_entity_data_on_object_field_replaces_reference():
+    """For an object-dtype field the write stores the exact Python object by reference (not a copy)."""
+    world = World(components=[HasLabel])
+    eid = world.add_entity(components=(HasLabel,), label=np.array([{"v": 0}], dtype=object))
+    world.update()
+
+    replacement = {"v": 42}
+    world.set_entity_data(eid, "label", np.array([replacement], dtype=object))
+
+    pool, ix = world._eid_to_pool_ix[eid]
+    assert pool.label[ix, 0] is replacement                        # same reference, swapped in
+
+
+def test_set_entity_data_zero_dim_scalar_field():
+    """A shape-() scalar field can be written by id and reads back as a 0-d scalar."""
+    world = World(components=[HasScale])
+    eid = world.add_entity(components=(HasScale,), scale=np.array(2.5, "float32"))
+    world.update()
+
+    world.set_entity_data(eid, "scale", np.array(4.0, "float32"))
+
+    data, _ = world.get_entity(eid)
+    assert data["scale"].shape == ()
+    np.testing.assert_array_equal(data["scale"], 4.0)
+
+
+def test_set_entity_data_unknown_id_raises():
+    """An id the world never handed out cannot resolve to a row -> clear AssertionError, no silent write."""
+    world = World(components=[HasPosition])
+    world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    with pytest.raises(AssertionError, match="not found"):
+        world.set_entity_data(123, "position", np.array([0.0, 0.0], "float32"))
+
+
+def test_set_entity_data_on_uncommitted_spawn_raises():
+    """set_entity_data needs the entity already committed to a pool: a pending spawn (live id, no row yet) raises
+    -- unlike add_component, which works on the same-tick spawn. The message points at the missing update()."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))  # queued, not committed
+
+    with pytest.raises(AssertionError, match="not found"):
+        world.set_entity_data(eid, "position", np.array([0.0, 0.0], "float32"))
+
+
+def test_set_entity_data_unknown_field_name_raises():
+    """No field-name validation: writing a field the entity's pool doesn't have surfaces a KeyError (documented
+    footgun -- the caller is trusted to name a real field)."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    with pytest.raises(KeyError):
+        world.set_entity_data(eid, "velocity", np.array([0.0, 0.0], "float32"))  # velocity not in this pool
+
+
 # --- _pool_ids randomized churn: the reverse id-map must mirror the pools through every popswap ------------------
 
 _CHURN_COMPONENTS = {HasPosition: ("position", (2,)), HasVelocity: ("velocity", (2,)), HasRadius: ("radius", (1,))}

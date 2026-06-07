@@ -17,7 +17,7 @@ class Pool:
         self.shapes = shapes
         self.dtypes = dtypes
 
-        self.data: dict[str, np.ndarray] = {} # the actual data is stored in a dynamic arrray, one per field
+        self.data: dict[str, np.ndarray] = {} # the actual data is stored in dict of dynamic arrrays, one per field
         self.size = 0
         self.capacity = Pool.INITIAL_CAPACITY
         for _field, shape, dtype in zip(fields, shapes, dtypes):

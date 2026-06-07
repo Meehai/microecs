@@ -15,13 +15,15 @@ python -m pytest test/                            # run the unit & integration t
 python examples/01-hello-world.py                 # run the basic hello world example (others in that dir)
 ```
 
+Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/)
+
 ## Relevant primitives: `Component`, `Pool`, `QueryResult`, `World`
 
 There are only 4 primitives (bottom up):
 
 - `Component` is a simple python dataclass holding only data. All entries must be numpy arrays with metadata fields: shape and dtype. We support 5 dtypes only: `int32`, `float32`, `bool`, `str` and `object`. A component with no fields is a valid **tag** for querying (e.g. `class Frozen(Component): pass`).
 - `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Usses `Components` metadata to construct contiguous arrays for all entities of the same type.
-- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's `__array_function__` and `__array_ufunc__`. For all intents and purposes it should feel like a `(N, ...)` view over all the entities. If you need a numpy array (not all ops are supported, for e.g. indexing on the first axis), use `QueryResult.numpy()` (see [the field numpy contract](#the-field-_field-numpy-contract) below). It also exposes `entity_ids`: a flat `(N,)` array of the matched entities' ids, in the same pool-by-pool order as the fields, so you can `zip(qr.entity_ids, qr.position)` or feed an id back to `world.get_entity` / `world.remove_entity`.
+- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's interface. For all intents and purposes it should feel like a `(N, ...)` view over all selected entities. To get a proper numpy array, use `qr.numpy()`. To iterate over each entity in a query result (e.g. rendering), use `for eid, position in zip(qr.entity_ids, qr.position): ...`.
 - `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other. A `World` can also require extra metadata keys on every field via `World(extra_metadata=["serializable"])`, to enforce component-level behavior such as field serialization.
 
 ### Few relevant concepts:
@@ -88,7 +90,7 @@ def main():
 
 ## Per-entity systems (e.g. rendering, foreign APIs)
 
-Not every system vectorizes. A renderer calls a draw function *per primitive*; same for any per-entity foreign API. That's a per-entity *system* inside an otherwise-vectorized app. The cheapest way to iterate through all the entities is by using `zip()` on the `QueryResult` object on the fields you need, e.g:
+Not every system vectorizes. A renderer calls a draw function per primitive; same for any per-entity foreign API. That's a per-entity system inside an otherwise-vectorized app. The cheapest way to iterate through all the entities is by using `zip()` on the `QueryResult` object on the fields you need, e.g:
 
 ```python
 qr = world.query(HasPosition, HasColor, HasRadius)
@@ -141,12 +143,12 @@ That covers elementwise math and ufuncs (e.g. `np.where`, `np.linalg.norm(..., a
 
 Edge cases worth knowing:
 
-- **Not a full ndarray — these *raise*, never lie.** Entity-axis indexing beyond a single
+- **Not a full ndarray — these raise, never lie.** Entity-axis indexing beyond a single
   `qr.f[i]` (`qr.f[:]`, `qr.f[2:4]`, `qr.f[mask]`, fancy), partial entity writes, and ndarray
   methods/attrs (`.sum()`, `.mean()`, `.dtype`, `.ndim`, `.T`). Need any of these? Materialize
   first with `qr.f.numpy()`.
 - **Axis-0 ops are per-pool, not global (footgun).** `np.sort` / `np.cumsum` / `np.sum` over
-  `axis=0` run *within each pool* and reset at pool boundaries — they do **not** see all entities
+  `axis=0` run within each pool and reset at pool boundaries — they do **not** see all entities
   at once, so they differ from numpy. They're allowed, but if you want a global result, do
   `qr.f.numpy()` first. A reduction that collapses the entity axis is rejected when its length no
   longer matches the pool's row count.
