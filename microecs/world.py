@@ -24,7 +24,7 @@ class World:
         self.pool_to_components: dict[Pool, list[ComponentType]] = {}
         # components management
         self.component_names = [x.__name__ for x in components]
-        self.component_types = list(components)
+        self.component_types = set(components)
         self.component_to_bit: dict[ComponentType, int] = {t: 2**i for i, t in enumerate(components)} # bit for querying
         self.component_to_shapes: dict[ComponentType, list[Shape]] = {
             c: [f.metadata["shape"] for f in fields(c)] for c in components}
@@ -174,8 +174,8 @@ class World:
     # other low-level methods
 
     def _check_components_against_pool(self, components: list[ComponentType], **entity_fields):
-        assert len(cs := components) > 0, f"Entity has no components: {self.component_names}"
-        assert all(c in self.component_types for c in cs), f"Components '{cs}' not in {self.component_types}"
+        assert len(cs := set(components)) > 0, f"Entity has no components: {self.component_names}"
+        assert (diff := cs - self.component_types) == set(), f"Missing comps:\n{cs=}\n{self.component_types=}\n{diff=}"
         expected_fields = set()
         for component in components:
             for _field in self.component_to_field_names[component]:

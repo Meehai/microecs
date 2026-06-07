@@ -122,6 +122,6 @@ class QueryResult:
         return self._len
 
     def __repr__(self):
-        return (f"[QueryResult]\n- Entities: {len(self.entity_ids)}\n- Fields: {self._fields}"
-                f"\n- Pools: {len(self.pool_list)}\n- Len: {self._len}\n- Shapes: {list(self._field_shapes.values())}"
-                f"\n- Dtypes: {list(self._field_dtypes.values())}")
+        return (f"[QueryResult]\n- Entities: {len(self.entity_ids)} (pools: {len(self.pool_list)})"
+                f"\n- Fields: {self._fields}"
+                f"\n- Shapes: {list(self._field_shapes.values())}\n- Dtypes: {list(self._field_dtypes.values())}")
