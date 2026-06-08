@@ -385,6 +385,37 @@ def test_gather_concatenates_all_entities_for_cross_entity_ops():
     assert flat.tolist() == [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]     # pool-by-pool order
 
 
+def test_numpy_single_pool_is_zero_copy_view():
+    """`numpy()` over a SINGLE pool must hand back that pool's own view, not a copy -- the docstring promises
+    'for len==1, we return the same object'. The single-archetype query is the common case, so gathering a
+    contiguous (N, *) array must not pay a full copy. Pinned via np.shares_memory with the underlying part:
+    the exact, dtype/layout-independent no-copy check."""
+    qr = _query([_drawable_pool([([0.0, 0.0], 5.0), ([1.0, 1.0], 6.0)])], "position", "radius")
+    field = qr.position
+    assert len(field.parts) == 1                                    # premise: one pool -> one part
+
+    flat = field.numpy()
+
+    assert flat.tolist() == [[0.0, 0.0], [1.0, 1.0]]                # right values, copy or not
+    assert np.shares_memory(flat, field.parts[0])                   # ... and the SAME memory: no copy
+
+
+def test_numpy_multi_pool_is_a_fresh_concatenation():
+    """The single-pool no-copy shortcut must stay scoped to len==1: with TWO pools there is no single contiguous
+    buffer to view, so numpy() necessarily allocates a fresh (N, *) array. Pinned so a future 'always return
+    self.parts[0]' shortcut -- which would silently drop pool B's rows -- can't slip in: the gathered array
+    shares memory with NEITHER pool's view."""
+    qr = _query([_pos_pool([[0.0, 0.0]]), _pos_pool([[1.0, 1.0]])], "position")
+    field = qr.position
+    assert len(field.parts) == 2                                    # premise: two pools -> two parts
+
+    flat = field.numpy()
+
+    assert flat.tolist() == [[0.0, 0.0], [1.0, 1.0]]                # both pools' rows, pool-by-pool order
+    assert not np.shares_memory(flat, field.parts[0])              # a real concatenation, not pool A's view
+    assert not np.shares_memory(flat, field.parts[1])              # ... nor pool B's
+
+
 def test_collision_round_trips_via_gather_single_archetype():
     """One pool of three balls, two overlapping and one far. gather() feeds the all-pairs collision a contiguous
     (N, 2)/(N, 1); the (N, 1) mask writes back via `qr.color[:] = np.where(mask, RED, BLACK)`. The two

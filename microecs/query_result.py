@@ -14,8 +14,8 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         self._bounds = np.cumsum([0, *self._lens])
 
     def numpy(self) -> np.ndarray:
-        """Creates a numpy array from the underlying pool parts"""
-        return np.concatenate(self.parts)
+        """Creates a numpy array from the underlying pool parts. For len==1, we return the same object!"""
+        return np.concatenate(self.parts) if len(self.parts) != 1 else self.parts[0]
 
     def _chunk(self, x: T, i: int) -> T:
         if isinstance(x, _Field):
