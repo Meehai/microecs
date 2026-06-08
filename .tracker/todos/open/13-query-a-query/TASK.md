@@ -100,6 +100,8 @@ Consequence for the tester: the **behavioural** sub-query tests (partition, narr
 
 ## Acceptance / test checklist (tester writes once design lands)
 
+**World level** (`test/unit/test_world.py`) — real keys + resolver:
+
 - [ ] `sub_query_keeps_parent_fields` — `aabb.query(Frozen)` exposes parent's fields, not Frozen's.
 - [ ] `sub_query_include_narrows_pools` — only pools that also have the component survive.
 - [ ] `sub_query_exclude_drops_pools` — `query(exclude=Frozen)` drops Frozen-bearing pools.
@@ -112,6 +114,12 @@ Consequence for the tester: the **behavioural** sub-query tests (partition, narr
 - [ ] `sub_query_chains` — `a.query(X).query(Y)` works (X then Y).
 - [ ] `sub_query_unregistered_component_raises` — same guard as `World.query`.
 - [ ] `sub_query_after_update_semantics` — document/verify stale-parent behavior.
+
+**QueryResult level** (`test/unit/test_queryresult.py`) — hand-built, no World:
+
+- [ ] `hand_built_query_result_has_no_subquery` — `.query()` on a QueryResult built without keys/resolver
+      raises a clear error (not an AttributeError soup).
+- [ ] existing direct-construction tests still green — proves the two new ctor params are additive/optional.
 
 ## Notes
 
