@@ -1,10 +1,46 @@
 # Sub-query — `QueryResult.query(...)` (query a query, not the world)
 
 **Created**: 2026-06-08
-**Updated**: 2026-06-08
+**Updated**: 2026-06-09
 **Priority**: 2
-**Status**: 🟢 Open — design locked, ready to build. **Decided: Opt 1 (pass keys + bound resolver) + filter
-semantics.** `qr.query(...)` is a sub-query: same fields, fewer pools.
+**Status**: ⛔ Won't-do (2026-06-09) — it's sugar. For the frozen/movable example, two `world.query`
+calls (or a `base = (...)` splat) give the identical zero-copy result, and the existing query cache
+already makes repeats O(1). See "Why closed" below.
+
+## Why closed (2026-06-09)
+
+The sub-query's two claimed wins don't hold against the code as written:
+
+- **"Don't re-scan all archetypes"** — `world.query` already caches on `(include_key, exclude_key)`
+  (`world.py:108`, `:128`) and only clears at `update()` when something changed (`world.py:52-54`). So
+  the 2nd/3rd `world.query(...)` in a frame are O(1) hits. The scan they'd save (`world.py:119-121`) is a
+  loop over *archetypes* (dozens) doing one int-AND each — trivial. Worse: the design's open question says
+  sub-queries would **not** cache, so `qr.query(X)` rebuilds every call — making it the *slower* path.
+- **"Don't repeat the long include list"** — a tuple already does this, no new feature/state:
+
+  ```python
+  base    = (HasModel, HasPose, HasCollision, HasAABBCollider)
+  frozen  = world.query(*base, Frozen)
+  movable = world.query(*base, exclude=[Frozen])
+  ```
+
+- **No data win** — both paths build zero-copy views (`query_result.py:106`); within a frame all reads hit
+  the same live pool arrays (consistent), and across `update()` both go equally stale.
+
+Cost rejected: new optional ctor params, a `make_key` ref coupling `QueryResult`→`World`, per-pool key
+plumbing, a second code path with its own staleness/cache questions, and ~13 tests — all to buy what one
+`base = (...)` tuple already gives.
+
+**If revisited, make it a different feature:** row-level **data-predicate** filtering
+(`aabb.where(aabb.mass > 5.0)`) — a boolean mask over rows, which `world.query` *cannot* express
+(it filters by component presence, never by data values). That would earn its keep; the archetype-bitmask
+sub-query below does not.
+
+---
+
+## Original design (kept for reference)
+
+`qr.query(...)` is a sub-query: same fields, fewer pools.
 
 ## Goal
 
