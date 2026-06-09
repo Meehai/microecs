@@ -66,6 +66,14 @@ def _pos_pool(rows: list[list[float]]) -> Pool:
     return pool
 
 
+def _pose_pool(rows: list[tuple[np.ndarray, float]]) -> Pool:
+    """A pool of (pose, active) entities: pose is a (4, 4) transform matrix, active a (1,) on/off flag."""
+    pool = Pool(fields=["pose", "active"], shapes=[(4, 4), (1,)], dtypes=["float32", "float32"])
+    for mat, act in rows:
+        pool.add_entity(pose=np.array(mat, "float32"), active=np.array([act], "float32"))
+    return pool
+
+
 def _all_pairs_collisions(positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
     """All-pairs collision over flat (N, 2) positions / (N, 1) radii; returns an (N, 1) bool mask of which
     entities overlap at least one other."""
@@ -75,8 +83,9 @@ def _all_pairs_collisions(positions: np.ndarray, radii: np.ndarray) -> np.ndarra
     return (hit.sum(axis=1) > 0)[..., None]                                  # (N, 1)
 
 
-_FIELD_SHAPES = {"position": (2,), "velocity": (2,), "radius": (1,), "color": (4,)}
-_FIELD_DTYPES = {"position": "float32", "velocity": "float32", "radius": "float32", "color": "int32"}
+_FIELD_SHAPES = {"position": (2,), "velocity": (2,), "radius": (1,), "color": (4,), "pose": (4, 4), "active": (1,)}
+_FIELD_DTYPES = {"position": "float32", "velocity": "float32", "radius": "float32", "color": "int32",
+                 "pose": "float32", "active": "float32"}
 
 
 def _query(pools: list[Pool], *fields: str, entity_ids: list[int] = None) -> QueryResult:
@@ -283,6 +292,31 @@ def test_component_axis_index_writes_through_one_column():
     assert (poolB.position[:, 0] == [2.0, 3.0, 4.0]).all()
     assert (poolA.position[:, 1] == -1.0).all()              # y written
     assert (poolB.position[:, 1] == -1.0).all()
+
+
+def test_ellipsis_indexing_reshapes_a_mask_to_broadcast_over_a_higher_rank_field():
+    """Ellipsis indexing on a _Field lets an (N, 1) mask drive a write into an (N, 4, 4) pose field. `mask[..., None]`
+    routes through __getitem__ (key[0] is Ellipsis) and adds a trailing axis per pool -> an (N, 1, 1) _Field that
+    broadcasts against the (4, 4) matrix of every entity. Without ellipsis support there is no per-pool way to
+    reshape a stitched mask for broadcasting, so np.where over pose would be impossible across pools.
+
+    Two pools (1 + 2 entities); each entity's `active` flag decides whether its pose is reset to the 4x4 identity.
+    Active entities (pool A's only one, pool B's second) become identity; the inactive one keeps its matrix."""
+    a = _pose_pool([(np.full((4, 4), 1.0), 1.0)])                                       # 1 entity, active
+    b = _pose_pool([(np.full((4, 4), 2.0), 0.0), (np.full((4, 4), 3.0), 1.0)])          # inactive, then active
+    qr = _query([a, b], "pose", "active")
+
+    mask = qr.active > 0.5                          # (N, 1) bool _Field
+    assert isinstance(mask, _Field) and mask.shape == (3, 1)
+    assert mask[..., None].shape == (3, 1, 1)       # ellipsis + None -> trailing axis, ready to broadcast over (4, 4)
+    assert qr.pose[...].shape == (3, 4, 4)          # bare ellipsis round-trips the whole field
+
+    identity = np.eye(4, dtype="float32")
+    qr.pose[:] = np.where(mask[..., None], identity, qr.pose)   # reset pose to identity where active, else keep
+
+    assert (a.pose[0] == identity).all()            # active -> reset
+    assert (b.pose[0] == 2.0).all()                 # inactive -> untouched
+    assert (b.pose[1] == identity).all()            # active -> reset
 
 
 def test_entity_axis_index_stays_rejected():

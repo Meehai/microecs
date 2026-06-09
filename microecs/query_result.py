@@ -79,11 +79,11 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
             pool_ix = int(np.searchsorted(self._bounds, key, side="right")) - 1
             return self.parts[pool_ix][key - self._bounds[pool_ix]]
 
-        if not (isinstance(key, tuple) and key and key[0] == slice(None)):
-            raise TypeError("Unsupported indexing. Use .numpy() for a proper array. To set items, use qr.attr[:, k]=xxx"
-                            ". For fancy indexing qr[i, 0:3, k], use qr[i][0:3, k].")
+        if key is Ellipsis or (isinstance(key, tuple) and key and (key[0] is Ellipsis or key[0] == slice(None))):
+            return _Field([part[key] for part in self.parts])
 
-        return _Field([part[key] for part in self.parts])
+        raise TypeError("Unsupported indexing. Use .numpy() for a proper array. To set items, use qr.attr[:, k]=xxx. "
+                        "For fancy indexing qr[i, 0:3, k], use qr[i][0:3, k].")
 
     def __iter__(self):
         for part in self.parts:
@@ -111,7 +111,7 @@ class QueryResult:
         if (data := self.__dict__.get("_data")) is not None and name in data:
             # the 'or' part is in case no pools match the query and we want qr.position[:] += 1 still to work (noop)
             return _Field(data[name] or [np.empty((0, *self._field_shapes[name]), self._field_dtypes[name])])
-        raise AttributeError(name)
+        raise AttributeError(f"'{name}' not part of {self._fields}")
 
     def __setattr__(self, name, value):
         if (data := self.__dict__.get("_data")) is not None and name in data:
