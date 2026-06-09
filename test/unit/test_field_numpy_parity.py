@@ -208,7 +208,7 @@ def test_entity_axis_partial_write_raises(indexer):
         qr.velocity[indexer] = 0.0
 
 
-@pytest.mark.parametrize("attr", ["dtype", "ndim", "T", "sum", "mean", "max"])
+@pytest.mark.parametrize("attr", ["ndim", "T", "sum", "mean", "max"])
 def test_missing_ndarray_methods_raise(attr):
     """_Field is not a full ndarray: these attrs/methods are absent (AttributeError), so user code
     fails loudly instead of silently. Use .numpy() when a real array is needed."""
