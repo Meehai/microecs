@@ -11,6 +11,7 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         self._lens = [len(p) for p in self.parts]
         self.len = sum(self._lens)
         self.shape: Shape = (len(self), *self.parts[0].shape[1:])
+        self.dtype = self.parts[0].dtype
         self._bounds = np.cumsum([0, *self._lens])
 
     def numpy(self) -> np.ndarray:
@@ -58,7 +59,7 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
     def __setitem__(self, key, value):
         if (not (isinstance(key, slice) and key == slice(None)) and
             not (isinstance(key, tuple) and key and key[0] == slice(None))):
-            raise TypeError("entity-axis assignment crosses pools; use [:] or [:, k]")
+            raise TypeError("entity-axis assignment crosses pools; use [:] or [:, k] or [i][...]")
 
         if isinstance(value, _Field):
             for i, part in enumerate(self.parts):
