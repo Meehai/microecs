@@ -1262,7 +1262,7 @@ def test_tag_component_is_valid_and_queryable():
 
     qr_tag = world.query(Frozen)                     # tag-only query spans {Pos,Frozen} + pure {Frozen} pools
     assert sorted(qr_tag.entity_ids.tolist()) == sorted([tagged, pure])
-    assert qr_tag._fields == []                             # a tag exposes no fields
+    assert qr_tag.fields == []                             # a tag exposes no fields
     assert len(qr_tag) == 2
     assert plain not in qr_tag.entity_ids.tolist()          # the untagged entity is excluded
 
