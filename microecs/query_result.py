@@ -96,14 +96,14 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         return f"[Field] Shape: {self.shape} (across {len(self.parts)} pools)"
 
 class QueryResult:
-    """A list of pools seen as a contiguous view. Fields (qr.position) implement array interface to look like numpy"""
+    """A query result containing entities. Fields (e.g. qr.position) implement array interface to look like numpy"""
     def __init__(self, pool_list: list[Pool], field_shapes: dict[str, Shape], field_dtypes: dict[str, np.dtype],
                  entity_ids: np.ndarray):
         self.pool_list = pool_list
         self.entity_ids = entity_ids
+        self.fields = list(field_shapes)
         self._field_shapes = field_shapes
         self._field_dtypes = field_dtypes
-        self._fields = list(field_shapes)
         self._data: dict[str, np.ndarray] = {f: [p.data[f][0:len(p)] for p in pool_list] for f in field_shapes.keys()}
         self._len = sum(len(pool) for pool in self.pool_list)
 
@@ -111,7 +111,7 @@ class QueryResult:
         if (data := self.__dict__.get("_data")) is not None and name in data:
             # the 'or' part is in case no pools match the query and we want qr.position[:] += 1 still to work (noop)
             return _Field(data[name] or [np.empty((0, *self._field_shapes[name]), self._field_dtypes[name])])
-        raise AttributeError(f"'{name}' not part of {self._fields}")
+        raise AttributeError(f"'{name}' not part of {self.fields}")
 
     def __setattr__(self, name, value):
         if (data := self.__dict__.get("_data")) is not None and name in data:
@@ -124,5 +124,5 @@ class QueryResult:
 
     def __repr__(self):
         return (f"[QueryResult]\n- Entities: {len(self.entity_ids)} (pools: {len(self.pool_list)})"
-                f"\n- Fields: {self._fields}"
+                f"\n- Fields: {self.fields}"
                 f"\n- Shapes: {list(self._field_shapes.values())}\n- Dtypes: {list(self._field_dtypes.values())}")
