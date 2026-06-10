@@ -4,6 +4,6 @@ from .world import World
 from .query_result import QueryResult
 from .pool import Pool
 from .component import Component
-from .utils import EntityData
+from .utils import EntityData, EntityId
 
-__all__ = ["World", "QueryResult", "Pool", "Component", "EntityData"]
+__all__ = ["World", "QueryResult", "Pool", "Component", "EntityData", "EntityId"]
