@@ -64,7 +64,7 @@ class MotionSystem:
     def __call__(self, world: World):
         qr = world.query(HasPosition, HasVelocity) # 'exclude' is optional
         qr.position[:] = qr.position + qr.velocity * DT # writes back to all the underlying pools using numpy's rules
-        # Alternative for per-pool update. Less ergonomic, but maybe faster in extreme cases as it avoids the _Field obj
+        # Alternative for per-pool update. Less ergonomic, but maybe faster in extreme cases as it avoids the Field obj
         for pool in qr.pool_list:
             pool.position[:] = pool.position + pool.velocity * DT
 
@@ -112,7 +112,7 @@ Benchmark: we run the same physics step `pos += vel*dt` over N=100k entities spl
 | pattern | ns/entity | vs OOP-scalar |
 |---|---:|---:|
 | `micro-ecs-pool-vectorized` — `for pool: pool.f[:] = pool.f + …` | 0.9 | **52× faster** |
-| `micro-ecs-vectorized` — `qr.f[:] = qr.f + …` (the `_Field`) | 1.8 | **27× faster** |
+| `micro-ecs-vectorized` — `qr.f[:] = qr.f + …` (the `Field`) | 1.8 | **27× faster** |
 | **`oop-scalar`** — `for o: o.x += o.vx*dt` (python floats) | 48 | 1× (baseline) |
 | `oop-numpy` — objects holding `(2,)` numpy arrays | 605 | 13× slower |
 | `micro-ecs-zip-rows` — `for p, v in zip(qr.pos, qr.vel)` | 744 | 15× slower |
@@ -121,7 +121,7 @@ Benchmark: we run the same physics step `pos += vel*dt` over N=100k entities spl
 
 Three things to take from it:
 
-1. **Vectorized wins big.** Batched ops (`_Field` or per-pool) run at 1–2 ns/entity — **27–52×
+1. **Vectorized wins big.** Batched ops (`Field` or per-pool) run at 1–2 ns/entity — **27–52×
    faster** than the *fastest* OOP loop. Same for data-parallel branches: an `np.where` clamp or
    bounce is ~34× faster than a per-entity `if`.
 2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **15–30× slower**
@@ -140,7 +140,7 @@ microecs ~15× — use them there. microecs is the right tool for **vectorizable
 
 ## How much are `Pool` and `QueryResult` numpy-like and corner cases
 
-Given `qr=world.query(A, B)`, then `qr.position` returns a `_Field`: a view over the matching pools that behaves like one contiguous-like `(N, *e)`
+Given `qr=world.query(A, B)`, then `qr.position` returns a `Field`: a view over the matching pools that behaves like one contiguous-like `(N, *e)`
 numpy array (e.g. `(N, 2)` for a `(2,)` field). It applies each op **per pool** and stitches result back.
 
 That covers elementwise math and ufuncs (e.g. `np.where`, `np.linalg.norm(..., axis=1)` etc.), broadcasting (every operand shape numpy accepts, and it raises on the ones numpy rejects). See `test/unit/test_field_numpy_parity.py` for a whole set of operations comparing both.
@@ -157,7 +157,7 @@ Edge cases worth knowing:
   `qr.f.numpy()` first. A reduction that collapses the entity axis is rejected when its length no
   longer matches the pool's row count.
 - **Operands must come from the same query.** Alignment is per-pool, not by flat index, so don't
-  mix a `_Field` from one `world.query(...)` into an op on another.
+  mix a `Field` from one `world.query(...)` into an op on another.
 - **Reserved field names.** A field is read back as `qr.<field>` and `entity.<field>`, so it may not
   collide with an attribute or method of `QueryResult` or `Entity` — `World(...)` rejects such a
   component at construction instead of silently shadowing it. The reserved set (source of truth:

@@ -1,9 +1,9 @@
-"""_Field numpy-parity contract.
+"""Field numpy-parity contract.
 
-A _Field is a segmented view of a (N, *e) array (one chunk per pool). The promise: for any
+A Field is a segmented view of a (N, *e) array (one chunk per pool). The promise: for any
 *pool-independent* operation it must behave EXACTLY like numpy acting on the concatenated
 (N, *e) array -- same values, same shape, and the same exception on bad shapes. These tests
-diff _Field against numpy on the materialized array (qr.field.numpy()).
+diff Field against numpy on the materialized array (qr.field.numpy()).
 
 Three buckets, all pinned here:
 1. PARITY  -- elementwise/broadcast/feature-axis ops match numpy 1:1 (incl. matching its errors).
@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from microecs import World, Component
-from microecs.query_result import _Field
+from microecs.query_result import Field
 
 
 class HasVel(Component):
@@ -57,7 +57,7 @@ def _multipool_pose():
 
 
 def assert_parity(qr_field, logical, op):
-    """op applied to the _Field must equal op applied to the materialized array -- or both raise."""
+    """op applied to the Field must equal op applied to the materialized array -- or both raise."""
     try:
         r_np, e_np = op(logical), None
     except Exception as e:                       # noqa: BLE001 - we compare against numpy's own error
@@ -70,9 +70,9 @@ def assert_parity(qr_field, logical, op):
     if e_np is not None or e_f is not None:
         assert e_np is not None and e_f is not None, (
             f"numpy {'raised '+type(e_np).__name__ if e_np else 'did NOT raise'}, "
-            f"_Field {'raised '+type(e_f).__name__ if e_f else 'did NOT raise'}")
+            f"Field {'raised '+type(e_f).__name__ if e_f else 'did NOT raise'}")
         return
-    r_f = r_f.numpy() if isinstance(r_f, _Field) else np.asarray(r_f)
+    r_f = r_f.numpy() if isinstance(r_f, Field) else np.asarray(r_f)
     assert r_f.shape == r_np.shape, f"shape {r_f.shape} vs numpy {r_np.shape}"
     assert np.allclose(r_f, r_np), f"values diverge:\n{r_f}\nvs\n{r_np}"
 
@@ -208,7 +208,7 @@ def test_entity_axis_partial_write_raises(indexer):
 
 @pytest.mark.parametrize("attr", ["ndim", "T", "sum", "mean", "max"])
 def test_missing_ndarray_methods_raise(attr):
-    """_Field is not a full ndarray: these attrs/methods are absent (AttributeError), so user code
+    """Field is not a full ndarray: these attrs/methods are absent (AttributeError), so user code
     fails loudly instead of silently. Use .numpy() when a real array is needed."""
     _, qr = _multipool_velocity()
     with pytest.raises(AttributeError):

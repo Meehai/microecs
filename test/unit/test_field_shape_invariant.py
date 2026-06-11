@@ -1,4 +1,4 @@
-"""Field-shape invariant for QueryResult / _Field.
+"""Field-shape invariant for QueryResult / Field.
 
 The contract: a field declared (*e) — e.g. pose=(4,4) — is an (N, *e) array-like. Two rules,
 at two layers, that these tests pin:
@@ -9,7 +9,7 @@ at two layers, that these tests pin:
    in-place writes only). You can only break it by trying to *assign* a wrong-shape value,
    which must raise — never silently reshape.
 
-2. TRANSIENT results preserve only the entity axis (N), not the feature dims. _Field applies
+2. TRANSIENT results preserve only the entity axis (N), not the feature dims. Field applies
    a numpy op per-pool and rebuilds; the only invariant it can/should enforce is
    `result.shape[0] == rows` (query_result.py: _apply_fn_on_parts). So np.linalg.norm(v, axis=1)
    is fine ((N,2)->(N,)); a reduction over the entity axis (axis=0) is rejected. Crossing pools
@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 from microecs import World, Component
-from microecs.query_result import _Field
+from microecs.query_result import Field
 
 
 class HasPose(Component):  # 2D field: the (4,4) the contract is written around
@@ -91,7 +91,7 @@ def test_field_shape_survives_broadcast_assign():
 
 
 def test_field_shape_survives_field_to_field_assign():
-    """The np.where(...) -> _Field path scatters back without changing shape."""
+    """The np.where(...) -> Field path scatters back without changing shape."""
     world = World(components=[HasVelocity])
     for v in ([1, 2], [3, 4], [5, 6]):
         world.add_entity(components=[HasVelocity], velocity=np.array(v, "float32"))
@@ -153,7 +153,7 @@ def test_assign_wrong_feature_shape_raises():
     qr = world.query(HasPose, HasVelocity)
     with pytest.raises(ValueError):                          # broadcast path: (N,2) !-> (N,4,4)
         qr.pose[:] = np.ones((len(qr), 2), "float32")
-    with pytest.raises(ValueError):                          # _Field path: velocity field into pose
+    with pytest.raises(ValueError):                          # Field path: velocity field into pose
         qr.pose[:] = qr.velocity
 
 
@@ -168,7 +168,7 @@ def test_transient_op_preserves_entity_axis_not_feature():
 
     qr = world.query(HasVelocity)
     mag = np.linalg.norm(qr.velocity, axis=1)
-    assert isinstance(mag, _Field)
+    assert isinstance(mag, Field)
     assert mag.shape == (2,)                                 # N kept, feature collapsed
     assert np.allclose(mag.numpy(), [5.0, 13.0])             # == norm on the materialized array
 
@@ -204,7 +204,7 @@ def test_entity_axis_collapse_can_slip_through_when_len_coincides():
 
     qr = world.query(HasVelocity)
     sneaky = np.sum(qr.velocity, axis=0)                     # does NOT raise: coincidence rows==2==feat
-    assert isinstance(sneaky, _Field)
+    assert isinstance(sneaky, Field)
     assert sneaky.shape == (2,)                              # presented as N=2, but it's one summed row
     # it is NOT the per-entity data: the materialized field would be the two original rows
     assert not np.array_equal(sneaky.numpy(), qr.velocity.numpy())
@@ -256,7 +256,7 @@ def test_sort_axis0_is_documented_per_pool_footgun():
 
     qr = world.query(HasVelocity)
     result = np.sort(qr.velocity, axis=0)                    # does NOT raise
-    assert isinstance(result, _Field)
+    assert isinstance(result, Field)
     assert result.shape == (3, 2)                            # N preserved -> passes the guard
     # per-pool result differs from the global sort the user probably expected
     assert not np.array_equal(result.numpy(), np.sort(qr.velocity.numpy(), axis=0))

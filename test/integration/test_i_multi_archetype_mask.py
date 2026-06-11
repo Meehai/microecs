@@ -1,9 +1,9 @@
-"""Integration: a full-N raw mask mixed with _Field operands, across more than one archetype.
+"""Integration: a full-N raw mask mixed with Field operands, across more than one archetype.
 
 `example 02 WallBounceSystem` builds a raw (N, 2) boolean mask and feeds it to
 `np.where(mask, -qr.velocity, qr.velocity)`: the mask is a plain numpy array spanning every matched entity,
-the velocities are _Field (per-pool views). Per-pool dispatch splits the full-N mask into per-pool chunks
-(like a _Field), so the WallBounce idiom works through a real World query that matches two pools.
+the velocities are Field (per-pool views). Per-pool dispatch splits the full-N mask into per-pool chunks
+(like a Field), so the WallBounce idiom works through a real World query that matches two pools.
 """
 from dataclasses import field
 import numpy as np

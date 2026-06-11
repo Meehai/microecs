@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from microecs import Pool, Component
-from microecs.query_result import QueryResult, _Field
+from microecs.query_result import QueryResult, Field
 
 
 class HasPosition(Component):  # owns the `position` field the pools below carry
@@ -155,8 +155,8 @@ def test_np_where_dispatches_per_pool():
 
 def test_raw_full_n_mask_mixed_with_field_splits_across_pools():
     """`qr.velocity[:] = np.where(mask, -qr.velocity, qr.velocity)` where `mask` is a RAW (N, 2) numpy array
-    (not a _Field), over two pools. The mask spans every entity; the velocities are per-pool _Fields. Per-pool
-    dispatch splits the full-N mask into per-pool chunks (like a _Field), so each pool's np.where sees its own
+    (not a Field), over two pools. The mask spans every entity; the velocities are per-pool _Fields. Per-pool
+    dispatch splits the full-N mask into per-pool chunks (like a Field), so each pool's np.where sees its own
     (pool_n, 2) slice of the mask."""
     a = _pv_pool([([0.0, 0.0], [3.0, 3.0])])                       # 1 entity
     b = _pv_pool([([0.0, 0.0], [3.0, 3.0]), ([0.0, 0.0], [3.0, 3.0])])   # 2 entities
@@ -171,7 +171,7 @@ def test_raw_full_n_mask_mixed_with_field_splits_across_pools():
 
 def test_inplace_op_with_full_n_raw_operand_splits_across_pools():
     """`qr.velocity += raw` where `raw` is a RAW (N, 2) numpy array, over two pools. The in-place op splits the
-    full-N operand into per-pool chunks (like a _Field), so each pool's velocity view is incremented by its own
+    full-N operand into per-pool chunks (like a Field), so each pool's velocity view is incremented by its own
     (pool_n, 2) slice of `raw`."""
     a = _pv_pool([([0.0, 0.0], [3.0, 3.0])])                       # 1 entity
     b = _pv_pool([([0.0, 0.0], [3.0, 3.0]), ([0.0, 0.0], [3.0, 3.0])])   # 2 entities
@@ -219,7 +219,7 @@ def test_inplace_op_writes_through_to_pools():
 
 def test_inplace_op_with_raw_operand_writes_through_and_matches_numpy_on_bad_shapes():
     """`qr.position *= raw` with a RAW numpy operand writes through the pools: the operand broadcasts by numpy's
-    rules and the value Python rebinds is the in-place _Field result (not the raw array), so a raw operand never
+    rules and the value Python rebinds is the in-place Field result (not the raw array), so a raw operand never
     looks like a stray field assignment. A non-broadcastable operand -- np.array([]) against (N, 2) -- raises
     ValueError, exactly as `np.zeros((N, 2)) *= np.array([])` does."""
     a = _pos_pool([[10.0, 20.0]])
@@ -251,7 +251,7 @@ def test_iterating_fields_yields_each_entity_for_rendering():
 
 def test_entity_ids_is_a_flat_pool_by_pool_array():
     """`qr.entity_ids` is a flat (N,) array over all matched entities, in the same pool-by-pool order as the
-    fields -- NOT a _Field. So entity-axis ops that _Field rejects (integer index, slice, np.isin) work here,
+    fields -- NOT a Field. So entity-axis ops that Field rejects (integer index, slice, np.isin) work here,
     because the ids are materialized, not a stitched per-pool view."""
     poolA = _drawable_pool([([0.0, 0.0], 5.0), ([1.0, 1.0], 6.0)])   # 2 entities
     poolB = _drawable_pool([([2.0, 2.0], 7.0)])                      # 1 entity
@@ -260,13 +260,13 @@ def test_entity_ids_is_a_flat_pool_by_pool_array():
     assert isinstance(qr.entity_ids, np.ndarray)
     assert qr.entity_ids.shape == (len(qr),)                         # flat, one entry per entity (== 3)
     assert qr.entity_ids.tolist() == [10, 11, 20]                    # pool A's ids first, then pool B's
-    assert int(qr.entity_ids[2]) == 20                               # entity-axis index -> allowed (unlike a _Field)
+    assert int(qr.entity_ids[2]) == 20                               # entity-axis index -> allowed (unlike a Field)
     assert qr.entity_ids[0:2].tolist() == [10, 11]                   # slicing the entity axis -> allowed
     assert np.isin(qr.entity_ids, [11, 20]).tolist() == [False, True, True]   # set membership -> allowed
 
 
 def test_component_axis_index_reads_a_per_pool_field():
-    """`qr.position[:, 0]` selects one component of every entity and returns a _Field of per-pool column views.
+    """`qr.position[:, 0]` selects one component of every entity and returns a Field of per-pool column views.
     Checked via .parts: the x column and the y column, each split by pool."""
     poolA = _drawable_pool([([0.0, 10.0], 5.0), ([1.0, 11.0], 6.0)])
     poolB = _drawable_pool([([2.0, 12.0], 7.0), ([3.0, 13.0], 8.0), ([4.0, 14.0], 9.0)])
@@ -295,8 +295,8 @@ def test_component_axis_index_writes_through_one_column():
 
 
 def test_ellipsis_indexing_reshapes_a_mask_to_broadcast_over_a_higher_rank_field():
-    """Ellipsis indexing on a _Field lets an (N, 1) mask drive a write into an (N, 4, 4) pose field. `mask[..., None]`
-    routes through __getitem__ (key[0] is Ellipsis) and adds a trailing axis per pool -> an (N, 1, 1) _Field that
+    """Ellipsis indexing on a Field lets an (N, 1) mask drive a write into an (N, 4, 4) pose field. `mask[..., None]`
+    routes through __getitem__ (key[0] is Ellipsis) and adds a trailing axis per pool -> an (N, 1, 1) Field that
     broadcasts against the (4, 4) matrix of every entity. Without ellipsis support there is no per-pool way to
     reshape a stitched mask for broadcasting, so np.where over pose would be impossible across pools.
 
@@ -306,8 +306,8 @@ def test_ellipsis_indexing_reshapes_a_mask_to_broadcast_over_a_higher_rank_field
     b = _pose_pool([(np.full((4, 4), 2.0), 0.0), (np.full((4, 4), 3.0), 1.0)])          # inactive, then active
     qr = _query([a, b], "pose", "active")
 
-    mask = qr.active > 0.5                          # (N, 1) bool _Field
-    assert isinstance(mask, _Field) and mask.shape == (3, 1)
+    mask = qr.active > 0.5                          # (N, 1) bool Field
+    assert isinstance(mask, Field) and mask.shape == (3, 1)
     assert mask[..., None].shape == (3, 1, 1)       # ellipsis + None -> trailing axis, ready to broadcast over (4, 4)
     assert qr.pose[...].shape == (3, 4, 4)          # bare ellipsis round-trips the whole field
 
@@ -546,7 +546,7 @@ def test_empty_query_with_no_matched_pool_behaves_like_numpy():
 
 def test_assigning_a_field_scatters_like_a_recarray():
     """Assigning a field attribute writes THROUGH to the pools, exactly like np.recarray: `qr.position = X`
-    scatters X into every entity -- whether X is a computed _Field, a raw array, or a scalar -- and a
+    scatters X into every entity -- whether X is a computed Field, a raw array, or a scalar -- and a
     non-broadcastable value raises ValueError. Never a silent shadow, never a silent no-op. Each step is
     cross-checked against an actual np.recarray running the same assignment."""
     a, b = _pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])
@@ -554,7 +554,7 @@ def test_assigning_a_field_scatters_like_a_recarray():
     rec = np.rec.array(np.zeros(3, dtype=[("position", "f4", (2,))]))    # the numpy yardstick
     rec.position = [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
 
-    qr.position = qr.position * 2                       # computed _Field -> writes through (not discarded)
+    qr.position = qr.position * 2                       # computed Field -> writes through (not discarded)
     rec.position = rec.position * 2
     assert a.position.tolist() == [[2.0, 2.0]]
     assert b.position.tolist() == [[4.0, 4.0], [6.0, 6.0]]
@@ -568,7 +568,7 @@ def test_assigning_a_field_scatters_like_a_recarray():
     assert (a.position == 0).all() and (b.position == 0).all()
 
     assert "position" not in vars(qr)                   # never shadowed; still served by __getattr__
-    assert isinstance(qr.position, _Field)
+    assert isinstance(qr.position, Field)
 
     with pytest.raises(ValueError):                     # bad shape -> numpy rules, like recarray
         qr.position = np.array([1.0, 2.0, 3.0], "float32")

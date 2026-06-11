@@ -8,7 +8,8 @@ from .pool import Pool
 # Note: if QueryResult gets new fields, add them here! Otherwise the user code may overwrite them e.g. qr._len=xxx
 QUERY_RESULT_INTERNAL_ATTRS = {"pool_list", "entity_ids", "fields", "_field_shapes", "_field_dtypes", "_data", "_len"}
 
-class _Field(np.lib.mixins.NDArrayOperatorsMixin):
+class Field(np.lib.mixins.NDArrayOperatorsMixin):
+    """Field is a single field (column) from a QueryResult object obtained from world.query(...)"""
     def __init__(self, parts: list[np.ndarray]):
         self.parts = parts
         self._lens = [len(p) for p in self.parts]
@@ -22,7 +23,7 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         return np.concatenate(self.parts) if len(self.parts) != 1 else self.parts[0]
 
     def _chunk(self, x: T, i: int) -> T:
-        if isinstance(x, _Field):
+        if isinstance(x, Field):
             return x.parts[i]
         if isinstance(x, np.ndarray) and x.ndim == len(self.shape) and x.shape[0] == self.len:
             return x[self._bounds[i]:self._bounds[i + 1]]
@@ -30,16 +31,16 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
 
     def _apply_fn_on_parts(self, fn: Callable, op_args: list, **kwargs):
         # op args can be 1 element (-qr.velocity), 2 elements (qr.position * 0.1), 3 elements (np.where(a, b, c)), etc.
-        # all of them must be chunked based on how many we have in this _Field so each subpart is called independently.
+        # all of them must be chunked based on how many we have in this Field so each subpart is called independently.
         results = []
         for i, part in enumerate(self.parts):
             pool_args = [self._chunk(x, i) for x in op_args]
-            part_result: _Field = fn(*pool_args, **kwargs)
+            part_result: Field = fn(*pool_args, **kwargs)
             # we expect f(arr(N, ...)) -> arr(N, ...) where N = number of items in the pool
             # for e.g. np.linalg.norm(velocity, axis=1) should do (N, 2) -> (N, 1) so the first axis is preserved
             assert len(part_result) == part.shape[0], f"Result: {part_result.shape} vs {part.shape}"
             results.append(part_result)
-        return _Field(results)
+        return Field(results)
 
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         """wrapper for elementwise (python) primitives, e.g. qr.position[:] += 1"""
@@ -48,7 +49,7 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
         if out is None:
             return self._apply_fn_on_parts(ufunc, inputs, **kwargs)
 
-        assert len(out) == 1 and isinstance(out[0], _Field), out
+        assert len(out) == 1 and isinstance(out[0], Field), out
         for i in range(len(self.parts)):
             pool_args = [self._chunk(x, i) for x in inputs]
             ufunc(*pool_args, out=out[0].parts[i], **kwargs)
@@ -64,7 +65,7 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
             not (isinstance(key, tuple) and key and key[0] == slice(None))):
             raise TypeError("entity-axis assignment crosses pools; use [:] or [:, k] or [i][...]")
 
-        if isinstance(value, _Field):
+        if isinstance(value, Field):
             for i, part in enumerate(self.parts):
                 part[key] = value.parts[i]
             return
@@ -78,10 +79,10 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
 
     def __getitem__(self, key):
         if key is Ellipsis or (isinstance(key, tuple) and key and (key[0] is Ellipsis or key[0] == slice(None))):
-            return _Field([part[key] for part in self.parts])
+            return Field([part[key] for part in self.parts])
 
         raise TypeError(("Only batch updates are supported, e.g. `qr.attr[:]=xxx` or `qr.attr[:, k]=xxx`. "
-                         "Use .numpy() for a proper array. For entity-level ops use `world.get_entity(eid).attr=xxx"))
+                         "Use .numpy() for a proper array. For entity-level ops use `world.get_entity(eid).attr=xxx`"))
 
     def __iter__(self):
         for part in self.parts:
@@ -108,7 +109,7 @@ class QueryResult:
     def __getattr__(self, name):
         if (data := self.__dict__.get("_data")) is not None and name in data:
             # the 'or' part is in case no pools match the query and we want qr.position[:] += 1 still to work (noop)
-            return _Field(data[name] or [np.empty((0, *self._field_shapes[name]), self._field_dtypes[name])])
+            return Field(data[name] or [np.empty((0, *self._field_shapes[name]), self._field_dtypes[name])])
         raise AttributeError(f"'{name}' not part of {self.fields}")
 
     def __setattr__(self, name, value):

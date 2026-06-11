@@ -1113,7 +1113,7 @@ def test_query_result_entity_ids_is_flat_and_aligned_across_pools():
 
 
 def test_query_result_entity_ids_supports_flat_array_ops():
-    """entity_ids is a real ndarray, not a _Field: entity-axis indexing and fancy ops that _Field rejects --
+    """entity_ids is a real ndarray, not a Field: entity-axis indexing and fancy ops that Field rejects --
     qr.entity_ids[i], slicing, np.isin -- all work, because ids are materialized by World, not a per-pool view."""
     world = World(components=[HasPosition])
     ids = [world.add_entity(components=(HasPosition,), position=np.array([i, i], "float32")) for i in range(4)]
@@ -1121,7 +1121,7 @@ def test_query_result_entity_ids_supports_flat_array_ops():
 
     qr = world.query(HasPosition)
 
-    assert int(qr.entity_ids[0]) in ids                            # entity-axis index -> allowed (unlike _Field)
+    assert int(qr.entity_ids[0]) in ids                            # entity-axis index -> allowed (unlike Field)
     assert qr.entity_ids[1:3].shape == (2,)                        # slicing the entity axis -> allowed
     assert np.isin(qr.entity_ids, ids[:2]).sum() == 2              # fancy / set ops -> allowed
 
