@@ -1,6 +1,6 @@
 # MicroECS
 
-Minimal (~300 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
+Minimal (~400 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
 
 Usage:
 
@@ -19,10 +19,11 @@ Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/)
 
 ## Relevant primitives: `Component`, `Pool`, `QueryResult`, `World`
 
-There are only 4 primitives (bottom up):
+These are the main primitives:
 
 - `Component` is a simple python dataclass holding only data. All entries must be numpy arrays with metadata fields: shape and dtype. We support 5 dtypes only: `int32`, `float32`, `bool`, `str` and `object`. A component with no fields is a valid **tag** for querying (e.g. `class Frozen(Component): pass`).
-- `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Usses `Components` metadata to construct contiguous arrays for all entities of the same type.
+- `Entity` is an `OOP-like` view inside the arrays of components. The data is column-major, so this approach is the slowest (row-major), but is sometimes needed when iterating through all the objects of some type (e.g. rendering or serialization).
+- `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Uses `Components` metadata to construct contiguous arrays for all entities of the same type. All fields of all entities of the same archetype are stored in column-major numpy arrays.
 - `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's interface. For all intents and purposes it should feel like a `(N, ...)` view over all selected entities. To get a proper numpy array, use `qr.numpy()`. To iterate over each entity in a query result (e.g. rendering), use `for eid, position in zip(qr.entity_ids, qr.position): ...`.
 - `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other. A `World` can also require extra metadata keys on every field via `World(extra_metadata=["serializable"])`, to enforce component-level behavior such as field serialization.
 
@@ -55,6 +56,9 @@ class RenderSystem:
         query_result = world.query(HasPosition, HasColor, exclude=[]) # contiguous-like view of all entities matching
         for position, color in zip(query_result.position, query_result.color): # draw each entity
             DrawEntity(position, color)
+        # slower variant, but feels more OOP
+        for entity in (world.get_entity(eid) for eid in query_result.entity_ids):
+            DrawEntity(entity.position, entity.color)
 
 class MotionSystem:
     def __call__(self, world: World):
@@ -103,7 +107,7 @@ There are other ways to extract a single entity e.g. `qr.some_field[i]` or `e = 
 <details>
 <summary> Microbenchmark: ECS vs OOP on a simple physics step </summary>
 
-Benchmark: we run the same physics step `pos += vel*dt` over N=100k entities split across 2 pools in various ways (ECS or OOP). All methods are verified to produce the identical result. Reproduce with `python test/manual/perf/bench_ecs_vs_oop.py` (it prints `{mode: avg_seconds_per_step}`).
+Benchmark: we run the same physics step `pos += vel*dt` over N=100k entities split across 2 pools in various ways (ECS or OOP). All methods are verified to produce the identical result. Reproduce with `python examples/04-benchmark-ecs-vs-oop.py` (it prints `{mode: avg_seconds_per_step}`).
 
 | pattern | ns/entity | vs OOP-scalar |
 |---|---:|---:|
@@ -113,7 +117,7 @@ Benchmark: we run the same physics step `pos += vel*dt` over N=100k entities spl
 | `oop-numpy` — objects holding `(2,)` numpy arrays | 605 | 13× slower |
 | `micro-ecs-zip-rows` — `for p, v in zip(qr.pos, qr.vel)` | 744 | 15× slower |
 | `micro-ecs-pool-loop` — `for pool: for i: pool.f[i]` | 870 | 18× slower |
-| `micro-ecs-get-entity` — `world.get_entity(eid)` per entity | 1674 | 35× slower |
+| `micro-ecs-get-entity` — `world.get_entity(eid)` per entity | 1450 | 30× slower |
 | `micro-ecs-index` — `qr.f[i]` per entity (an `np.searchsorted` each) | 4573 | 95× slower |
 
 Three things to take from it:
@@ -125,7 +129,7 @@ Three things to take from it:
    than idiomatic float-based OOP — because microecs is numpy-backed, so a per-entity step pays
    numpy's tiny-array overhead (`oop-numpy` shows the same ~13× tax). One unavoidable per-entity
    pass (~750 ns/entity) costs ~500× a vectorized op (~1.5 ns) and will dominate the frame.
-3. **If you must loop, loop right.** `zip`-rows (15×) < pool-loop (18×) < `get_entity` (35×) <
+3. **If you must loop, loop right.** `zip`-rows (15×) < pool-loop (18×) < `get_entity` (30×) <
    `qr.f[i]` (95× — never in a hot loop; `qr.f[i] += …` also raises, you must bind the row first).
 
 **Rule of thumb:** keep systems vectorized and push branches into `np.where` / `np.clip`. If a
@@ -154,3 +158,9 @@ Edge cases worth knowing:
   longer matches the pool's row count.
 - **Operands must come from the same query.** Alignment is per-pool, not by flat index, so don't
   mix a `_Field` from one `world.query(...)` into an op on another.
+- **Reserved field names.** A field is read back as `qr.<field>` and `entity.<field>`, so it may not
+  collide with an attribute or method of `QueryResult` or `Entity` — `World(...)` rejects such a
+  component at construction instead of silently shadowing it. The reserved set (source of truth:
+  `QUERY_RESULT_RESERVED_NAMES` in `query_result.py`, `ENTITY_RESERVED_NAMES` in `entity.py`):
+  - from `QueryResult`: `pool_list`, `entity_ids`, `fields`, `_data`, `_len`, `_field_shapes`, `_field_dtypes`
+  - from `Entity`: `entity_id`, `get_components`, `get_fields`, `to_dict`, `_eid_to_pool_ix`, `_pool_to_components`

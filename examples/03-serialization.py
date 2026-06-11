@@ -6,7 +6,7 @@ Keybinds:
 - F5 to store sthe state
 - F6 to load the state
 """
-from dataclasses import field, fields
+from dataclasses import field
 from typing import Callable, Any
 from pathlib import Path
 from argparse import ArgumentParser, Namespace
@@ -46,23 +46,23 @@ class HasCustom(Component):
 def world_to_dict(world: World) -> dict[str, Any]:
     """Serialize the world. Goes through all the entities and their components and converts the serializables to dict"""
     res = {"entities": [], "components": world.component_names, "extra_metadata": world.extra_metadata}
-    for eid in world.live_ids:
-        entity, components = world.get_entity(eid)
-        entity_data = {"entity_id": eid, "components": [c.__name__ for c in components], "data": {}}
-        for component in components:
-            for f in fields(component):
-                if not f.metadata["serializable"]:
-                    continue
-                if entity[f.name].dtype == "object":
-                    entity_field_data = entity[f.name].item()
-                else:
-                    if entity[f.name].shape == (1, ):
-                        entity_field_data = entity[f.name].item() # store (1, ) data as a single float/integer/bool
-                    else:
-                        entity_field_data = entity[f.name].tolist()
-                entity_data["data"][f.name] = entity_field_data
-        res["entities"].append(entity_data)
+    for entity in world.live_entities.values():
+        res["entities"].append(entity.to_dict(serialization_field="serializable"))
     return res
+
+def add_entity(world: World, color: "rl.Color", radius: list[float], position: Point2D,
+               velocity: Point2D | None = None, custom: bool = False):
+    """spawns a new entity in the world given some parameters"""
+    components = [HasRadius, HasColor, HasPosition2D]
+    data = {"position": np.array(position, "float32"), "color": np.array(color, dtype="int32"),
+            "radius": np.array(radius, "float32")}
+    if velocity is not None:
+        components.append(HasMotion2D)
+        data["velocity"] = np.array(velocity, "float32")
+        data["magnitude"] = np.zeros((1, ), "float32") # dummy 0 at start, as it's continuously updated in the main loop
+    if custom is True:
+        components.append(HasCustom)
+    world.add_entity(components=components, **data)
 
 def world_from_dict(data: dict[str, Any]) -> World:
     """Creates a world from a serialized representation e.g. from world_to_dict()"""
@@ -71,19 +71,6 @@ def world_from_dict(data: dict[str, Any]) -> World:
     for entity in data["entities"]:
         add_entity(world, **entity["data"], custom="HasCustom" in entity["components"])
     return world
-
-def add_entity(world, color: "rl.Color", radius: float, position: Point2D, velocity: Point2D | None = None,
-               custom: bool = False):
-    components = [HasRadius, HasColor, HasPosition2D]
-    data = {"position": np.array(position, "float32"), "color": np.array(color, dtype="int32"),
-            "radius": np.array([radius], "float32")}
-    if velocity is not None:
-        components.append(HasMotion2D)
-        data["velocity"] = np.array(velocity, "float32")
-        data["magnitude"] = np.zeros((1, ), "float32") # dummy 0 at start, as it's continuously updated in the main loop
-    if custom is True:
-        components.append(HasCustom)
-    world.add_entity(components=components, **data)
 
 # systems
 
@@ -119,7 +106,7 @@ def create_init_world(n_objects: int, scene_size: tuple[int, int]) -> World:
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
         velocity = (100 * random.random() * 2 - 1, 100 * random.random() * 2 - 1) if random.random() < 0.3 else None
         custom = random.random() < 0.5 # just a custom attribute that's only sometimes there.
-        add_entity(world, color=rl.BLACK, radius=radius, position=position, velocity=velocity, custom=custom)
+        add_entity(world, color=rl.BLACK, radius=[radius], position=position, velocity=velocity, custom=custom)
     return world
 
 def main(args: Namespace):

@@ -136,8 +136,8 @@ def micro_ecs_get_entity(n=N):
     ids = [int(x) for x in qr.entity_ids]
     def step():
         for eid in ids:
-            ent, _ = w.get_entity(eid)               # builds a dict + one numpy index per field, every call
-            ent["position"] += ent["velocity"] * DT
+            ent = w.get_entity(eid)               # builds a dict + one numpy index per field, every call
+            ent.position += ent.velocity * DT
     return _bench(step), _key(qr.position.numpy())
 
 def oop_numpy(n=N):

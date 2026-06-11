@@ -5,6 +5,9 @@ import numpy as np
 from .utils import Shape
 from .pool import Pool
 
+# Note: if QueryResult gets new fields, add them here! Otherwise the user code may overwrite them e.g. qr._len=xxx
+QUERY_RESULT_INTERNAL_ATTRS = {"pool_list", "entity_ids", "fields", "_field_shapes", "_field_dtypes", "_data", "_len"}
+
 class _Field(np.lib.mixins.NDArrayOperatorsMixin):
     def __init__(self, parts: list[np.ndarray]):
         self.parts = parts
@@ -118,6 +121,10 @@ class QueryResult:
             getattr(self, name)[:] = value   # recarray semantics: assigning a field scatters into it
             return
         super().__setattr__(name, value)
+
+    def __iter__(self):
+        raise TypeError(("QueryResult is not iterable. Use `qr.field[:] = ..` that applies to all items at once.\n"
+                         "Common pattern: `for e in world.query(..): e.f = ..` -> `qr=world.query(..); qr.f[:] = ..`"))
 
     def __len__(self):
         return self._len

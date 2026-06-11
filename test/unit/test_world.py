@@ -14,6 +14,7 @@ import pytest
 
 from microecs import World, Component
 from microecs.query_result import QueryResult
+from microecs.entity import Entity, ENTITY_INTERNAL_ATTRS
 
 
 class HasPosition(Component):
@@ -264,7 +265,7 @@ def test_query_exclude_spans_multiple_pools():
 
     qr.position[:] = qr.position + 10.0                        # vectorised write across both surviving pools
     for eid, pos in zip(qr.entity_ids, qr.position):           # scattered back, id-aligned per pool
-        np.testing.assert_array_equal(world.get_entity(int(eid))[0]["position"], pos)
+        np.testing.assert_array_equal(world.get_entity(int(eid)).position, pos)
 
 
 def test_query_exclude_cache_invalidated_on_mutation():
@@ -608,7 +609,7 @@ def test_migrate_multi_field_component_preserves_all_fields():
 # --- eager id tracking -------------------------------------------------------------------------------------------
 # A structural op on an entity that is NOT currently live fails at the CALL (clear AssertionError), not later inside
 # update() as a cryptic KeyError. "Live" = committed or pending-spawn this tick, minus pending-despawn; World keeps
-# this in live_ids. add_entity adds the new id; remove_entity removes it; add/remove_component just validate.
+# this in live_entities. add_entity adds the new id; remove_entity removes it; add/remove_component just validate.
 
 
 def test_operate_on_uncommitted_spawn_same_tick():
@@ -742,8 +743,9 @@ def test_distinct_objects_per_entity_survive_swap_remove():
 
 
 # --- get_entity: read one entity's data + components by id -------------------------------------------------------
-# get_entity(eid) is a READ accessor: returns (field_data, components) for the entity at its current row, resolved by
-# id (not index). It must NOT mutate id bookkeeping -- the id has to keep resolving and the entity stays usable after.
+# get_entity(eid) is a READ accessor: returns an Entity view (entity.field, entity.get_components()) for the entity at
+# its current row, resolved by id (not index). It must NOT mutate id bookkeeping -- the id has to keep resolving and
+# the entity stays usable after.
 
 
 def test_get_entity_returns_field_data_and_components():
@@ -752,9 +754,9 @@ def test_get_entity_returns_field_data_and_components():
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.update()
 
-    entity, components = world.get_entity(eid)
-    np.testing.assert_array_equal(entity["position"], [1.0, 2.0])
-    assert set(components) == {HasPosition}
+    entity = world.get_entity(eid)
+    np.testing.assert_array_equal(entity.position, [1.0, 2.0])
+    assert set(entity.get_components()) == {HasPosition}
 
 
 def test_get_entity_returns_all_fields_of_a_multi_component_entity():
@@ -764,10 +766,10 @@ def test_get_entity_returns_all_fields_of_a_multi_component_entity():
                            position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
     world.update()
 
-    entity, components = world.get_entity(eid)
-    np.testing.assert_array_equal(entity["position"], [1.0, 2.0])
-    np.testing.assert_array_equal(entity["velocity"], [3.0, 4.0])
-    assert set(components) == {HasPosition, HasVelocity}
+    entity = world.get_entity(eid)
+    np.testing.assert_array_equal(entity.position, [1.0, 2.0])
+    np.testing.assert_array_equal(entity.velocity, [3.0, 4.0])
+    assert set(entity.get_components()) == {HasPosition, HasVelocity}
 
 
 def test_get_entity_is_read_only_and_id_still_resolves():
@@ -779,10 +781,11 @@ def test_get_entity_is_read_only_and_id_still_resolves():
     world.get_entity(eid)
 
     assert eid in world._eid_to_pool_ix                            # lookup intact (a read may not delete the mapping)
-    assert eid in world.live_ids
+    assert eid in world.live_entities
     world.get_entity(eid)                                          # repeatable -> not consumed by the first read
 
     world.remove_entity(eid)                                       # normal lifecycle still works afterwards
+    assert eid not in world.live_entities                          # eagerly evicted from the live cache at the call
     world.update()
     assert eid not in world._eid_to_pool_ix
 
@@ -798,10 +801,10 @@ def test_get_entity_reads_current_row_after_sibling_swap_remove():
     world.remove_entity(a)                                         # c swaps into slot 0; b stays at slot 1
     world.update()
 
-    entity_b, _ = world.get_entity(b)
-    entity_c, _ = world.get_entity(c)
-    np.testing.assert_array_equal(entity_b["position"], [1.0, 1.0])  # b unmoved
-    np.testing.assert_array_equal(entity_c["position"], [2.0, 2.0])  # c followed its id into the freed slot
+    entity_b = world.get_entity(b)
+    entity_c = world.get_entity(c)
+    np.testing.assert_array_equal(entity_b.position, [1.0, 1.0])  # b unmoved
+    np.testing.assert_array_equal(entity_c.position, [2.0, 2.0])  # c followed its id into the freed slot
 
 
 def test_get_entity_unknown_id_raises():
@@ -826,7 +829,7 @@ def test_set_entity_data_writes_field_value_by_id():
 
     world.set_entity_data(eid, "position", np.array([9.0, 8.0], "float32"))
 
-    np.testing.assert_array_equal(world.get_entity(eid)[0]["position"], [9.0, 8.0])
+    np.testing.assert_array_equal(world.get_entity(eid).position, [9.0, 8.0])
     pool, ix = world._eid_to_pool_ix[eid]
     np.testing.assert_array_equal(pool.position[ix], [9.0, 8.0])   # the actual pool row was overwritten
 
@@ -840,7 +843,7 @@ def test_set_entity_data_is_eager_visible_without_update():
 
     world.set_entity_data(eid, "position", np.array([5.0, 5.0], "float32"))
 
-    np.testing.assert_array_equal(world.get_entity(eid)[0]["position"], [5.0, 5.0])  # no second update() needed
+    np.testing.assert_array_equal(world.get_entity(eid).position, [5.0, 5.0])  # no second update() needed
     assert world._command_buffer == []                             # nothing was queued
 
 
@@ -853,9 +856,9 @@ def test_set_entity_data_only_updates_the_named_field():
 
     world.set_entity_data(eid, "velocity", np.array([7.0, 7.0], "float32"))
 
-    entity, _ = world.get_entity(eid)
-    np.testing.assert_array_equal(entity["velocity"], [7.0, 7.0])  # the targeted field changed
-    np.testing.assert_array_equal(entity["position"], [1.0, 2.0])  # the sibling field is untouched
+    entity = world.get_entity(eid)
+    np.testing.assert_array_equal(entity.velocity, [7.0, 7.0])  # the targeted field changed
+    np.testing.assert_array_equal(entity.position, [1.0, 2.0])  # the sibling field is untouched
 
 
 def test_set_entity_data_targets_correct_row_after_swap_remove():
@@ -872,8 +875,8 @@ def test_set_entity_data_targets_correct_row_after_swap_remove():
 
     world.set_entity_data(c, "position", np.array([20.0, 20.0], "float32"))   # by id, after the relocation
 
-    np.testing.assert_array_equal(world.get_entity(c)[0]["position"], [20.0, 20.0])  # c got the write
-    np.testing.assert_array_equal(world.get_entity(b)[0]["position"], [1.0, 1.0])    # b (its neighbour) untouched
+    np.testing.assert_array_equal(world.get_entity(c).position, [20.0, 20.0])  # c got the write
+    np.testing.assert_array_equal(world.get_entity(b).position, [1.0, 1.0])    # b (its neighbour) untouched
 
 
 def test_set_entity_data_is_visible_through_query_view():
@@ -902,7 +905,7 @@ def test_set_entity_data_copies_numeric_value_not_aliases():
     world.set_entity_data(eid, "position", src)
     src[:] = [999.0, 999.0]                                        # mutate the source after the call
 
-    np.testing.assert_array_equal(world.get_entity(eid)[0]["position"], [5.0, 6.0])  # stored value is independent
+    np.testing.assert_array_equal(world.get_entity(eid).position, [5.0, 6.0])  # stored value is independent
 
 
 def test_set_entity_data_on_object_field_replaces_reference():
@@ -926,9 +929,9 @@ def test_set_entity_data_zero_dim_scalar_field():
 
     world.set_entity_data(eid, "scale", np.array(4.0, "float32"))
 
-    data, _ = world.get_entity(eid)
-    assert data["scale"].shape == ()
-    np.testing.assert_array_equal(data["scale"], 4.0)
+    entity = world.get_entity(eid)
+    assert entity.scale.shape == ()
+    np.testing.assert_array_equal(entity.scale, 4.0)
 
 
 def test_set_entity_data_unknown_id_raises():
@@ -983,7 +986,7 @@ def _assert_pool_ids_invariants(world: World):
         for ix, eid in enumerate(ids):
             assert world._eid_to_pool_ix[eid] == (pool, ix)                             # ids[ix] really sits at row ix
             seen.add(eid)
-    assert seen == world.live_ids                                                      # exactly the live entities
+    assert seen == set(world.live_entities)                                            # exactly the live entities
 
 
 def test_pool_ids_stay_aligned_through_random_churn():
@@ -995,7 +998,7 @@ def test_pool_ids_stay_aligned_through_random_churn():
     shadow: dict[int, dict] = {}   # eid -> {field_name: data} we believe the world holds
 
     for _ in range(500):
-        live = list(world.live_ids)
+        live = list(world.live_entities)
         roll = rng.random()
         if roll < 0.45 or not live:                                  # add a new entity (random archetype)
             comps = rng.sample(list(_CHURN_COMPONENTS), rng.randint(1, 3))
@@ -1027,11 +1030,11 @@ def test_pool_ids_stay_aligned_through_random_churn():
 
         _assert_pool_ids_invariants(world)
         for eid, fields in shadow.items():
-            entity, _ = world.get_entity(eid)
+            entity = world.get_entity(eid)
             for name, value in fields.items():
-                np.testing.assert_array_equal(entity[name], value)  # each id keeps its OWN data through every swap
+                np.testing.assert_array_equal(getattr(entity, name), value)  # each id keeps its OWN data thru swaps
 
-    assert len(world.live_ids) > 0                                  # sanity: the churn left a populated world
+    assert len(world.live_entities) > 0                            # sanity: the churn left a populated world
 
 
 # --- QueryResult.entity_ids: a flat (N,) integer array, pool-by-pool aligned with the qr.field parts -----------
@@ -1054,7 +1057,7 @@ def test_query_result_entity_ids_is_flat_and_aligned_across_pools():
     assert qr.entity_ids.shape == (len(qr),)                       # flat, one entry per entity
     assert set(qr.entity_ids.tolist()) == {a, b, c}                # exactly the matched ids
     for eid, pos in zip(qr.entity_ids, qr.position):               # id <-> row alignment, across pools
-        np.testing.assert_array_equal(world.get_entity(int(eid))[0]["position"], pos)
+        np.testing.assert_array_equal(world.get_entity(int(eid)).position, pos)
 
 
 def test_query_result_entity_ids_supports_flat_array_ops():
@@ -1098,7 +1101,7 @@ def test_query_result_entity_ids_track_rows_after_swap_remove():
 
     assert set(qr.entity_ids.tolist()) == {a, c}
     for eid, pos in zip(qr.entity_ids, qr.position):
-        np.testing.assert_array_equal(world.get_entity(int(eid))[0]["position"], pos)
+        np.testing.assert_array_equal(world.get_entity(int(eid)).position, pos)
 
 
 def test_query_cache_returns_same_object_between_updates():
@@ -1218,6 +1221,22 @@ def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserv
         World(components=[bad])
 
 
+# An Entity (world.get_entity(id)) exposes the row by attribute, so a component field named like one of Entity's
+# own members would be shadowed: e.entity_id would return the id (not the field), e.get_components a bound method.
+# These must be rejected at world creation. Derived programmatically (not hardcoded) so new attrs/methods are picked
+# up automatically. Entity isn't slotted, so its collidable surface is split in two: instance-attr names live in the
+# module constant ENTITY_INTERNAL_ATTRS, public methods live in the class dict -- union covers both (mirrors the impl).
+_ENTITY_RESERVED = sorted(ENTITY_INTERNAL_ATTRS | {n for n in vars(Entity) if not n.startswith("__")})
+@pytest.mark.parametrize("reserved", _ENTITY_RESERVED)
+def test_world_rejects_component_field_named_like_an_entity_attribute(reserved):
+    """A component whose field is named like an Entity attribute/method must be rejected at world creation,
+    rather than be silently shadowed when read/written through get_entity."""
+    bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
+                                      reserved: field(metadata={"shape": (2,), "dtype": "float32"})})
+    with pytest.raises((AssertionError, ValueError)):
+        World(components=[bad])
+
+
 def test_extra_metadata_required_strictly_on_every_field():
     """extra_metadata makes named metadata keys mandatory on every field, checked strictly (==).
 
@@ -1277,15 +1296,15 @@ def test_tag_component_add_remove_migrates():
     world.add_component(eid, Frozen)                        # tag carries no data
     world.update()
     assert world.query(Frozen).entity_ids.tolist() == [eid]
-    data, comps = world.get_entity(eid)
-    np.testing.assert_array_equal(data["position"], [5.0, 6.0])  # data preserved across the migration
-    assert Frozen in comps
+    entity = world.get_entity(eid)
+    np.testing.assert_array_equal(entity.position, [5.0, 6.0])  # data preserved across the migration
+    assert Frozen in entity.get_components()
 
     world.remove_component(eid, Frozen)
     world.update()
     assert world.query(Frozen).entity_ids.tolist() == []
-    data, _ = world.get_entity(eid)
-    np.testing.assert_array_equal(data["position"], [5.0, 6.0])  # id stable, data still there
+    entity = world.get_entity(eid)
+    np.testing.assert_array_equal(entity.position, [5.0, 6.0])  # id stable, data still there
 
 
 def test_zero_dim_array_field_roundtrips():
@@ -1298,6 +1317,6 @@ def test_zero_dim_array_field_roundtrips():
     qr = world.query(HasScale)
     np.testing.assert_array_equal(qr.scale.numpy(), [2.5, 4.0])  # (N,) contiguous view over the 0-d field
 
-    data, _ = world.get_entity(e0)
-    assert data["scale"].shape == ()                            # still a 0-d scalar per entity
-    np.testing.assert_array_equal(data["scale"], 2.5)
+    entity = world.get_entity(e0)
+    assert entity.scale.shape == ()                            # still a 0-d scalar per entity
+    np.testing.assert_array_equal(entity.scale, 2.5)
