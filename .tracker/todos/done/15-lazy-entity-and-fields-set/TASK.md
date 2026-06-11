@@ -1,7 +1,31 @@
 # Lazy `Entity` allocation + `Pool.fields_set` (don't tax the vectorized path)
 
 **Created**: 2026-06-11
+**Completed**: 2026-06-11
 **Priority**: 3
+**Status**: DONE — both parts implemented by the dev; suite green at 229.
+
+## Outcome
+
+- **Part A (lazy `Entity`)** — `add_entity` now stores `live_entities[id] = None` (registry only, no alloc);
+  `get_entity` builds the `Entity` on first call and caches it (`world.py:61,73-79`); `remove_entity`
+  evicts via `del live_entities[id]`. Stable identity + migration/swap-remove invariants preserved
+  (Entity re-resolves `_eid_to_pool_ix` on every access — unchanged from task 14).
+- **Part B (`Pool.fields_set`)** — `pool.py:19` adds `self.fields_set = set(fields)`; `Entity.__getattr__`
+  /`__setattr__` test membership against it (`entity.py:60,70`). Ordered `pool.fields` stays public.
+- **Minor deviation (non-blocking):** the entity error message now prints `pool.fields_set` (a set)
+  rather than the ordered `pool.fields` list the spec suggested. Cosmetic only — the field name is still
+  named; `test_entity_unknown_field_read_raises_named_error` matches on the name and the docstring already
+  says "the valid set". Dev's call whether to switch back to the ordered list. Non-test file, so it's theirs.
+
+## Tests added (tester)
+
+- `test_world.py` — `test_add_entity_allocates_no_entity_object` (slot is `None` until asked),
+  `test_get_entity_builds_once_then_caches_same_object` (`is` identity), `test_remove_entity_evicts_the_cached_entity`,
+  `test_get_entity_resolves_each_id_to_its_own_object`.
+- `test_pool.py` — `test_fields_set_mirrors_fields_for_o1_membership`.
+- Existing `test_entity.py` invariant suite (read / write-through / `+=` / swap-remove / migration / `to_dict`)
+  stays green unchanged — Part A didn't break them.
 
 ## Why
 
