@@ -697,6 +697,38 @@ def test_world_accepts_object_dtype_component():
     assert world.component_to_dtypes[HasLabel] == ["object"]
 
 
+def test_world_rejects_str_dtype_component():
+    """`str` is no longer an allowed dtype. numpy strings are fixed-width (<U n) and a pre-allocated pool
+    can't size the width ahead of the data -- writes silently truncate. A field declaring dtype 'str' must
+    fail loud at World construction (where the bad field lives), not corrupt data later. Python strings now
+    live in dtype='object' (see test_object_field_holds_python_string_and_compares_by_equality)."""
+    class HasName(Component):
+        name: np.ndarray = field(metadata={"shape": (1,), "dtype": "str"})
+
+    with pytest.raises(AssertionError, match="str not in"):
+        World(components=[HasName])
+
+
+def test_object_field_holds_python_string_and_compares_by_equality():
+    """The sanctioned replacement for the removed str dtype: store a python string in a dtype='object'
+    field. The full string is kept (no <U width cap, no truncation) and string `==` on the pool column
+    works -- element-wise and vectorised."""
+    class HasKind(Component):  # e.g. a 'component_kind' tag stored as a string-in-object
+        kind: np.ndarray = field(metadata={"shape": (1,), "dtype": "object"})
+
+    world = World(components=[HasKind])
+    a = world.add_entity(components=(HasKind,), kind=np.array(["enemy"], dtype=object))             # idx 0
+    b = world.add_entity(components=(HasKind,), kind=np.array(["player_one_long_name"], dtype=object))  # idx 1
+    world.update()
+
+    pool, ia = world._eid_to_pool_ix[a]
+    _, ib = world._eid_to_pool_ix[b]
+    assert pool.kind.dtype == object
+    assert pool.kind[ia, 0] == "enemy"                                  # exact string, not truncated to "e"
+    assert pool.kind[ib, 0] == "player_one_long_name"                   # full length kept, no <U cap
+    np.testing.assert_array_equal(pool.kind[:, 0] == "enemy", [True, False])  # vectorised string equality
+
+
 def test_object_component_stores_and_reads_back_the_same_object():
     """The exact Python object passed in is readable back from the pool -- by identity, not just by value."""
     world = World(components=[HasLabel])

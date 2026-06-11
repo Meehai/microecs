@@ -209,7 +209,7 @@ class World:
     def _check_components(self, components: list[ComponentType]):
         reserved_names = (ENTITY_INTERNAL_ATTRS | {n for n in vars(Entity) if not n.startswith("__")} |
                           QUERY_RESULT_INTERNAL_ATTRS | {n for n in vars(QueryResult) if not n.startswith("__")})
-        dtypes = {"float32", "int32", "bool", "str", "object"}
+        dtypes = {"float32", "int32", "bool", "object"}
         expected_meta = {"shape", "dtype", *self.extra_metadata}
 
         for component in components:

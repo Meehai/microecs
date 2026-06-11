@@ -3,7 +3,7 @@ from pathlib import Path
 from setuptools import setup, find_packages
 
 NAME = "microecs"
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 DESCRIPTION = "MicroECS: Minimal Entity Component System (ECS) in python and numpy"
 URL = "https://gitlab.com/meehai/microecs"
 
