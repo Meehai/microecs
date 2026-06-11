@@ -118,19 +118,19 @@ Benchmark: we run the same physics step `pos += vel*dt` over N=100k entities spl
 | `micro-ecs-zip-rows` — `for p, v in zip(qr.pos, qr.vel)` | 744 | 15× slower |
 | `micro-ecs-pool-loop` — `for pool: for i: pool.f[i]` | 870 | 18× slower |
 | `micro-ecs-get-entity` — `world.get_entity(eid)` per entity | 1450 | 30× slower |
-| `micro-ecs-index` — `qr.f[i]` per entity (an `np.searchsorted` each) | 4573 | 95× slower |
+| `micro-ecs-index` — `qr.f[i]` per entity (an `np.searchsorted` each) | 3040 | 64× slower |
 
 Three things to take from it:
 
 1. **Vectorized wins big.** Batched ops (`_Field` or per-pool) run at 1–2 ns/entity — **27–52×
    faster** than the *fastest* OOP loop. Same for data-parallel branches: an `np.where` clamp or
    bounce is ~34× faster than a per-entity `if`.
-2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **15–95× slower**
+2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **15–64× slower**
    than idiomatic float-based OOP — because microecs is numpy-backed, so a per-entity step pays
    numpy's tiny-array overhead (`oop-numpy` shows the same ~13× tax). One unavoidable per-entity
    pass (~750 ns/entity) costs ~500× a vectorized op (~1.5 ns) and will dominate the frame.
 3. **If you must loop, loop right.** `zip`-rows (15×) < pool-loop (18×) < `get_entity` (30×) <
-   `qr.f[i]` (95× — never in a hot loop; `qr.f[i] += …` also raises, you must bind the row first).
+   `qr.f[i]` (64× — never in a hot loop; `qr.f[i] += …` also raises, you must bind the row first).
 
 **Rule of thumb:** keep systems vectorized and push branches into `np.where` / `np.clip`. If a
 workload is *irreducibly* per-entity (data-dependent control flow), plain python objects beat
