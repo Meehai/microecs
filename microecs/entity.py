@@ -70,3 +70,6 @@ class Entity:
         if name not in (_fields := pool.fields_set):
             raise AttributeError(f"Attribute '{name}' not in entity fields: {_fields} (entity id: {self.entity_id})")
         pool.data[name][pool_index] = value
+
+    def __repr__(self):
+        return f"EID-{self.entity_id}"
