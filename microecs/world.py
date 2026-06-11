@@ -5,9 +5,10 @@ from dataclasses import fields
 import numpy as np
 
 from .pool import Pool
-from .utils import Shape, EntityId, PoolKey, EntityData, logger
+from .utils import Shape, EntityId, PoolKey, logger
 from .component import ComponentType
-from .query_result import QueryResult
+from .query_result import QueryResult, QUERY_RESULT_INTERNAL_ATTRS
+from .entity import Entity, ENTITY_INTERNAL_ATTRS
 
 class World:
     """
@@ -36,7 +37,7 @@ class World:
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ids: dict[Pool, list[EntityId]] = {}
         self._last_id: EntityId = -1
-        self.live_ids: set[EntityId] = set() # 'eager' mode ids so e.g. calling remove_entity twice before update fails
+        self.live_entities: dict[EntityId, Entity] = {} # a cache of all live entities in 'eager' mode (before update())
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer: list[Callable] = []
         self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # include+exclude key
@@ -57,7 +58,7 @@ class World:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
         self._check_components_against_pool(components, **kwargs)
         self._last_id += 1
-        self.live_ids.add(self._last_id)
+        self.live_entities[self._last_id] = Entity(self._last_id, self._eid_to_pool_ix, self.pool_to_components)
         self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id,
                                             components=components, **kwargs))
         logger.debug(f"Created entity. ID: {self._last_id}. Components: {[c.__name__ for c in components]}")
@@ -65,17 +66,14 @@ class World:
 
     def remove_entity(self, entity_id: EntityId):
         """Removes an entity based on its unique entity id. Lazy; call update()"""
-        assert entity_id in self.live_ids, f"Entity id: {entity_id} not in {self.live_ids=}"
-        self.live_ids.remove(entity_id)
+        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
+        del self.live_entities[entity_id]
         self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
 
-    def get_entity(self, entity_id: EntityId) -> tuple[EntityData, list[ComponentType]]:
-        """Gets the entity (data) and its components (list of types) given an entity id. Used for 'object-like' ops"""
-        assert entity_id in self._eid_to_pool_ix, f"Entity id {entity_id} not found. Perhaps you didn't world.update()"
-        pool, pool_ix = self._eid_to_pool_ix[entity_id]
-        entity = {k: pool.data[k][pool_ix] for k in pool.fields}
-        components = self.pool_to_components[pool]
-        return entity, components
+    def get_entity(self, entity_id: EntityId) -> Entity:
+        """Gets the entity reference given an entity id. Used for 'object-like' ops. Lazy; call world.update()"""
+        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
+        return self.live_entities[entity_id]
 
     def set_entity_data(self, entity_id: EntityId, field_name: str, value: np.ndarray):
         """Sets the value of one specific entity's field given an enttiy id. Non-vectorized operation, use rarely"""
@@ -85,13 +83,13 @@ class World:
 
     def add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
         """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
-        assert entity_id in self.live_ids, f"Entity id: {entity_id} not in {self.live_ids=}"
+        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_add_component, entity_id=entity_id, component=component, **kwargs))
 
     def remove_component(self, entity_id: EntityId, component: ComponentType):
         """Removes a component from an entity given its id. Lazy; call update()"""
-        assert entity_id in self.live_ids, f"Entity id: {entity_id} not in {self.live_ids=}"
+        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
         assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
         self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
@@ -140,10 +138,10 @@ class World:
         self._pool_ids.setdefault(pool, []).append(entity_id)
         assert len(self._pool_ids[pool]) == len(pool), (pool, len(self._pool_ids[pool]), len(pool))
 
-    def _pop_from_pool(self, entity_id: EntityId) -> tuple[EntityData, list[ComponentType]]:
+    def _pop_from_pool(self, entity_id: EntityId) -> tuple[dict[str, np.ndarray], list[ComponentType]]:
         """common function that updates the entities inside a pool (after popswap) and removes them if they get empty"""
         old_pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
-        entity = old_pool.pop_entity(pool_ix)
+        entity_data = old_pool.pop_entity(pool_ix)
         components = self.pool_to_components[old_pool]
         id_which_was_last_in_pool = self._pool_ids[old_pool].pop()
         if entity_id != id_which_was_last_in_pool:
@@ -153,23 +151,23 @@ class World:
             del self.pools[self._make_key(components)]
             del self.pool_to_components[old_pool]
             del self._pool_ids[old_pool]
-        return entity, components
+        return entity_data, components
 
     def _do_add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
-        entity, components = self._pop_from_pool(entity_id)
+        entity_data, components = self._pop_from_pool(entity_id)
         new_components = [*components, component]
-        assert entity.keys().isdisjoint(kwargs), f"Duplicate keys: {entity.keys()} vs {kwargs.keys()}"
-        self._check_components_against_pool(new_components, **entity, **kwargs)
-        self._add_to_pool(entity_id, new_components, **entity, **kwargs)
+        assert entity_data.keys().isdisjoint(kwargs), f"Duplicate keys: {entity_data.keys()} vs {kwargs.keys()}"
+        self._check_components_against_pool(new_components, **entity_data, **kwargs)
+        self._add_to_pool(entity_id, new_components, **entity_data, **kwargs)
 
     def _do_remove_component(self, entity_id: EntityId, component: ComponentType):
-        entity, components = self._pop_from_pool(entity_id)
+        entity_data, components = self._pop_from_pool(entity_id)
         for _field in self.component_to_field_names[component]:
-            assert _field in entity.keys(), f"Field {component}/{_field} not in components: {components} ({entity_id=})"
-            entity.pop(_field)
+            assert _field in entity_data, f"Field {component}/{_field} not in components: {components} ({entity_id=})"
+            entity_data.pop(_field)
         new_components = [c for c in components if c != component]
-        self._check_components_against_pool(new_components, **entity)
-        self._add_to_pool(entity_id, new_components, **entity)
+        self._check_components_against_pool(new_components, **entity_data)
+        self._add_to_pool(entity_id, new_components, **entity_data)
 
     # other low-level methods
 
@@ -200,7 +198,8 @@ class World:
         return key
 
     def _check_components(self, components: list[ComponentType]):
-        qr_reserved_names = _qres = sorted(vars(QueryResult([], {}, {}, [])))
+        reserved_names = (ENTITY_INTERNAL_ATTRS | {n for n in vars(Entity) if not n.startswith("__")} |
+                          QUERY_RESULT_INTERNAL_ATTRS | {n for n in vars(QueryResult) if not n.startswith("__")})
         dtypes = {"float32", "int32", "bool", "str", "object"}
         expected_meta = {"shape", "dtype", *self.extra_metadata}
 
@@ -210,13 +209,13 @@ class World:
             hints = get_type_hints(component) # make it work with from __future__ import annotations
             for f in fields(component):
                 assert hints[f.name] is np.ndarray, f"Field '{cn}/{f.name}' not an array: {f}"
-                assert f.name not in qr_reserved_names, f"Field '{cn}/{f.name}' in {qr_reserved_names}"
+                assert f.name not in reserved_names, f"Field '{cn}/{f.name}' in {reserved_names}"
                 assert f.metadata.keys() == expected_meta, f"Field '{cn}/{f.name}':\n{f.metadata} vs\n{expected_meta}"
                 assert isinstance(f.metadata["shape"], tuple), f.metadata["shape"]
                 assert isinstance(fmd := f.metadata["dtype"], str) and fmd in dtypes, f"{fmd} not in {dtypes}"
 
     def __len__(self):
-        return len(self.live_ids)
+        return len(self.live_entities)
 
     def __repr__(self):
         return (f"[World]\n- Entities: {len(self)} (last id: {self._last_id})"
