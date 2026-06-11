@@ -10,11 +10,13 @@ robosim drives cameras one entity at a time:
 
 `fpv_camera` is an object-dtype component -- a camera you call methods on -- so the work can't be vectorised;
 it's a genuine per-entity loop. These tests drive it over a query that spans two archetypes, both ways: by
-iterating the fields (`zip(qr.fpv_camera, qr.pose)`) and by integer index (`qr.pose[i]`), with each `pose` a
-real (4, 4) view sliced by column.
+iterating the fields (`zip(qr.fpv_camera, qr.pose)`) and by id (`world.get_entity(qr.entity_ids[i])`), with
+each `pose` a real (4, 4) view sliced by column. (Task 16 removed the old `qr.pose[i]` int-index spelling;
+random per-entity access now goes through `get_entity`.)
 """
 from dataclasses import field
 import numpy as np
+import pytest
 
 from microecs import World, Component
 
@@ -107,13 +109,17 @@ def test_object_component_unwraps_with_item_during_iteration():
     assert all(c.seen is None for c in cams)                # untouched until a system drives them
 
 
-def test_fpv_camera_indexed_read_matches_robosim_spelling():
-    """robosim's indexed spelling: `qr.pose[i]` returns entity i's own (4, 4) pose and `qr.fpv_camera[i].item()`
-    returns its camera object, out of whichever pool the entity lives in."""
+def test_fpv_camera_per_entity_read_via_get_entity():
+    """robosim's per-entity read after task 16: the old `qr.pose[i]` int-index is forbidden (raises TypeError);
+    the entity is fetched by id with `world.get_entity(qr.entity_ids[i])`, which gives the same (4, 4) pose view
+    and the same camera object, out of whichever pool the entity lives in."""
     world, cam_a, _ = _world_with_two_cameras()
     qr = world.query(HasPose, HasFPV)
 
-    pose0 = qr.pose[0]                                      # entity 0's (4, 4) pose
-    assert pose0.shape == (4, 4)
-    assert pose0[0:3, 3].tolist() == [1.0, 0.0, 0.0]        # cam_a's translation
-    assert qr.fpv_camera[0].item() is cam_a                 # entity 0's camera object
+    with pytest.raises(TypeError):
+        qr.pose[0]                                          # the old indexed spelling is gone
+
+    e0 = world.get_entity(int(qr.entity_ids[0]))           # entity 0, by id
+    assert e0.pose.shape == (4, 4)
+    assert e0.pose[0:3, 3].tolist() == [1.0, 0.0, 0.0]     # cam_a's translation, a live (4, 4) view
+    assert e0.fpv_camera.item() is cam_a                   # entity 0's camera object

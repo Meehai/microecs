@@ -182,23 +182,21 @@ def test_sort_axis0_diverges_when_pools_interleave():
 # --- bucket 3: restricted surface raises (never silently wrong) ---
 
 @pytest.mark.parametrize("indexer", [
+    0,                                 # qr.f[i]  -- a single entity (task 16: now forbidden too)
+    4,                                 # qr.f[i]  -- a single entity spanning into the second pool
+    -1,                                # qr.f[-1] -- a negative single entity
     slice(None),                       # qr.f[:]  -- whole-array read
     slice(2, 4),                       # qr.f[2:4] -- entity range
     np.array([1, 0, 1, 0, 1], bool),   # qr.f[mask]
     [0, 2, 4],                         # qr.f[[...]] fancy
 ])
 def test_entity_axis_read_indexing_raises(indexer):
-    """Entity-axis indexing beyond a single int crosses pools -> raise, don't return a partial view."""
+    """The entity axis is off-limits: ANY index on it -- a bare int (task 16), a slice, a mask, fancy -- crosses
+    pools, so it raises TypeError instead of returning a partial view. Per-entity access is
+    `world.get_entity(qr.entity_ids[i])`; iteration is `zip(qr.f, ...)`."""
     _, qr = _multipool_velocity()
     with pytest.raises(TypeError):
         qr.velocity[indexer]
-
-
-def test_single_int_index_returns_entity_row():
-    """The one supported entity index: qr.f[i] -> entity i's row (numpy-consistent value)."""
-    _, qr = _multipool_velocity()
-    assert np.array_equal(qr.velocity[0], [1, 2])
-    assert np.array_equal(qr.velocity[4], [9, 10])          # spans into the second pool
 
 
 @pytest.mark.parametrize("indexer", [slice(2, 4), np.array([1, 0, 1, 0, 1], bool)])

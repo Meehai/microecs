@@ -30,7 +30,6 @@ MODES = [
     "oop-numpy",
     "micro-ecs-zip-rows",
     "micro-ecs-pool-loop",
-    "micro-ecs-index",
     "micro-ecs-get-entity",
 ]
 
@@ -121,15 +120,6 @@ def micro_ecs_pool_loop(n=N):
                 posa[i] += vela[i] * DT
     return _bench(step), _key(qr.position.numpy())
 
-def micro_ecs_index(n=N):
-    qr = _world(n).query(HasPos, HasVel)
-    def step():
-        posf, velf = qr.position, qr.velocity
-        for i in range(n):
-            row = posf[i]            # qr.f[i] read = one np.searchsorted to find the pool (query_result.py:78)
-            row += velf[i] * DT      # in-place on the view writes back; qr.f[i] += ... would raise (setitem)
-    return _bench(step), _key(qr.position.numpy())
-
 def micro_ecs_get_entity(n=N):
     w = _world(n)
     qr = w.query(HasPos, HasVel)
@@ -173,8 +163,6 @@ def main():
             sec, key = micro_ecs_zip_rows(n=N)
         elif mode == "micro-ecs-pool-loop":
             sec, key = micro_ecs_pool_loop(n=N)
-        elif mode == "micro-ecs-index":
-            sec, key = micro_ecs_index(n=N)
         elif mode == "micro-ecs-get-entity":
             sec, key = micro_ecs_get_entity(n=N)
         else:

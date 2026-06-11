@@ -77,16 +77,11 @@ class _Field(np.lib.mixins.NDArrayOperatorsMixin):
             v[:] = chunk
 
     def __getitem__(self, key):
-        if isinstance(key, (int, np.integer)):       # qr.position[i] -> entity i's row, from its own pool
-            key = range(self.len)[key]               # numpy's exact int-index rule, for free: wraps neg, raises on OOB
-            pool_ix = int(np.searchsorted(self._bounds, key, side="right")) - 1
-            return self.parts[pool_ix][key - self._bounds[pool_ix]]
-
         if key is Ellipsis or (isinstance(key, tuple) and key and (key[0] is Ellipsis or key[0] == slice(None))):
             return _Field([part[key] for part in self.parts])
 
-        raise TypeError("Unsupported indexing. Use .numpy() for a proper array. To set items, use qr.attr[:, k]=xxx. "
-                        "For fancy indexing qr[i, 0:3, k], use qr[i][0:3, k].")
+        raise TypeError(("Only batch updates are supported, e.g. `qr.attr[:]=xxx` or `qr.attr[:, k]=xxx`. "
+                         "Use .numpy() for a proper array. For entity-level ops use `world.get_entity(eid).attr=xxx"))
 
     def __iter__(self):
         for part in self.parts:

@@ -320,76 +320,39 @@ def test_ellipsis_indexing_reshapes_a_mask_to_broadcast_over_a_higher_rank_field
 
 
 def test_entity_axis_index_stays_rejected():
-    """Indexing the entity axis with a range raises: a slice (`qr.position[0:1]`) or a boolean mask both cross
-    pool boundaries, so both raise TypeError. (A bare integer is a single entity in one pool, and is allowed.)"""
+    """The whole entity axis is off-limits: a bare int (`qr.position[i]`), a slice (`qr.position[0:1]`), or a
+    boolean mask all single out / cross entities, which spans pools, so all raise TypeError. Per-entity access
+    goes through `world.get_entity(qr.entity_ids[i])`; iteration through `zip(qr.position, ...)`."""
     qr = _query([_drawable_pool([([0.0, 0.0], 5.0)]), _drawable_pool([([1.0, 1.0], 6.0)])],
                 "position", "radius")
 
+    with pytest.raises(TypeError):
+        qr.position[0]                          # a bare int -> a single entity (forbidden: use get_entity)
     with pytest.raises(TypeError):
         qr.position[0:1]                        # a range of entities -> spans pools
     with pytest.raises(TypeError):
         qr.position[np.array([True, False])]    # a mask over entities
 
 
-def test_single_entity_read_routes_index_to_right_pool():
-    """`qr.position[i]` for a bare integer must return entity i's row, out of whichever pool it lives in. Two
-    pools (2 entities, then 3); each entity's position encodes its OWN global index, so position[i] == [i, i]
-    proves index i routed to the right pool and offset. Indices 0,1 -> pool A; 2,3,4 -> pool B; -1 -> last."""
+def test_single_entity_int_index_is_forbidden():
+    """A bare-int entity index is gone (task 16): `qr.position[i]` no longer returns a row -- it raises
+    TypeError for ANY int (in-range, negative, out-of-range, or on an empty query). The entity axis is now
+    fully off-limits on a QueryResult; per-entity access is `world.get_entity(qr.entity_ids[i])`, iteration is
+    `zip(qr.position, ...)`."""
     a = _pos_pool([[0.0, 0.0], [1.0, 1.0]])                 # global indices 0, 1
     b = _pos_pool([[2.0, 2.0], [3.0, 3.0], [4.0, 4.0]])     # global indices 2, 3, 4
-    qr = _query([a, b], "position")                          # 5 entities stitched across two pools
+    qr = _query([a, b], "position")                          # 5 entities across two pools
 
-    for i in range(5):
-        assert qr.position[i].tolist() == [float(i), float(i)]   # value == index -> routed to the right entity
+    for i in (0, 1, 3, 4, -1):                               # in-range, across the pool seam, negative
+        with pytest.raises(TypeError):
+            qr.position[i]
 
-    assert qr.position[-1].tolist() == [4.0, 4.0]           # numpy-parity negative index -> last entity
-    assert qr.position.numpy()[3].tolist() == qr.position[3].tolist()   # agrees with the gathered (N, 2) array
+    for oob in (5, 99, -6, -100):                            # was IndexError; now forbidden like any int -> TypeError
+        with pytest.raises(TypeError):
+            qr.position[oob]
 
-
-def test_single_entity_read_returns_a_writeable_view():
-    """`qr.position[i]` is a view into the entity's pool, not a copy: writing through it mutates the pool."""
-    a = _pos_pool([[0.0, 0.0], [1.0, 1.0]])
-    b = _pos_pool([[2.0, 2.0], [3.0, 3.0], [4.0, 4.0]])
-    qr = _query([a, b], "position")
-
-    qr.position[3][:] = [9.0, 9.0]                  # entity 3 -> pool b, local index 1
-    assert b.position[1].tolist() == [9.0, 9.0]     # the write reached the pool
-    assert qr.position[3].tolist() == [9.0, 9.0]    # and re-reading the same entity sees it
-
-
-def test_single_entity_read_positive_out_of_range_raises():
-    """A bare-int read past the end raises IndexError, like numpy on an (N, *) array -- it does not wrap around
-    to a valid entity."""
-    a = _pos_pool([[0.0, 0.0], [1.0, 1.0]])
-    b = _pos_pool([[2.0, 2.0], [3.0, 3.0], [4.0, 4.0]])
-    qr = _query([a, b], "position")                 # len 5; valid indices -5..4
-
-    with pytest.raises(IndexError):
-        qr.position[5]                               # one past the end
-    with pytest.raises(IndexError):
-        qr.position[99]
-
-
-def test_single_entity_read_on_empty_query_raises():
-    """A bare-int read on a zero-entity query raises IndexError, exactly like `np.empty((0, 2))[0]`."""
-    qr = _query([], "position")                     # no pools -> (0, 2) block, len 0
-    assert len(qr) == 0
-
-    with pytest.raises(IndexError):
-        qr.position[0]
-
-
-def test_single_entity_read_negative_out_of_range_raises_like_numpy():
-    """A bare-int read before the start (`qr.position[-N-1]`) raises IndexError, like numpy -- it does not wrap
-    around to the tail."""
-    a = _pos_pool([[0.0, 0.0], [1.0, 1.0]])
-    b = _pos_pool([[2.0, 2.0], [3.0, 3.0], [4.0, 4.0]])
-    qr = _query([a, b], "position")                 # len 5; valid indices -5..4
-
-    with pytest.raises(IndexError):
-        qr.position[-6]                              # one before the start
-    with pytest.raises(IndexError):
-        qr.position[-100]
+    with pytest.raises(TypeError):
+        _query([], "position").position[0]                  # zero-entity query: still a forbidden int index
 
 
 def test_wallbounce_per_axis_via_column_indexing():

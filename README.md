@@ -102,7 +102,7 @@ for pos, color, radius in zip(qr.position, qr.color, qr.radius):     # one entit
     rl.DrawCircle(int(pos[0]), int(pos[1]), float(radius[0]), color) # per-entity by necessity (no "draw all")
 ```
 
-There are other ways to extract a single entity e.g. `qr.some_field[i]` or `e = world.get_entity(eid)`, but these are slower in the general case and should be avoided in expensive loops, like rendering, even if they are a bit more ergonomic. See benchmark below.
+For random single-entity access, `e = world.get_entity(eid)` (or `world.get_entity(qr.entity_ids[i])` to go by query position). That's slower in the general case and should be avoided in expensive loops, like rendering, even if it is a bit more ergonomic. See benchmark below. (There is no `qr.field[i]` shortcut — the entity axis is off-limits on a query result; it raises.)
 
 <details>
 <summary> Microbenchmark: ECS vs OOP on a simple physics step </summary>
@@ -118,19 +118,19 @@ Benchmark: we run the same physics step `pos += vel*dt` over N=100k entities spl
 | `micro-ecs-zip-rows` — `for p, v in zip(qr.pos, qr.vel)` | 744 | 15× slower |
 | `micro-ecs-pool-loop` — `for pool: for i: pool.f[i]` | 870 | 18× slower |
 | `micro-ecs-get-entity` — `world.get_entity(eid)` per entity | 1450 | 30× slower |
-| `micro-ecs-index` — `qr.f[i]` per entity (an `np.searchsorted` each) | 3040 | 64× slower |
 
 Three things to take from it:
 
 1. **Vectorized wins big.** Batched ops (`_Field` or per-pool) run at 1–2 ns/entity — **27–52×
    faster** than the *fastest* OOP loop. Same for data-parallel branches: an `np.where` clamp or
    bounce is ~34× faster than a per-entity `if`.
-2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **15–64× slower**
+2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **15–30× slower**
    than idiomatic float-based OOP — because microecs is numpy-backed, so a per-entity step pays
    numpy's tiny-array overhead (`oop-numpy` shows the same ~13× tax). One unavoidable per-entity
    pass (~750 ns/entity) costs ~500× a vectorized op (~1.5 ns) and will dominate the frame.
-3. **If you must loop, loop right.** `zip`-rows (15×) < pool-loop (18×) < `get_entity` (30×) <
-   `qr.f[i]` (64× — never in a hot loop; `qr.f[i] += …` also raises, you must bind the row first).
+3. **If you must loop, loop right.** `zip`-rows (15×) < pool-loop (18×) < `get_entity` (30×).
+   For random single-entity access use `world.get_entity(qr.entity_ids[i])` — there's no `qr.f[i]`
+   shortcut (the entity axis is off-limits on a query; it raises).
 
 **Rule of thumb:** keep systems vectorized and push branches into `np.where` / `np.clip`. If a
 workload is *irreducibly* per-entity (data-dependent control flow), plain python objects beat
@@ -147,10 +147,10 @@ That covers elementwise math and ufuncs (e.g. `np.where`, `np.linalg.norm(..., a
 
 Edge cases worth knowing:
 
-- **Not a full ndarray — these raise, never lie.** Entity-axis indexing beyond a single
-  `qr.f[i]` (`qr.f[:]`, `qr.f[2:4]`, `qr.f[mask]`, fancy), partial entity writes, and ndarray
-  methods/attrs (`.sum()`, `.mean()`, `.dtype`, `.ndim`, `.T`). Need any of these? Materialize
-  first with `qr.f.numpy()`.
+- **Not a full ndarray — these raise, never lie.** Entity-axis indexing of any kind
+  (`qr.f[i]`, `qr.f[:]`, `qr.f[2:4]`, `qr.f[mask]`, fancy), partial entity writes, and ndarray
+  methods/attrs (`.sum()`, `.mean()`, `.dtype`, `.ndim`, `.T`). Need a single entity? Use
+  `world.get_entity(qr.entity_ids[i])`. Need a real array? Materialize first with `qr.f.numpy()`.
 - **Axis-0 ops are per-pool, not global (footgun).** `np.sort` / `np.cumsum` / `np.sum` over
   `axis=0` run within each pool and reset at pool boundaries — they do **not** see all entities
   at once, so they differ from numpy. They're allowed, but if you want a global result, do
@@ -164,3 +164,19 @@ Edge cases worth knowing:
   `QUERY_RESULT_RESERVED_NAMES` in `query_result.py`, `ENTITY_RESERVED_NAMES` in `entity.py`):
   - from `QueryResult`: `pool_list`, `entity_ids`, `fields`, `_data`, `_len`, `_field_shapes`, `_field_dtypes`
   - from `Entity`: `entity_id`, `get_components`, `get_fields`, `to_dict`, `_eid_to_pool_ix`, `_pool_to_components`
+
+## Mutation timing: field writes are eager, structural changes are deferred
+
+One frame holds two different timings. Know which is which:
+
+- **Structural changes are lazy (command-buffered).** `add_entity`, `remove_entity`, `add_component`,
+  `remove_component` only queue a command; they take effect at the next `world.update()`. This is what
+  keeps queries stable within a tick — pools don't move under a running system.
+- **Field writes are eager.** A write through an `Entity` (`e.position = ...`, `e.position += ...`),
+  `world.set_entity_data(id, f, v)`, and the vectorized `qr.field[:] = ...` path all write straight into
+  the pool buffer and are visible immediately — no `update()` needed.
+
+So inside one tick: a freshly spawned entity is **not** visible until `update()`, but a field write on an
+already-committed entity **is** visible at once. Rule of thumb: **structure is deferred, data is live.**
+If a field write must be ordered against a spawn/despawn, do the structural change, call `update()`, then
+write.
