@@ -46,8 +46,8 @@ class HasCustom(Component):
 def world_to_dict(world: World) -> dict[str, Any]:
     """Serialize the world. Goes through all the entities and their components and converts the serializables to dict"""
     res = {"entities": [], "components": world.component_names, "extra_metadata": world.extra_metadata}
-    for entity in world.live_entities.values():
-        res["entities"].append(entity.to_dict(serialization_field="serializable"))
+    for entity_id in world.live_entities.keys():
+        res["entities"].append(world.get_entity(entity_id).to_dict(serialization_field="serializable"))
     return res
 
 def add_entity(world: World, color: "rl.Color", radius: list[float], position: Point2D,
