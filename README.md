@@ -161,7 +161,7 @@ Edge cases worth knowing:
 - **Reserved field names.** A field is read back as `qr.<field>` and `entity.<field>`, so it may not
   collide with an attribute or method of `QueryResult` or `Entity` — `World(...)` rejects such a
   component at construction instead of silently shadowing it. The reserved set (source of truth:
-  `QUERY_RESULT_RESERVED_NAMES` in `query_result.py`, `ENTITY_RESERVED_NAMES` in `entity.py`):
+  `QUERY_RESULT_INTERNAL_ATTRS` in `query_result.py`, `ENTITY_INTERNAL_ATTRS` in `entity.py`):
   - from `QueryResult`: `pool_list`, `entity_ids`, `fields`, `_data`, `_len`, `_field_shapes`, `_field_dtypes`
   - from `Entity`: `entity_id`, `get_components`, `get_fields`, `to_dict`, `_eid_to_pool_ix`, `_pool_to_components`
 
