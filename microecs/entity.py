@@ -57,7 +57,7 @@ class Entity:
         except KeyError:
             raise AttributeError(f"Entity {self.entity_id} not committed yet. Call `world.update()` (reading '{name}')")
 
-        if name not in (_fields := pool.fields):
+        if name not in (_fields := pool.fields_set):
             raise AttributeError(f"Attribute '{name}' not in entity fields: {_fields} (entity id: {self.entity_id})")
 
         return pool.data[name][pool_index]
@@ -67,6 +67,6 @@ class Entity:
             super().__setattr__(name, value)
             return
         pool, pool_index = self._eid_to_pool_ix[self.entity_id]
-        if name not in (_fields := pool.fields):
+        if name not in (_fields := pool.fields_set):
             raise AttributeError(f"Attribute '{name}' not in entity fields: {_fields} (entity id: {self.entity_id})")
         pool.data[name][pool_index] = value

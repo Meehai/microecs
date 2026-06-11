@@ -8,14 +8,15 @@ class Pool:
     Pool has no concept of entity ids.
     """
     INITIAL_CAPACITY = 100
-    RESERVED_NAMES = {"size", "capacity", "fields", "shapes", "dtypes", "data"}
+    RESERVED_NAMES = {"size", "capacity", "fields", "shapes", "dtypes", "data", "fields_set"}
 
     def __init__(self, fields: list[str], shapes: list[Shape], dtypes: list[np.dtype]):
         assert len(fields) == len(shapes) == len(dtypes), (len(fields), len(shapes), len(dtypes))
-        assert not (set(fields) & Pool.RESERVED_NAMES), f"One of {fields=} in {Pool.RESERVED_NAMES}"
+        assert not ((fields_set := set(fields)) & Pool.RESERVED_NAMES), f"One of {fields=} in {Pool.RESERVED_NAMES}"
         self.fields = fields
         self.shapes = shapes
         self.dtypes = dtypes
+        self.fields_set = fields_set # useful for fast checking (e.g. in entity)
 
         self.data: dict[str, np.ndarray] = {} # the actual data is stored in dict of dynamic arrrays, one per field
         self.size = 0

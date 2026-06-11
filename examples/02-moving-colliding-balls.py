@@ -60,16 +60,17 @@ class HasPosition2D(Component):
 class HasMotion2D(Component):
     velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
 
-class HasColor(Component):
-    color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32"})
+class HasCollision(Component):
+    is_colliding: np.ndarray = field(metadata={"shape": (1, ), "dtype": "bool"})
 
 # systems
 
 class RenderSystem:
     def __call__(self, world: World):
-        qr = world.query(HasRadius, HasPosition2D, HasColor)
-        for position, radius, color in zip(qr.position, qr.radius, qr.color):
-            rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color.tolist())
+        qr = world.query(HasRadius, HasPosition2D, HasCollision)
+        for position, radius, is_colliding in zip(qr.position, qr.radius, qr.is_colliding):
+            color = rl.RED if is_colliding else rl.BLACK
+            rl.DrawCircle(int(position[0].item()), int(position[1].item()), int(radius.item()), color)
 
 class MotionSystem:
     def __call__(self, world: World):
@@ -91,12 +92,9 @@ class WallBounceSystem:
 
 class CollisionDetectionSystem:
     def __call__(self, world: World):
-        qr = world.query(HasPosition2D, HasMotion2D, HasRadius, HasColor)
-
-        _red = np.array(rl.RED, dtype="int32")[None].repeat(len(qr), axis=0)
-        _black = np.array(rl.BLACK, dtype="int32")[None].repeat(len(qr), axis=0)
+        qr = world.query(HasPosition2D, HasMotion2D, HasRadius, HasCollision)
         collisions = self._get_collisions(qr.position.numpy(), qr.radius.numpy())
-        qr.color[:] = np.where(collisions, _red, _black)
+        qr.is_colliding[:] = np.where(collisions, True, False)
 
     def _get_collisions(self, positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
         dists = np.sqrt(((positions[:, None] - positions[None])**2).sum(-1))  # (N, 1, 2) - (1, N, 2) -> ... -> (N, N)
@@ -105,26 +103,38 @@ class CollisionDetectionSystem:
         res = (collisions_nn.sum(axis=1) > 0)[..., None] # (N, 1)
         return res
 
+def _spawn_circle(world: World, position: Point2D, radius: float, velocity: Point2D):
+    world.add_entity(components=(HasRadius, HasPosition2D, HasMotion2D, HasCollision),
+                     position=np.array(position, "float32"), velocity=np.array(velocity, "float32"),
+                     radius=np.array([radius], "float32"), is_colliding=np.zeros((1, ), "bool"))
+
 def main(args: Namespace):
     rl.InitWindow(800, 800, b"Entity Component Style + SoA (batched)")
     scene_size = (600, 600)
+    mouse_radius = 10
 
     render_systems: list[Callable] = [RenderSystem()]
     update_systems: list[Callable] = [MotionSystem(), WallBounceSystem(scene_size), CollisionDetectionSystem()]
 
-    world = World(components=[HasRadius, HasPosition2D, HasMotion2D, HasColor])
+    world = World(components=[HasRadius, HasPosition2D, HasMotion2D, HasCollision])
     for _ in range(args.n_objects):
-        radius = random.randint(3, 7)
+        radius = random.randint(5, 15)
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
         velocity = (200 * random.random() * 2 - 1, 200 * random.random() * 2 - 1)
-        world.add_entity(components=(HasRadius, HasPosition2D, HasMotion2D, HasColor),
-                         position=np.array(position, "float32"), velocity=np.array(velocity, "float32"),
-                         color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
+        _spawn_circle(world, position, radius, velocity)
 
     clock = Clock(dt=DT, max_ticks=MAX_SUBTICKS_PER_RENDER_TICK)
     while not rl.WindowShouldClose():
         world.update()
         clock.wait_and_tick()
+
+        mouse_pos = rl.GetMousePosition()
+
+        if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+                if (mouse_pos.x - mouse_radius > 0 and mouse_pos.x + mouse_radius < scene_size[0] and
+                    mouse_pos.y - mouse_radius > 0 and mouse_pos.y + mouse_radius < scene_size[1]):
+                    velocity = (200 * random.random() * 2 - 1, 200 * random.random() * 2 - 1)
+                    _spawn_circle(world, (mouse_pos.x, mouse_pos.y), mouse_radius, velocity)
 
         for _ in clock.drain():
             logger.log_every_s(f"Applying {clock.accumulator // clock.dt} update ticks per render tick", "DEBUG", True)

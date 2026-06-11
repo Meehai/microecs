@@ -814,6 +814,58 @@ def test_get_entity_unknown_id_raises():
         world.get_entity(123)
 
 
+# --- lazy Entity allocation + cache (task 15, part A) ------------------------------------------------------------
+# live_entities does two jobs: a liveness registry (id present == live) and an Entity cache. The Entity object is
+# NOT built at add_entity (a pure-vectorised sim that never calls get_entity pays zero Entity objects); it is built
+# on the FIRST get_entity and cached (same object thereafter), and evicted at remove_entity. These pin that.
+
+
+def test_add_entity_allocates_no_entity_object():
+    """add_entity registers the id as live but stores no Entity -- the slot is None until someone asks for it."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    assert eid in world.live_entities                              # the id is live (registry job)
+    assert world.live_entities[eid] is None                       # but no Entity was built (lazy: pay only on demand)
+
+
+def test_get_entity_builds_once_then_caches_same_object():
+    """First get_entity builds the Entity and stores it; later calls hand back the SAME object (stable identity)."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    assert world.live_entities[eid] is None                       # nothing built yet
+    first = world.get_entity(eid)
+    assert world.live_entities[eid] is first                      # cached on first request
+    assert world.get_entity(eid) is first                         # repeat call -> same object, not a rebuild
+
+
+def test_remove_entity_evicts_the_cached_entity():
+    """remove_entity drops the id from live_entities, taking the cached Entity with it -- no stale view lingers."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+    world.get_entity(eid)                                         # populate the cache
+
+    world.remove_entity(eid)                                      # eager eviction from the registry+cache
+    assert eid not in world.live_entities
+    with pytest.raises(AssertionError):                          # a removed id no longer resolves
+        world.get_entity(eid)
+
+
+def test_get_entity_resolves_each_id_to_its_own_object():
+    """Two ids never share one cached Entity: each builds its own, keyed by id."""
+    world = World(components=[HasPosition])
+    a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))
+    b = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    ea, eb = world.get_entity(a), world.get_entity(b)
+    assert ea is not eb and ea.entity_id == a and eb.entity_id == b
+
+
 # --- set_entity_data: write one entity's single field by id ------------------------------------------------------
 # set_entity_data(eid, field, value) is the WRITE counterpart to get_entity: it resolves an id to its current
 # (pool, row) and writes one field straight into the pool buffer. It is EAGER (no command buffer, no update()) and

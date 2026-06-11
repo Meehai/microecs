@@ -183,6 +183,16 @@ def test_reserved_name_mixed_with_valid_raises():
         Pool(fields=["position", "size"], shapes=[(2,), (1,)], dtypes=["float32", "float32"])
 
 
+def test_fields_set_is_a_reserved_name():
+    """task 15 part B added `self.fields_set` as a Pool attribute. Like the other Pool attributes (fields, data,
+    size, ...), a component field of that exact name would shadow it -- `pool.fields_set` would return the set,
+    not the column. So `fields_set` must be a reserved name, rejected at construction, not silently shadowing.
+    (RED until `fields_set` is added to Pool.RESERVED_NAMES.)"""
+    assert "fields_set" in Pool.RESERVED_NAMES
+    with pytest.raises(AssertionError):
+        Pool(fields=["fields_set"], shapes=[(2,)], dtypes=["float32"])
+
+
 def test_object_dtype_stores_python_objects_by_reference():
     """An object-dtype field holds arbitrary Python objects, stored by reference (not copied)."""
     pool = Pool(fields=["payload"], shapes=[(1,)], dtypes=["object"])
@@ -199,3 +209,12 @@ def test_object_dtype_pop_returns_same_object():
     pool.add_entity(payload=np.array([obj], dtype=object))
     popped = pool.pop_entity(0)
     assert popped["payload"][0] is obj
+
+
+def test_fields_set_mirrors_fields_for_o1_membership():
+    """task 15 part B: Pool exposes fields_set (a set) alongside the ordered fields list, so membership checks
+    (used on the per-entity Entity path) are O(1). It must hold exactly the same names as the ordered list."""
+    pool = _pool_pos_vel()
+    assert pool.fields_set == set(pool.fields)                     # same names, set form
+    assert pool.fields == ["position", "velocity"]                # ordered list stays public (serialization order)
+    assert "position" in pool.fields_set and "missing" not in pool.fields_set

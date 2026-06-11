@@ -21,8 +21,11 @@ class World:
         self.extra_metadata = extra_metadata or []
         assert isinstance(self.extra_metadata, list), type(self.extra_metadata)
         self._check_components(components)
+
+        # pools management
         self.pools: dict[PoolKey, Pool] = {}
         self.pool_to_components: dict[Pool, list[ComponentType]] = {}
+
         # components management
         self.component_names = [x.__name__ for x in components]
         self.component_types = set(components)
@@ -33,11 +36,14 @@ class World:
             c: [f.metadata["dtype"] for f in fields(c)] for c in components}
         self.component_to_field_names: dict[ComponentType, list[str]] = {
             c: [f.name for f in fields(c)] for c in components}
-        # entity id management
+        # entities management
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ids: dict[Pool, list[EntityId]] = {}
         self._last_id: EntityId = -1
-        self.live_entities: dict[EntityId, Entity] = {} # a cache of all live entities in 'eager' mode (before update())
+        # a dictionary of all live entities in 'eager' mode (before update()). The actual entity is created at request
+        # in get_entity, so we don't pay for the Entity object unless it's explicitly requested by the user.
+        self.live_entities: dict[EntityId, Entity | None] = {}
+
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer: list[Callable] = []
         self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # include+exclude key
@@ -58,7 +64,7 @@ class World:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
         self._check_components_against_pool(components, **kwargs)
         self._last_id += 1
-        self.live_entities[self._last_id] = Entity(self._last_id, self._eid_to_pool_ix, self.pool_to_components)
+        self.live_entities[self._last_id] = None # add the id the live_entities, but the object is created in get_entity
         self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id,
                                             components=components, **kwargs))
         logger.debug(f"Created entity. ID: {self._last_id}. Components: {[c.__name__ for c in components]}")
@@ -73,6 +79,9 @@ class World:
     def get_entity(self, entity_id: EntityId) -> Entity:
         """Gets the entity reference given an entity id. Used for 'object-like' ops. Lazy; call world.update()"""
         assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
+        if self.live_entities[entity_id] is None:
+            # only instantiate on first request, so the object is not created for no reason at add_entity time.
+            self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components)
         return self.live_entities[entity_id]
 
     def set_entity_data(self, entity_id: EntityId, field_name: str, value: np.ndarray):
