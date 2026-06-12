@@ -172,8 +172,8 @@ One frame holds two different timings. Know which is which:
 - **Structural changes are lazy (command-buffered).** `add_entity`, `remove_entity`, `add_component`,
   `remove_component` only queue a command; they take effect at the next `world.update()`. This is what
   keeps queries stable within a tick — pools don't move under a running system.
-- **Field writes are eager.** A write through an `Entity` (`e.position = ...`, `e.position += ...`),
-  `world.set_entity_data(id, f, v)`, and the vectorized `qr.field[:] = ...` path all write straight into
+- **Field writes are eager.** A write through an `Entity` (`e.position = ...`, `e.position += ...`,
+  `e.position[:] = ...`) and the vectorized `qr.field[:] = ...` path both write straight into
   the pool buffer and are visible immediately — no `update()` needed.
 
 So inside one tick: a freshly spawned entity is **not** visible until `update()`, but a field write on an

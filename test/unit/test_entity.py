@@ -2,7 +2,7 @@
 
 Entity is a LIVE view, not a snapshot: every attribute access re-resolves (pool, row) from the id, so it
 stays correct across pool changes (swap-remove, archetype migration). Reads come back as the entity's row;
-writes (e.field = .. and e.field += ..) scatter straight into the pool buffer (eager, like set_entity_data).
+writes (e.field = .. and e.field += ..) scatter straight into the pool buffer (eager: a direct pool write, no command buffer).
 A name that is not one of the entity's current fields raises AttributeError on both read and write.
 
 Issues these pin:
@@ -27,6 +27,10 @@ class HasVelocity(Component):
 
 class HasLabel(Component):  # object dtype: an arbitrary python object per entity (-> to_dict uses .item())
     label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object"})
+
+
+class HasScale(Component):  # 0-d array field: exactly one scalar per entity (shape ())
+    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32"})
 
 
 class HasSerial(Component):  # two fields; the 'serializable' extra-metadata drives to_dict's filter
@@ -112,6 +116,34 @@ def test_entity_write_copies_value_not_aliases():
     src[:] = [999.0, 999.0]                                                         # mutate source after the write
 
     np.testing.assert_array_equal(world.get_entity(eid).position, [5.0, 6.0])       # stored value is independent
+
+
+def test_entity_object_field_write_stores_reference_not_copy():
+    """An object-dtype field write stores the exact python object by reference -- numeric fields copy, objects don't."""
+    world = World([HasLabel])
+    eid = world.add_entity((HasLabel,), label=np.array([{"v": 0}], dtype=object))
+    world.update()
+    e = world.get_entity(eid)
+
+    replacement = {"v": 42}
+    e.label = np.array([replacement], dtype=object)
+
+    pool, ix = world._eid_to_pool_ix[eid]
+    assert pool.label[ix, 0] is replacement                                         # same reference swapped in
+
+
+def test_entity_zero_dim_scalar_field_write():
+    """A shape-() field is written with `e.f = scalar` (the `[:]` idiom can't index a 0-d array) and reads back
+    as a 0-d scalar."""
+    world = World([HasScale])
+    eid = world.add_entity((HasScale,), scale=np.array(2.5, "float32"))
+    world.update()
+    e = world.get_entity(eid)
+
+    e.scale = np.array(4.0, "float32")
+
+    assert e.scale.shape == ()                                                       # still a 0-d scalar
+    np.testing.assert_array_equal(e.scale, 4.0)
 
 
 def test_entity_unknown_field_write_raises_named_error():

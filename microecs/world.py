@@ -84,12 +84,6 @@ class World:
             self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components)
         return self.live_entities[entity_id]
 
-    def set_entity_data(self, entity_id: EntityId, field_name: str, value: np.ndarray):
-        """Sets the value of one specific entity's field given an enttiy id. Non-vectorized operation, use rarely"""
-        assert entity_id in self._eid_to_pool_ix, f"Entity id {entity_id} not found. Perhaps you didn't world.update()"
-        pool, pool_ix = self._eid_to_pool_ix[entity_id]
-        pool.data[field_name][pool_ix] = value
-
     def add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
         """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
         assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
