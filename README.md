@@ -143,7 +143,7 @@ microecs ~15× — use them there. microecs is the right tool for **vectorizable
 The same batched physics step (`vel += acc*dt` then `pos += vel*dt`) over N=100k entities, run
 across the most popular Python ECS libraries. One script per library, every result verified
 against a float64 numpy reference. Full setup, fairness notes, and analysis in
-`test/manual/benchmark-vs-similar-libs/`.
+`examples/05-benchmark-vs-similar/`.
 
 | library | model | step / frame | ns/entity | vs slowest | build (100k) |
 |---|---|---:|---:|---:|---:|
