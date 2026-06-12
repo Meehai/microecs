@@ -138,6 +138,28 @@ microecs ~15× — use them there. microecs is the right tool for **vectorizable
 
 </details>
 
+## Benchmark: microecs vs other Python ECS libraries
+
+The same batched physics step (`vel += acc*dt` then `pos += vel*dt`) over N=100k entities, run
+across the most popular Python ECS libraries. One script per library, every result verified
+against a float64 numpy reference. Full setup, fairness notes, and analysis in
+`test/manual/benchmark-vs-similar-libs/`.
+
+| library | model | step / frame | ns/entity | vs slowest | build (100k) |
+|---|---|---:|---:|---:|---:|
+| **microecs** | numpy struct-of-arrays | **0.16 ms** | **1.6** | **189×** | 0.85 s |
+| xecs | Rust struct-of-arrays | 0.55 ms | 5.5 | 56× | 14 ms |
+| esper | pure-python objects | 9.33 ms | 93.3 | 3.3× | 186 ms |
+| ecs-pattern | pure-python objects | 10.74 ms | 107.4 | 2.8× | 112 ms |
+| snecs | pure-python sparse-set | 30.38 ms | 303.8 | 1.0× | 262 ms |
+
+The batch update — microecs's whole purpose — runs **19–189× faster** than the per-entity python
+ECSs, and ~3.4× faster than the only other vectorized library (xecs). microecs's heaviest phase is
+the opposite end — **building** the scene (entities created one at a time) is ~4× the pure-python
+libs and well above xecs's bulk Rust spawn, so it pays off for long-lived scenes and is the wrong
+tool for spawn-heavy churn. If your update loop *isn't* vectorizable, those per-entity libraries are
+simpler and faster — see the microbenchmark above.
+
 ## How much are `Pool` and `QueryResult` numpy-like and corner cases
 
 Given `qr=world.query(A, B)`, then `qr.position` returns a `Field`: a view over the matching pools that behaves like one contiguous-like `(N, *e)`

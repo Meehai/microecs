@@ -67,7 +67,6 @@ class World:
         self.live_entities[self._last_id] = None # add the id the live_entities, but the object is created in get_entity
         self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id,
                                             components=components, **kwargs))
-        logger.debug(f"Created entity. ID: {self._last_id}. Components: {[c.__name__ for c in components]}")
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):

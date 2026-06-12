@@ -1,0 +1,9 @@
+# Shared deps for the cross-library ECS benchmark (test/manual/benchmark-vs-similar-libs).
+#   pip install -r requirements.txt
+# microecs itself is the project under test -- install it from the repo root with:
+#   pip install -e .
+numpy>=2.2.0
+esper>=3.7          # benmoran56/esper  -- pure-python, the most popular Python ECS
+snecs>=1.2.2        # slavfox/snecs     -- pure-python sparse-set, type-hinted
+ecs-pattern>=1.4.0  # ikvk/ecs-pattern  -- pure-python, dataclass/entity-inheritance
+xecs>=0.9.0         # tweng/xecs         -- Rust-backed struct-of-arrays (the vectorized rival)
