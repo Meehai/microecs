@@ -9,6 +9,7 @@ app scheduler -- the same level at which esper/snecs/ecs-pattern/microecs are dr
 to isolate the batch-update cost. Entities are grouped acceleration-first (xecs' natural
 contiguous pool layout); the fingerprint is order-independent, so it still verifies.
 """
+# ruff: noqa
 import numpy as np
 import xecs as xx
 import _common as C
