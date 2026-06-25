@@ -49,7 +49,7 @@ class AddComponentSystem:
 
     def __call__(self, world):
         for eid in list(self.ids):
-            world.add_component(eid, self.component, **self.fields)
+            world.get_entity(eid).add_component(self.component, **self.fields)
 
 
 class RemoveComponentSystem:
@@ -58,7 +58,7 @@ class RemoveComponentSystem:
 
     def __call__(self, world):
         for eid in list(self.ids):
-            world.remove_component(eid, self.component)
+            world.get_entity(eid).remove_component(self.component)
 
 
 def _run_systems(world, systems):

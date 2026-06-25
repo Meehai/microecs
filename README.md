@@ -30,7 +30,7 @@ These are the main primitives:
 ### Few relevant concepts:
 
 - `Pool` operates on array indices, while `World` operates on entity IDs (also integers). This allows seamless movement between pools while the high-level systems still working as intended.
-- All mutable operations on `World` are lazy. These are: `add_entity`, `remove_entity`, `add_component`, `remove_component`. They are added to a command buffer which is only executed when calling `world.update()`.
+- All mutable operations are lazy. Entity lifecycle lives on `World` (`add_entity`, `remove_entity`); component changes live on the entity itself (`world.get_entity(eid).add_component(...)`, `.remove_component(...)`). They are added to a command buffer which is only executed when calling `world.update()`.
 - `Systems` are a convention, they are not part of this library. They can be defined at application level and act as hooks or callbacks. The `World` object doesn't need to know more than entities and components.
 
 ## Super simplified main loop structure
@@ -191,8 +191,9 @@ Edge cases worth knowing:
 
 One frame holds two different timings. Know which is which:
 
-- **Structural changes are lazy (command-buffered).** `add_entity`, `remove_entity`, `add_component`,
-  `remove_component` only queue a command; they take effect at the next `world.update()`. This is what
+- **Structural changes are lazy (command-buffered).** `add_entity`, `remove_entity` (on `World`) and
+  `add_component`, `remove_component` (on the entity, via `world.get_entity(eid)`) only queue a command;
+  they take effect at the next `world.update()`. This is what
   keeps queries stable within a tick — pools don't move under a running system.
 - **Field writes are eager.** A write through an `Entity` (`e.position = ...`, `e.position += ...`,
   `e.position[:] = ...`) and the vectorized `qr.field[:] = ...` path both write straight into

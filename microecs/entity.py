@@ -1,13 +1,15 @@
 """entity.py - A view of an entity with all its fields from the pool it belongs to in the world"""
+from __future__ import annotations
 from dataclasses import fields
-from typing import Any
+from typing import Any, Callable
 import numpy as np
 from .pool import Pool
 from .component import ComponentType
-from .utils import EntityId
+from .utils import EntityId, Command, CommandType
 
 # Note: if Entity gets new fields, add them here! Otherwise the user code may overwrite them e.g. ent._eid_to_pool_ix=xx
-ENTITY_INTERNAL_ATTRS = {"entity_id", "_eid_to_pool_ix", "_pool_to_components"}
+ENTITY_INTERNAL_ATTRS = {"entity_id", "_eid_to_pool_ix", "_pool_to_components",
+                         "_command_buffer", "_component_types", "_live_entities"}
 
 class Entity:
     """
@@ -15,10 +17,27 @@ class Entity:
     Note: Consistent to internal pool changes, however it always must check where it belongs so it's slow!!
     """
     def __init__(self, entity_id: EntityId, eid_to_pool_ix: dict[EntityId, tuple[Pool, int]],
-                 pool_to_components: dict[Pool, list[ComponentType]]):
+                 pool_to_components: dict[Pool, list[ComponentType]], command_buffer: list[Callable],
+                 component_types: list[ComponentType], live_entities: dict[EntityId, Entity | None]):
         self.entity_id = entity_id
         self._eid_to_pool_ix = eid_to_pool_ix
         self._pool_to_components = pool_to_components
+        self._command_buffer = command_buffer
+        self._component_types = component_types
+        self._live_entities = live_entities
+
+    def add_component(self, component: ComponentType, **kwargs):
+        """Adds a component to an entity. Component data is sent to kwargs. Lazy; call world.update()"""
+        assert component in self._component_types, f"Component '{component}' not in {self._component_types}"
+        assert self.entity_id in self._live_entities, f"Entity: {self.entity_id} not in live entities"
+        self._command_buffer.append(Command(CommandType.ADD_COMPONENT, self.entity_id,
+                                            args={"component": component, **kwargs}))
+
+    def remove_component(self, component: ComponentType):
+        """Removes a component from an entity given its id. Lazy; call update()"""
+        assert component in self._component_types, f"Component '{component}' not in {self._component_types}"
+        assert self.entity_id in self._live_entities, f"Entity: {self.entity_id} not in live entities"
+        self._command_buffer.append(Command(CommandType.REMOVE_COMPONENT, self.entity_id, args=component))
 
     def get_components(self) -> list[ComponentType]:
         """get the components of this entity. Note: they may change, so call this every time, don't store it"""

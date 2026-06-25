@@ -1,14 +1,14 @@
 """world.py - The world container for ECS. It manages all the pools (one per archetype). Entities are id-based."""
-from typing import Callable, get_type_hints
-from functools import partial
+from typing import get_type_hints
 from dataclasses import fields
 import numpy as np
 
 from .pool import Pool
-from .utils import Shape, EntityId, PoolKey, logger
+from .utils import Shape, EntityId, PoolKey, Command, CommandType, logger
 from .component import ComponentType
 from .query_result import QueryResult, QUERY_RESULT_INTERNAL_ATTRS
 from .entity import Entity, ENTITY_INTERNAL_ATTRS
+
 
 class World:
     """
@@ -45,55 +45,35 @@ class World:
         self.live_entities: dict[EntityId, Entity | None] = {}
 
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
-        self._command_buffer: list[Callable] = []
+        self._command_buffer: list[Command] = []
         self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # include+exclude key
         logger.debug(f"Created scene with components: {self.component_names}")
 
     # public api
-
-    def update(self):
-        """commits the underlying pool changes from the systems between two updates. Should be called in main loop."""
-        for fn in self._command_buffer:
-            fn()
-
-        if len(self._command_buffer) > 0:
-            self._command_buffer.clear()
-            self._cache.clear()
 
     def add_entity(self, components: list[ComponentType], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
         self._check_components_against_pool(components, **kwargs)
         self._last_id += 1
         self.live_entities[self._last_id] = None # add the id the live_entities, but the object is created in get_entity
-        self._command_buffer.append(partial(self._add_to_pool, entity_id=self._last_id,
-                                            components=components, **kwargs))
+        self._command_buffer.append(Command(CommandType.ADD_ENTITY, self._last_id,
+                                            args={"components": components, **kwargs}))
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):
         """Removes an entity based on its unique entity id. Lazy; call update()"""
         assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
         del self.live_entities[entity_id]
-        self._command_buffer.append(partial(self._pop_from_pool, entity_id=entity_id))
+        self._command_buffer.append(Command(CommandType.REMOVE_ENTITY, entity_id))
 
     def get_entity(self, entity_id: EntityId) -> Entity:
         """Gets the entity reference given an entity id. Used for 'object-like' ops. Lazy; call world.update()"""
         assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
         if self.live_entities[entity_id] is None:
             # only instantiate on first request, so the object is not created for no reason at add_entity time.
-            self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components)
+            self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components,
+                                                   self._command_buffer, self.component_types, self.live_entities)
         return self.live_entities[entity_id]
-
-    def add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
-        """Adds a component to an entity given its id. Component data is sent to kwargs. Lazy; call update()"""
-        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
-        assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
-        self._command_buffer.append(partial(self._do_add_component, entity_id=entity_id, component=component, **kwargs))
-
-    def remove_component(self, entity_id: EntityId, component: ComponentType):
-        """Removes a component from an entity given its id. Lazy; call update()"""
-        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
-        assert component in self.component_types, f"Component '{component}' not in {self.component_types}"
-        self._command_buffer.append(partial(self._do_remove_component, entity_id=entity_id, component=component))
 
     def query(self, *include: ComponentType, exclude: list[ComponentType] | None = None) -> QueryResult:
         """
@@ -127,6 +107,24 @@ class World:
 
         self._cache[key] = QueryResult(res, field_shapes=field_shapes, field_dtypes=field_dtypes, entity_ids=entity_ids)
         return self._cache[key]
+
+    def update(self):
+        """commits the underlying pool changes from the systems between two updates. Should be called in main loop."""
+        for command in self._command_buffer:
+            if command.command_type == CommandType.ADD_ENTITY:
+                components = command.args.pop("components")
+                self._add_to_pool(command.entity_id, components=components, **command.args)
+            elif command.command_type == CommandType.REMOVE_ENTITY:
+                self._pop_from_pool(command.entity_id)
+            elif command.command_type == CommandType.ADD_COMPONENT:
+                component = command.args.pop("component")
+                self._do_add_component(command.entity_id, component=component, **command.args)
+            else: # CommandType.REMOVE_COMPONENT
+                self._do_remove_component(command.entity_id, component=command.args)
+
+        if len(self._command_buffer) > 0:
+            self._command_buffer.clear()
+            self._cache.clear()
 
     # private stuff
 
