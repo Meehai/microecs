@@ -184,7 +184,7 @@ def test_entity_view_is_live_across_archetype_migration():
     e = world.get_entity(eid)                            # held BEFORE the migration
     assert set(e.get_components()) == {HasPosition}
 
-    world.add_component(eid, HasVelocity, velocity=np.array([1.0, 1.0], "float32"))  # -> pos+vel pool
+    world.get_entity(eid).add_component(HasVelocity, velocity=np.array([1.0, 1.0], "float32"))  # -> pos+vel pool
     world.update()
 
     np.testing.assert_array_equal(e.position, [5.0, 6.0])           # data survived the move, same view
@@ -193,6 +193,37 @@ def test_entity_view_is_live_across_archetype_migration():
 
     e.velocity = np.array([7.0, 7.0], "float32")                    # write the newly-available field via old view
     np.testing.assert_array_equal(world.get_entity(eid).velocity, [7.0, 7.0])
+
+
+# --- stale handle across remove: structural ops must reject EAGERLY -----------------------------------------------
+# A handle held BEFORE remove_entity goes stale once the id is despawned. get_entity guards a *fresh* lookup (a dead
+# id raises there), but a *stale* handle bypasses that path. add_component / remove_component through it must still
+# reject at the CALL (AssertionError) -- not silently queue a command that corrupts the pool inside update().
+# RED until Entity.add_component / remove_component guard liveness (e.g. carry world.live_entities and assert the id
+# is still in it). Component passed is VALID, so the only thing that can raise is the liveness guard.
+# Satisfiability proven in test/manual/add-component-on-entity/verify_fixes.py.
+
+def test_stale_handle_add_component_after_remove_rejects_eagerly():
+    """A handle kept across remove_entity must reject add_component at the call, not queue a corrupting command."""
+    world, eid = _world_with_one()
+    e = world.get_entity(eid)                            # valid handle, taken before despawn
+    world.remove_entity(eid)                             # eid leaves live_entities -> handle is now stale
+
+    with pytest.raises(AssertionError):
+        e.add_component(HasVelocity, velocity=np.array([1.0, 1.0], "float32"))   # valid comp -> only liveness can raise
+
+
+def test_stale_handle_remove_component_after_remove_rejects_eagerly():
+    """Same guard for the narrowing op: remove_component through a stale handle must reject eagerly."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity((HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
+    e = world.get_entity(eid)                            # valid handle, taken before despawn
+    world.remove_entity(eid)                             # now stale
+
+    with pytest.raises(AssertionError):
+        e.remove_component(HasVelocity)
 
 
 # --- serialization: entity.to_dict() ------------------------------------------------------------------------------

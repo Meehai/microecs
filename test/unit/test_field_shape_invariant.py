@@ -130,13 +130,13 @@ def test_field_shape_survives_migration():
     world.update()
     assert world.query(HasPose).pose.shape == (1, 4, 4)
 
-    world.add_component(eid, HasVelocity, velocity=np.array([1, 1], "float32"))   # -> pose+vel pool
+    world.get_entity(eid).add_component(HasVelocity, velocity=np.array([1, 1], "float32"))   # -> pose+vel pool
     world.update()
     entity = world.get_entity(eid)
     assert entity.pose.shape == (4, 4)
     assert np.array_equal(entity.pose, _pose(7))          # data intact across migration
 
-    world.remove_component(eid, HasVelocity)                 # -> back to pose-only pool
+    world.get_entity(eid).remove_component(HasVelocity)                 # -> back to pose-only pool
     world.update()
     assert world.query(HasPose).pose.shape == (1, 4, 4)
 
