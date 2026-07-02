@@ -1253,3 +1253,29 @@ def test_zero_dim_array_field_roundtrips():
     entity = world.get_entity(e0)
     assert entity.scale.shape == ()                            # still a 0-d scalar per entity
     np.testing.assert_array_equal(entity.scale, 2.5)
+
+
+def test_add_entity_wrong_dtype_crashes_eagerly():
+    """A field declared float32 must reject an int32 array *at the add_entity call* (see task 170).
+
+    Field-name validation is eager (bad name crashes at the call) and, since task 170, dtype is too:
+    _check_components_against_pool now validates dtype against component metadata, so a wrong dtype
+    crashes at the call instead of slipping through to pool.add_entity at world.update()."""
+    world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
+
+    # name + shape are correct here, so the only thing that can crash at the call is the dtype mismatch
+    with pytest.raises(TypeError):
+        world.add_entity((HasRadius,), radius=np.zeros((1,), "int32"))  # wrong dtype must crash here
+
+
+def test_add_entity_wrong_shape_crashes_eagerly():
+    """A field declared shape (1,) must reject a (2,) array *at the add_entity call* (see task 170).
+
+    Companion to test_add_entity_wrong_dtype_crashes_eagerly: shape is the other half of the same guard.
+    Since task 170, _check_components_against_pool validates shape against component metadata, so a wrong
+    shape crashes at the call instead of slipping through to pool.add_entity at world.update()."""
+    world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
+
+    # name + dtype are correct here, so the only thing that can crash at the call is the shape mismatch
+    with pytest.raises(ValueError):
+        world.add_entity((HasRadius,), radius=np.zeros((2,), "float32"))  # wrong shape must crash here

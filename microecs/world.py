@@ -176,9 +176,17 @@ class World:
         assert (diff := cs - self.component_types) == set(), f"Missing comps:\n{cs=}\n{self.component_types=}\n{diff=}"
         expected_fields = set()
         for component in components:
-            for _field in self.component_to_field_names[component]:
-                expected_fields.add(_field)
-                assert _field in entity_fields, f"Entity doesn't have '{component.__name__}/{_field}'"
+            for field_name, field_shape, field_dtype in zip(self.component_to_field_names[component],
+                                                            self.component_to_shapes[component],
+                                                            self.component_to_dtypes[component]):
+                expected_fields.add(field_name)
+                if field_name not in entity_fields.keys():
+                    raise KeyError(f"Entity doesn't have '{component.__name__}/{field_name}'")
+                if (dt := entity_fields[field_name].dtype) != field_dtype:
+                    raise TypeError(f"'{component.__name__}/{field_name}'. Expected dtype: {field_dtype}. Got: {dt}")
+                if (sh := entity_fields[field_name].shape) != field_shape:
+                    raise ValueError(f"'{component.__name__}/{field_name}'. Expected shape: {field_shape}. Got: {sh}")
+
         assert (extra := set(entity_fields) - expected_fields) == set(), f"Extra fields: {extra}; {expected_fields=}"
 
     def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
@@ -210,7 +218,9 @@ class World:
             for f in fields(component):
                 assert hints[f.name] is np.ndarray, f"Field '{cn}/{f.name}' not an array: {f}"
                 assert f.name not in reserved_names, f"Field '{cn}/{f.name}' in {reserved_names}"
-                assert f.metadata.keys() == expected_meta, f"Field '{cn}/{f.name}':\n{f.metadata} vs\n{expected_meta}"
+                assert f.metadata.keys() == expected_meta, (
+                    f"Field '{cn}/{f.name}'\n{list(f.metadata.keys())}\nvs\n{expected_meta}\n"
+                    "Perhaps missing World(extra_metadata=[...])?")
                 assert isinstance(f.metadata["shape"], tuple), f.metadata["shape"]
                 assert isinstance(fmd := f.metadata["dtype"], str) and fmd in dtypes, f"{fmd} not in {dtypes}"
 
