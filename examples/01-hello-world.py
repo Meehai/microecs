@@ -17,13 +17,13 @@ MAX_SUBTICKS_PER_RENDER_TICK = 3
 # components
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32"})
+    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "default": None})
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": None})
 
 class HasColor(Component):
-    color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32"})
+    color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32", "default": np.array(rl.BLACK, dtype="int32")})
 
 # systems
 
@@ -60,7 +60,7 @@ def main(args: Namespace):
         radius = random.randint(5, 20)
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
         world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
-                         color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
+                         radius=np.array([radius], "float32"),)
 
     while not rl.WindowShouldClose():
         world.update()
@@ -68,7 +68,7 @@ def main(args: Namespace):
             radius = random.randint(5, 20)
             position = rl.GetMousePosition().x, rl.GetMousePosition().y
             world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
-                             color=np.array(rl.BLACK, dtype="int32"), radius=np.array([radius], "float32"),)
+                             radius=np.array([radius], "float32"),)
 
         _ = [system(world=world) for system in update_systems]
 

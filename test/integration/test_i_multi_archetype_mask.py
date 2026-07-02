@@ -11,19 +11,19 @@ import numpy as np
 from microecs import World, Component
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32"})
+    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
 
 
 class HasColor(Component):
-    color: np.ndarray = field(metadata={"shape": (4,), "dtype": "int32"})
+    color: np.ndarray = field(metadata={"shape": (4,), "dtype": "int32", "default": None})
 
 
 class WallBounceSystem:

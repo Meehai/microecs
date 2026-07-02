@@ -25,15 +25,15 @@ from microecs.query_result import Field
 
 
 class HasPose(Component):  # 2D field: the (4,4) the contract is written around
-    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32"})
+    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32", "default": None})
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasScale(Component):  # 0-d field: feature shape () -> field is (N,)
-    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32"})
+    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32", "default": None})
 
 
 def _pose(v: float) -> np.ndarray:

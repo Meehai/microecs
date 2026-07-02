@@ -18,6 +18,7 @@ class World:
     - extra_metadata The list of required extra metadata for each field besides shape and dtype.
     """
     def __init__(self, components: list[ComponentType], extra_metadata: list[str] | None = None):
+        self._default_metadata = {"shape", "dtype", "default"}
         self.extra_metadata = extra_metadata or []
         assert isinstance(self.extra_metadata, list), type(self.extra_metadata)
         self._check_components(components)
@@ -30,12 +31,23 @@ class World:
         self.component_names = [x.__name__ for x in components]
         self.component_types = set(components)
         self.component_to_bit: dict[ComponentType, int] = {t: 2**i for i, t in enumerate(components)} # bit for querying
-        self.component_to_shapes: dict[ComponentType, list[Shape]] = {
-            c: [f.metadata["shape"] for f in fields(c)] for c in components}
-        self.component_to_dtypes: dict[ComponentType, list[str]] = {
-            c: [f.metadata["dtype"] for f in fields(c)] for c in components}
-        self.component_to_field_names: dict[ComponentType, list[str]] = {
-            c: [f.name for f in fields(c)] for c in components}
+        self.component_to_field_names: dict[ComponentType, list[str]] = {c: [] for c in components}
+        self.component_to_shapes: dict[ComponentType, list[Shape]] = {c: [] for c in components}
+        self.component_to_dtypes: dict[ComponentType, list[str]] = {c: [] for c in components}
+        self.component_to_defaults: dict[ComponentType, list[np.ndarray]] = {c: [] for c in components}
+        # setup the obligatory metadata at each fields
+        for c in components:
+            for f in fields(c):
+                self.component_to_field_names[c].append(f.name)
+                self.component_to_shapes[c].append(field_shape := f.metadata["shape"])
+                self.component_to_dtypes[c].append(field_dtype := f.metadata["dtype"])
+                self.component_to_defaults[c].append(field_default := f.metadata["default"])
+                if field_default is not None:
+                    if (dt := field_default.dtype) != field_dtype:
+                        raise TypeError(f"'{c.__name__}/{f.name}'. Expected dtype: {field_dtype}. Got: {dt}")
+                    if (sh := field_default.shape) != field_shape:
+                        raise ValueError(f"'{c.__name__}/{f.name}'. Expected shape: {field_shape}. Got: {sh}")
+
         # entities management
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ids: dict[Pool, list[EntityId]] = {}
@@ -53,11 +65,11 @@ class World:
 
     def add_entity(self, components: list[ComponentType], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
-        self._check_components_against_pool(components, **kwargs)
+        default_kwargs = self._check_components_against_pool(components, **kwargs)
         self._last_id += 1
         self.live_entities[self._last_id] = None # add the id the live_entities, but the object is created in get_entity
         self._command_buffer.append(Command(CommandType.ADD_ENTITY, self._last_id,
-                                            args={"components": components, **kwargs}))
+                                            args={"components": components, **kwargs, **default_kwargs}))
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):
@@ -157,8 +169,8 @@ class World:
         entity_data, components = self._pop_from_pool(entity_id)
         new_components = [*components, component]
         assert entity_data.keys().isdisjoint(kwargs), f"Duplicate keys: {entity_data.keys()} vs {kwargs.keys()}"
-        self._check_components_against_pool(new_components, **entity_data, **kwargs)
-        self._add_to_pool(entity_id, new_components, **entity_data, **kwargs)
+        default_kwargs = self._check_components_against_pool(new_components, **entity_data, **kwargs)
+        self._add_to_pool(entity_id, new_components, **entity_data, **kwargs, **default_kwargs)
 
     def _do_remove_component(self, entity_id: EntityId, component: ComponentType):
         entity_data, components = self._pop_from_pool(entity_id)
@@ -166,56 +178,64 @@ class World:
             assert _field in entity_data, f"Field {component}/{_field} not in components: {components} ({entity_id=})"
             entity_data.pop(_field)
         new_components = [c for c in components if c != component]
-        self._check_components_against_pool(new_components, **entity_data)
+        default_kwargs = self._check_components_against_pool(new_components, **entity_data)
+        assert len(default_kwargs) == 0, default_kwargs # cannot happen
         self._add_to_pool(entity_id, new_components, **entity_data)
 
     # other low-level methods
 
-    def _check_components_against_pool(self, components: list[ComponentType], **entity_fields):
+    def _check_components_against_pool(self, components: list[ComponentType], **entity_fields) -> dict[str, np.ndarray]:
+        """note: returns defaults that may need to be added to this new entity"""
         assert len(cs := set(components)) > 0, f"Entity has no components: {self.component_names}"
         assert (diff := cs - self.component_types) == set(), f"Missing comps:\n{cs=}\n{self.component_types=}\n{diff=}"
+        res: dict[str, np.ndarray] = {}
         expected_fields = set()
-        for component in components:
-            for field_name, field_shape, field_dtype in zip(self.component_to_field_names[component],
-                                                            self.component_to_shapes[component],
-                                                            self.component_to_dtypes[component]):
+        for c in components:
+            for field_name, field_shape, field_dtype, field_default in zip(self.component_to_field_names[c],
+                                                                           self.component_to_shapes[c],
+                                                                           self.component_to_dtypes[c],
+                                                                           self.component_to_defaults[c]):
                 expected_fields.add(field_name)
                 if field_name not in entity_fields.keys():
-                    raise KeyError(f"Entity doesn't have '{component.__name__}/{field_name}'")
+                    if field_default is None:
+                        raise KeyError(f"Entity doesn't have '{c.__name__}/{field_name}' and metadata default=None")
+                    # Note: We add the default manually ourselves here !
+                    res[field_name] = entity_fields[field_name] = field_default.copy()
                 if (dt := entity_fields[field_name].dtype) != field_dtype:
-                    raise TypeError(f"'{component.__name__}/{field_name}'. Expected dtype: {field_dtype}. Got: {dt}")
+                    raise TypeError(f"'{c.__name__}/{field_name}'. Expected dtype: {field_dtype}. Got: {dt}")
                 if (sh := entity_fields[field_name].shape) != field_shape:
-                    raise ValueError(f"'{component.__name__}/{field_name}'. Expected shape: {field_shape}. Got: {sh}")
+                    raise ValueError(f"'{c.__name__}/{field_name}'. Expected shape: {field_shape}. Got: {sh}")
 
         assert (extra := set(entity_fields) - expected_fields) == set(), f"Extra fields: {extra}; {expected_fields=}"
+        return res
 
     def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
         if (key := self._make_key(components)) not in self.pools:
-            _fields = sum([self.component_to_field_names[component] for component in components], []) # merge fields
-            shapes = sum([self.component_to_shapes[component] for component in components], []) # merge shapes
-            dtypes = sum([self.component_to_dtypes[component] for component in components], []) # merge dtypes
+            _fields = sum([self.component_to_field_names[c] for c in components], []) # merge fields
+            shapes = sum([self.component_to_shapes[c] for c in components], []) # merge shapes
+            dtypes = sum([self.component_to_dtypes[c] for c in components], []) # merge dtypes
             self.pools[key] = Pool(_fields, shapes, dtypes)
             self.pool_to_components[self.pools[key]] = components
         return self.pools[key]
 
     def _make_key(self, components: list[ComponentType]) -> PoolKey:
         key = 0
-        for component in components:
-            assert component in self.component_types, f"Component '{component.__name__}' not in {self.component_names}"
-            key |= self.component_to_bit[component]
+        for c in components:
+            assert c in self.component_types, f"c '{c.__name__}' not in {self.component_names}"
+            key |= self.component_to_bit[c]
         return key
 
     def _check_components(self, components: list[ComponentType]):
         reserved_names = (ENTITY_INTERNAL_ATTRS | {n for n in vars(Entity) if not n.startswith("__")} |
                           QUERY_RESULT_INTERNAL_ATTRS | {n for n in vars(QueryResult) if not n.startswith("__")})
         dtypes = {"float32", "int32", "bool", "object"}
-        expected_meta = {"shape", "dtype", *self.extra_metadata}
+        expected_meta = {*self._default_metadata, *self.extra_metadata}
 
-        for component in components:
-            cn = component.__name__
-            assert hasattr(component, "__dataclass_fields__"), f"Component '{cn}' is not a dataclass"
-            hints = get_type_hints(component) # make it work with from __future__ import annotations
-            for f in fields(component):
+        for c in components:
+            cn = c.__name__
+            assert hasattr(c, "__dataclass_fields__"), f"c '{cn}' is not a dataclass"
+            hints = get_type_hints(c) # make it work with from __future__ import annotations
+            for f in fields(c):
                 assert hints[f.name] is np.ndarray, f"Field '{cn}/{f.name}' not an array: {f}"
                 assert f.name not in reserved_names, f"Field '{cn}/{f.name}' in {reserved_names}"
                 assert f.metadata.keys() == expected_meta, (

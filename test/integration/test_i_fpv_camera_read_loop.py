@@ -31,15 +31,15 @@ class FakeCamera:
 
 
 class HasFPV(Component):  # object-dtype: each entity carries a camera OBJECT, methods called one by one
-    fpv_camera: np.ndarray = field(metadata={"shape": (), "dtype": "object"})
+    fpv_camera: np.ndarray = field(metadata={"shape": (), "dtype": "object", "default": None})
 
 
 class HasPose(Component):  # a 4x4 rigid transform; columns are right/up/forward, last column is translation
-    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32"})
+    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32", "default": None})
 
 
 class HasName(Component):  # only here to force a SECOND archetype so the query spans two pools
-    name: np.ndarray = field(metadata={"shape": (), "dtype": "object"})
+    name: np.ndarray = field(metadata={"shape": (), "dtype": "object", "default": None})
 
 
 def _pose(rot3x3: list[list[float]], translation: list[float]) -> np.ndarray:

@@ -21,15 +21,15 @@ from microecs.query_result import Field
 
 
 class HasVel(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasTag(Component):  # forces a second archetype/pool for the velocity query
-    tag: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32"})
+    tag: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
 
 
 class HasPose(Component):
-    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32"})
+    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32", "default": None})
 
 
 def _multipool_velocity():

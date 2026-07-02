@@ -15,15 +15,15 @@ from microecs import World, Component
 
 
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32"})
+    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
 
 class SpawnSystem:
     """Spawns one entity, recording its eager id into `sink` so later systems can act on it this tick."""

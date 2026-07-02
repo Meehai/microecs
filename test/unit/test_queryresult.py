@@ -13,7 +13,7 @@ from microecs.query_result import QueryResult, Field
 
 
 class HasPosition(Component):  # owns the `position` field the pools below carry
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 def _pool_with(n: int) -> Pool:

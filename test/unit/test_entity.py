@@ -18,24 +18,24 @@ from microecs import World, Component, Entity
 
 
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasLabel(Component):  # object dtype: an arbitrary python object per entity (-> to_dict uses .item())
-    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object"})
+    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
 
 
 class HasScale(Component):  # 0-d array field: exactly one scalar per entity (shape ())
-    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32"})
+    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32", "default": None})
 
 
 class HasSerial(Component):  # two fields; the 'serializable' extra-metadata drives to_dict's filter
-    keep: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": True})
-    drop: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": False})
+    keep: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": True, "default": None})
+    drop: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": False, "default": None})
 
 
 def _world_with_one(position=(1.0, 2.0)):

@@ -18,24 +18,24 @@ from microecs.entity import Entity, ENTITY_INTERNAL_ATTRS
 
 
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32"})
+    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
 
 
 class HasBox(Component):  # two fields, to exercise multi-field merge/ordering across migrations
-    lo: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
-    hi: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    lo: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    hi: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
 
 class HasLabel(Component):  # object-dtype field: holds one arbitrary Python object per entity
-    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object"})
+    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
 
 
 class Frozen(Component):  # zero-field tag: a marker with no data, queried/filtered on as an archetype bit
@@ -43,7 +43,11 @@ class Frozen(Component):  # zero-field tag: a marker with no data, queried/filte
 
 
 class HasScale(Component):  # 0-d array field: exactly one scalar per entity (shape ())
-    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32"})
+    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32", "default": None})
+
+
+class HasColorDefault(Component):  # optional field: metadata carries a real default, filled when omitted
+    color: np.ndarray = field(metadata={"shape": (3,), "dtype": "int32", "default": np.array([10, 20, 30], "int32")})
 
 
 def test_add_entity_rejects_field_from_an_unrequested_component():
@@ -703,7 +707,7 @@ def test_world_rejects_str_dtype_component():
     fail loud at World construction (where the bad field lives), not corrupt data later. Python strings now
     live in dtype='object' (see test_object_field_holds_python_string_and_compares_by_equality)."""
     class HasName(Component):
-        name: np.ndarray = field(metadata={"shape": (1,), "dtype": "str"})
+        name: np.ndarray = field(metadata={"shape": (1,), "dtype": "str", "default": None})
 
     with pytest.raises(AssertionError, match="str not in"):
         World(components=[HasName])
@@ -714,7 +718,7 @@ def test_object_field_holds_python_string_and_compares_by_equality():
     field. The full string is kept (no <U width cap, no truncation) and string `==` on the pool column
     works -- element-wise and vectorised."""
     class HasKind(Component):  # e.g. a 'component_kind' tag stored as a string-in-object
-        kind: np.ndarray = field(metadata={"shape": (1,), "dtype": "object"})
+        kind: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
 
     world = World(components=[HasKind])
     a = world.add_entity(components=(HasKind,), kind=np.array(["enemy"], dtype=object))             # idx 0
@@ -1149,7 +1153,7 @@ def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserv
     """A component whose field is named like a QueryResult attribute must be rejected at world creation, rather
     than be silently shadowed when queried."""
     bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
-                                      reserved: field(metadata={"shape": (2,), "dtype": "float32"})})
+                                      reserved: field(metadata={"shape": (2,), "dtype": "float32", "default": None})})
     with pytest.raises((AssertionError, ValueError)):
         World(components=[bad])
 
@@ -1165,7 +1169,7 @@ def test_world_rejects_component_field_named_like_an_entity_attribute(reserved):
     """A component whose field is named like an Entity attribute/method must be rejected at world creation,
     rather than be silently shadowed when read/written through get_entity."""
     bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
-                                      reserved: field(metadata={"shape": (2,), "dtype": "float32"})})
+                                      reserved: field(metadata={"shape": (2,), "dtype": "float32", "default": None})})
     with pytest.raises((AssertionError, ValueError)):
         World(components=[bad])
 
@@ -1180,10 +1184,10 @@ def test_extra_metadata_required_strictly_on_every_field():
     of which 2 raise: a required key missing, OR an undeclared extra key present.
     """
     class Plain(Component):    # field carries only the always-required keys
-        a: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+        a: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 
     class Serial(Component):   # same field, plus the extra "serializable" key
-        b: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "serializable": True})
+        b: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "serializable": True, "default": None})
 
     World([Plain])                                          # ok: {shape,dtype} == {shape,dtype}
     World([Serial], extra_metadata=["serializable"])  # ok: {shape,dtype,ser} == {shape,dtype,ser}
@@ -1279,3 +1283,96 @@ def test_add_entity_wrong_shape_crashes_eagerly():
     # name + dtype are correct here, so the only thing that can crash at the call is the shape mismatch
     with pytest.raises(ValueError):
         world.add_entity((HasRadius,), radius=np.zeros((2,), "float32"))  # wrong shape must crash here
+
+
+# --- default metadata (task 171): omitted fields fall back to the component's declared default ---
+
+def test_add_entity_fills_default_when_field_omitted():
+    """Omitting a field whose metadata declares a (non-None) default fills it with that default."""
+    world = World([HasColorDefault])
+
+    world.add_entity((HasColorDefault,))  # color omitted -> default [10, 20, 30]
+    world.update()
+
+    pool = world.query(HasColorDefault).pool_list[0]
+    np.testing.assert_array_equal(pool.color[0], np.array([10, 20, 30], "int32"))
+
+
+def test_add_entity_explicit_value_overrides_default():
+    """An explicit value for a defaulted field wins over the default."""
+    world = World([HasColorDefault])
+
+    world.add_entity((HasColorDefault,), color=np.array([1, 2, 3], "int32"))
+    world.update()
+
+    pool = world.query(HasColorDefault).pool_list[0]
+    np.testing.assert_array_equal(pool.color[0], np.array([1, 2, 3], "int32"))
+
+
+def test_default_and_explicit_coexist_per_row():
+    """Same pool: an omitted field takes the default while an explicit one keeps its own value, per row."""
+    world = World([HasColorDefault])
+
+    world.add_entity((HasColorDefault,))                                       # row 0: default
+    world.add_entity((HasColorDefault,), color=np.array([1, 2, 3], "int32"))   # row 1: explicit
+    world.update()
+
+    pool = world.query(HasColorDefault).pool_list[0]
+    np.testing.assert_array_equal(pool.color[0], np.array([10, 20, 30], "int32"))
+    np.testing.assert_array_equal(pool.color[1], np.array([1, 2, 3], "int32"))
+
+
+def test_component_default_wrong_dtype_rejected():
+    """A default whose dtype mismatches the declared dtype is rejected (see task 171).
+
+    Filling a default runs it through the same dtype check as an explicit value, so an int32 default for
+    a float32 field raises TypeError -- at World() construction if validated there, else when the default
+    is filled at the add_entity call. (Assumes the same raise-TypeError convention as the explicit-value
+    dtype check; tighten if the construction-time guard chooses a different exception.)"""
+    class BadDtypeDefault(Component):
+        x: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": np.zeros((1,), "int32")})
+
+    with pytest.raises(TypeError):
+        world = World([BadDtypeDefault])
+        world.add_entity((BadDtypeDefault,))  # omit x -> fill int32 default -> dtype mismatch
+
+
+def test_component_default_wrong_shape_rejected():
+    """A default whose shape mismatches the declared shape is rejected (see task 171).
+
+    Companion to test_component_default_wrong_dtype_rejected: a (2,) default for a (1,) field raises
+    ValueError -- at World() construction if validated there, else when the default is filled at the
+    add_entity call."""
+    class BadShapeDefault(Component):
+        x: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": np.zeros((2,), "float32")})
+
+    with pytest.raises(ValueError):
+        world = World([BadShapeDefault])
+        world.add_entity((BadShapeDefault,))  # omit x -> fill (2,) default -> shape mismatch
+
+
+def test_add_component_fills_default_when_field_omitted():
+    """add_component fills a defaulted field that's omitted, exactly like add_entity (see task 171)."""
+    world = World([HasPosition, HasColorDefault])
+    eid = world.add_entity((HasPosition,), position=np.array([1, 2], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasColorDefault)  # color omitted -> default [10, 20, 30]
+    world.update()
+
+    pool = world.query(HasPosition, HasColorDefault).pool_list[0]
+    np.testing.assert_array_equal(pool.position[0], np.array([1, 2], "float32"))  # existing field preserved
+    np.testing.assert_array_equal(pool.color[0], np.array([10, 20, 30], "int32"))  # new field defaulted
+
+
+def test_add_component_explicit_value_overrides_default():
+    """An explicit value passed to add_component wins over the field's default."""
+    world = World([HasPosition, HasColorDefault])
+    eid = world.add_entity((HasPosition,), position=np.array([1, 2], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasColorDefault, color=np.array([1, 2, 3], "int32"))
+    world.update()
+
+    pool = world.query(HasPosition, HasColorDefault).pool_list[0]
+    np.testing.assert_array_equal(pool.color[0], np.array([1, 2, 3], "int32"))
