@@ -8,7 +8,7 @@ from .utils import Shape, EntityId, PoolKey, Command, CommandType, logger
 from .component import ComponentType
 from .query_result import QueryResult, QUERY_RESULT_INTERNAL_ATTRS
 from .entity import Entity, ENTITY_INTERNAL_ATTRS
-
+from .command_buffer import CommandBuffer
 
 class World:
     """
@@ -30,6 +30,7 @@ class World:
         # components management
         self.component_names = [x.__name__ for x in components]
         self.component_types = set(components)
+        self.component_name_to_type = {x.__name__: x for x in components}
         self.component_to_bit: dict[ComponentType, int] = {t: 2**i for i, t in enumerate(components)} # bit for querying
         self.component_to_field_names: dict[ComponentType, list[str]] = {c: [] for c in components}
         self.component_to_shapes: dict[ComponentType, list[Shape]] = {c: [] for c in components}
@@ -57,7 +58,7 @@ class World:
         self.live_entities: dict[EntityId, Entity | None] = {}
 
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
-        self._command_buffer: list[Command] = []
+        self._command_buffer = CommandBuffer(self)
         self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # include+exclude key
         logger.debug(f"Created scene with components: {self.component_names}")
 
@@ -65,7 +66,8 @@ class World:
 
     def add_entity(self, components: list[ComponentType], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
-        default_kwargs = self._check_components_against_pool(components, **kwargs)
+        self._validate_components(components, **kwargs)
+        default_kwargs = self._defaults_for(components, **kwargs)
         self._last_id += 1
         self.live_entities[self._last_id] = None # add the id the live_entities, but the object is created in get_entity
         self._command_buffer.append(Command(CommandType.ADD_ENTITY, self._last_id,
@@ -74,17 +76,19 @@ class World:
 
     def remove_entity(self, entity_id: EntityId):
         """Removes an entity based on its unique entity id. Lazy; call update()"""
-        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
-        del self.live_entities[entity_id]
         self._command_buffer.append(Command(CommandType.REMOVE_ENTITY, entity_id))
+        del self.live_entities[entity_id]
 
     def get_entity(self, entity_id: EntityId) -> Entity:
         """Gets the entity reference given an entity id. Used for 'object-like' ops. Lazy; call world.update()"""
-        assert entity_id in self.live_entities, f"Entity id: {entity_id} not in the world"
+        if entity_id not in self.live_entities:
+            raise ValueError(f"Entity id: {entity_id} not in the world")
+
         if self.live_entities[entity_id] is None:
             # only instantiate on first request, so the object is not created for no reason at add_entity time.
             self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components,
-                                                   self._command_buffer, self.component_types, self.live_entities)
+                                                   world_command_buffer=self._command_buffer)
+
         return self.live_entities[entity_id]
 
     def query(self, *include: ComponentType, exclude: list[ComponentType] | None = None) -> QueryResult:
@@ -169,7 +173,7 @@ class World:
         entity_data, components = self._pop_from_pool(entity_id)
         new_components = [*components, component]
         assert entity_data.keys().isdisjoint(kwargs), f"Duplicate keys: {entity_data.keys()} vs {kwargs.keys()}"
-        default_kwargs = self._check_components_against_pool(new_components, **entity_data, **kwargs)
+        default_kwargs = self._defaults_for(new_components, **entity_data, **kwargs)
         self._add_to_pool(entity_id, new_components, **entity_data, **kwargs, **default_kwargs)
 
     def _do_remove_component(self, entity_id: EntityId, component: ComponentType):
@@ -178,36 +182,41 @@ class World:
             assert _field in entity_data, f"Field {component}/{_field} not in components: {components} ({entity_id=})"
             entity_data.pop(_field)
         new_components = [c for c in components if c != component]
-        default_kwargs = self._check_components_against_pool(new_components, **entity_data)
-        assert len(default_kwargs) == 0, default_kwargs # cannot happen
         self._add_to_pool(entity_id, new_components, **entity_data)
 
     # other low-level methods
 
-    def _check_components_against_pool(self, components: list[ComponentType], **entity_fields) -> dict[str, np.ndarray]:
-        """note: returns defaults that may need to be added to this new entity"""
-        assert len(cs := set(components)) > 0, f"Entity has no components: {self.component_names}"
-        assert (diff := cs - self.component_types) == set(), f"Missing comps:\n{cs=}\n{self.component_types=}\n{diff=}"
-        res: dict[str, np.ndarray] = {}
-        expected_fields = set()
+    def _validate_components(self, components: list[ComponentType], **fields):
+        """Pure check. Raises on: no components, unknown component, missing-required (default=None),
+            wrong dtype/shape, extra field. No mutation, no return."""
+        if len(cs := set(components)) == 0:
+            raise ValueError(f"Entity has no components: {self.component_names}")
+        if diff := cs - self.component_types:
+            raise ValueError(f"Unknown components: {diff}")
+        expected = set()
         for c in components:
-            for field_name, field_shape, field_dtype, field_default in zip(self.component_to_field_names[c],
-                                                                           self.component_to_shapes[c],
-                                                                           self.component_to_dtypes[c],
-                                                                           self.component_to_defaults[c]):
-                expected_fields.add(field_name)
-                if field_name not in entity_fields.keys():
-                    if field_default is None:
-                        raise KeyError(f"Entity doesn't have '{c.__name__}/{field_name}' and metadata default=None")
-                    # Note: We add the default manually ourselves here !
-                    res[field_name] = entity_fields[field_name] = field_default.copy()
-                if (dt := entity_fields[field_name].dtype) != field_dtype:
-                    raise TypeError(f"'{c.__name__}/{field_name}'. Expected dtype: {field_dtype}. Got: {dt}")
-                if (sh := entity_fields[field_name].shape) != field_shape:
-                    raise ValueError(f"'{c.__name__}/{field_name}'. Expected shape: {field_shape}. Got: {sh}")
+            for name, shape, dtype, default in zip(self.component_to_field_names[c], self.component_to_shapes[c],
+                                                    self.component_to_dtypes[c], self.component_to_defaults[c]):
+                expected.add(name)
+                if name not in fields:
+                    if default is None:
+                        raise KeyError(f"'{c.__name__}/{name}' required (default=None) but not supplied")
+                    continue                      # omitted but has a default -> fine; filling is not our job
+                if not isinstance(field := fields[name], np.ndarray):
+                    raise TypeError(f"'{c.__name__}/{name}'. Expected np.ndarray, got {type(field)}")
+                if (dt := field.dtype) != dtype:
+                    raise TypeError(f"'{c.__name__}/{name}'. Expected dtype {dtype}, got {dt}")
+                if (sh := field.shape) != shape:
+                    raise ValueError(f"'{c.__name__}/{name}'. Expected shape {shape}, got {sh}")
+        if extra := set(fields) - expected:
+            raise ValueError(f"Extra fields: {extra}; expected {expected}")
 
-        assert (extra := set(entity_fields) - expected_fields) == set(), f"Extra fields: {extra}; {expected_fields=}"
-        return res
+    def _defaults_for(self, components: list[ComponentType], **fields) -> dict[str, np.ndarray]:
+      """Defaults for omitted fields. Assumes already validated. Pure -- no mutation of `fields`."""
+      return {name: default.copy()
+              for c in components
+              for name, default in zip(self.component_to_field_names[c], self.component_to_defaults[c])
+              if name not in fields and default is not None}
 
     def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
         if (key := self._make_key(components)) not in self.pools:

@@ -10,9 +10,9 @@ Shipped as a **mandatory** `default` metadata key on every field (not optional a
 a single always-present key is a simpler invariant). `default=None` = required (omitting → `KeyError`);
 `default=<array>` = filled when omitted. Author-supplied defaults are validated at `World()` construction
 (guarded `if default is not None`, raises `TypeError`/`ValueError`). Fill logic in
-`_check_components_against_pool` returns the filled defaults (`.copy()` per entity) and reuses #170's eager
+`_check_components_against_pool` returns the filled defaults (`.copy()` per entity) and reuses #20's eager
 dtype/shape checks. Both `add_entity` **and** `entity.add_component` fill omitted defaults
-(`_do_add_component` passes the filled defaults to `_add_to_pool`). Builds on #170 (stacked).
+(`_do_add_component` passes the filled defaults to `_add_to_pool`). Builds on #20 (stacked).
 
 Tests in `test/unit/test_world.py`: `test_add_entity_fills_default_when_field_omitted`,
 `..._explicit_value_overrides_default`, `test_default_and_explicit_coexist_per_row`,
@@ -47,9 +47,9 @@ the field is always passed explicitly.
 
 Open question (deferred): `object`-dtype default semantics — document when it comes up.
 
-## Interaction with #170
+## Interaction with #20
 
-#170 makes dtype/shape validation eager. The fill path reuses those same checks, so a filled default is
+#20 makes dtype/shape validation eager. The fill path reuses those same checks, so a filled default is
 validated exactly like an explicit value.
 
 ## Files

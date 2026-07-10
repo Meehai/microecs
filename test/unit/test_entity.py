@@ -198,10 +198,10 @@ def test_entity_view_is_live_across_archetype_migration():
 # --- stale handle across remove: structural ops must reject EAGERLY -----------------------------------------------
 # A handle held BEFORE remove_entity goes stale once the id is despawned. get_entity guards a *fresh* lookup (a dead
 # id raises there), but a *stale* handle bypasses that path. add_component / remove_component through it must still
-# reject at the CALL (AssertionError) -- not silently queue a command that corrupts the pool inside update().
-# RED until Entity.add_component / remove_component guard liveness (e.g. carry world.live_entities and assert the id
-# is still in it). Component passed is VALID, so the only thing that can raise is the liveness guard.
-# Satisfiability proven in test/manual/add-component-on-entity/verify_fixes.py.
+# reject at the CALL -- not silently queue a command that corrupts the pool inside update(). The guard now lives in
+# CommandBuffer.append (the single gate every command passes through): appending a command for a non-live id raises
+# ValueError, so the op is rejected eagerly and nothing is staged. Component passed is VALID, so the only thing that
+# can raise is the liveness guard. Satisfiability proven in test/manual/add-component-on-entity/verify_fixes.py.
 
 def test_stale_handle_add_component_after_remove_rejects_eagerly():
     """A handle kept across remove_entity must reject add_component at the call, not queue a corrupting command."""
@@ -209,7 +209,7 @@ def test_stale_handle_add_component_after_remove_rejects_eagerly():
     e = world.get_entity(eid)                            # valid handle, taken before despawn
     world.remove_entity(eid)                             # eid leaves live_entities -> handle is now stale
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         e.add_component(HasVelocity, velocity=np.array([1.0, 1.0], "float32"))   # valid comp -> only liveness can raise
 
 
@@ -222,7 +222,7 @@ def test_stale_handle_remove_component_after_remove_rejects_eagerly():
     e = world.get_entity(eid)                            # valid handle, taken before despawn
     world.remove_entity(eid)                             # now stale
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         e.remove_component(HasVelocity)
 
 

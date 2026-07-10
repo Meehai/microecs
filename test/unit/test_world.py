@@ -2,10 +2,24 @@
 
 World is deferred (one mode): add_entity / remove_entity / add_component / remove_component queue a
 command and return; nothing materializes until world.update() commits the buffer. So these tests call
-world.update() after structural ops before asserting on pool state. Two things stay eager: entity ids
-(minted and returned at call time) and field validation that runs synchronously in add_entity /
-add_component (so "bad fields" / "unknown component" still raise at the call). Errors that are only
-knowable while migrating (duplicate / missing component) raise at commit, inside update().
+world.update() after structural ops before asserting on pool state.
+
+Validation is EAGER and the command buffer is a STAGING area (like git's index): every mutator fully
+validates at the call and queues only valid commands, so world.update() is a pure, infallible apply --
+it materializes the buffer, it does NOT re-validate or roll back (deliberately NOT atomic). A rejected
+op raises at the call and leaves the buffer untouched.
+
+"Fully validated" has two halves. Structural: duplicate-add / absent-remove are judged against the
+PROJECTED component set (committed, plus this tick's queued adds, minus queued removes) -- so same-tick
+sequences like add->remove->add->remove are legal, and a same-tick self-conflict (add the same component
+twice) is rejected at the SECOND call, before the poisoning command reaches the buffer. Field data:
+dtype / shape / missing-required are checked at the call too, mirroring add_entity (world.py:69 already
+runs _check_components_against_pool eagerly), so no field-data error reaches commit either.
+
+add_entity is the template: it is already fully eager (world.py:74). add_component / remove_component are
+being brought to the same bar by centralizing validation in CommandBuffer.append -- the single gate every
+command passes through. Those buffer-level unit tests live in test_command_buffer.py; the eager-id-tracking
+tests below exercise the same staging model through the Entity/World API.
 """
 from dataclasses import field
 import random
@@ -55,7 +69,7 @@ def test_add_entity_rejects_field_from_an_unrequested_component():
     Validation is eager: the bad field crashes at the add_entity call, before any update()."""
     world = World(components=[HasPosition, HasVelocity])  # both components known to the world
 
-    with pytest.raises(AssertionError, match="velocity"):
+    with pytest.raises(ValueError, match="velocity"):
         world.add_entity(
             components=(HasPosition,),                  # entity declares HasPosition only
             position=np.array([1.0, 2.0], "float32"),   # required by HasPosition
@@ -486,38 +500,13 @@ def test_add_component_only_needs_new_fields():
     np.testing.assert_array_equal(pos_vel.velocity[0], [7.0, 8.0])
 
 
-def test_add_duplicate_component_raises():
-    """Adding a component the entity already has is an error -- caught at commit, where the migration runs."""
-    world = World(components=[HasPosition, HasVelocity])
-
-    eid = world.add_entity(components=(HasPosition, HasVelocity),
-                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
-    world.update()
-
-    world.get_entity(eid).add_component(HasVelocity, velocity=np.array([9.0, 9.0], "float32"))  # queued
-    with pytest.raises(AssertionError):
-        world.update()                                                               # duplicate detected on commit
-
-
 def test_add_unknown_component_raises():
     """Adding a component the world never registered is rejected eagerly, at the call (cheap synchronous check)."""
     world = World(components=[HasPosition, HasVelocity])        # HasRadius is NOT registered with this world
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         world.get_entity(eid).add_component(HasRadius, radius=np.array([5.0], "float32"))
-
-
-def test_remove_absent_component_raises():
-    """Removing a component the entity does not have is an error -- caught at commit (the field check runs there)."""
-    world = World(components=[HasPosition, HasVelocity])
-
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    world.get_entity(eid).remove_component(HasVelocity)                   # queued
-    with pytest.raises(AssertionError):
-        world.update()                                         # missing-field detected on commit
 
 
 def test_remove_entity_by_id():
@@ -638,7 +627,7 @@ def test_remove_entity_twice_fails_on_second_call():
     world.update()
 
     world.remove_entity(eid)                                   # eid now logically gone (pending despawn)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         world.remove_entity(eid)                               # 2nd call must fail at the call site
 
 
@@ -649,7 +638,7 @@ def test_add_component_after_remove_entity_fails():
     world.update()
 
     world.remove_entity(eid)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         world.get_entity(eid).add_component(HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
 
 
@@ -661,14 +650,14 @@ def test_remove_component_after_remove_entity_fails():
     world.update()
 
     world.remove_entity(eid)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         world.get_entity(eid).remove_component(HasVelocity)
 
 
 def test_remove_unknown_entity_id_fails():
     """An id the world never handed out is not live -> remove_entity must reject it at the call, not at commit."""
     world = World(components=[HasPosition])
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         world.remove_entity(123)
 
 
@@ -688,6 +677,133 @@ def test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick():
     assert world._make_key((HasPosition,)) in world.pools          # its pool is live / registered (not orphaned)
     pool, ix = world._eid_to_pool_ix[new]
     np.testing.assert_array_equal(pool.position[ix], [1.0, 1.0])
+
+
+# --- fully-eager staging (task 22, landed) ----------------------------------------------------------------------
+# The command buffer is a STAGING area, like git's index: every op is FULLY validated at the call, so only valid
+# commands ever enter it and update() is a pure, infallible apply -- it materializes, it does NOT re-validate or
+# roll back (NOT atomic). Two halves, both eager:
+#   1. structural: dup-add / absent-remove judged against the PROJECTED set (committed + queued adds - queued
+#      removes). Same-tick sequences (add->remove->add->remove) are legal; a same-tick self-conflict (add the same
+#      component twice) is rejected at the SECOND call -- the poisoning command never enters the buffer.
+#   2. field data: dtype / shape / missing-required checked at the call too, mirroring add_entity. No field-data
+#      error reaches commit.
+# add_entity is the template -- it is already fully eager.
+
+
+def test_add_then_remove_same_component_same_tick_ok():
+    """A queued add must be visible to a later remove the same tick: add(V) then remove(V) is a legal no-op pair,
+    committing back to the original archetype. Broken today: remove checks the committed set, can't see the queued
+    add, and raises 'does not exist'."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
+    world.get_entity(eid).remove_component(HasVelocity)           # must see the queued add -> legal no-op
+    world.update()
+
+    assert set(world.get_entity(eid).get_components()) == {HasPosition}
+    _assert_pool_ids_invariants(world)
+
+
+def test_remove_then_add_same_component_same_tick_ok():
+    """The mirror: remove(V) then add(V) in one tick is a legal no-op. Broken today: the re-add checks the committed
+    set, still sees V, and raises 'already in components'."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).remove_component(HasVelocity)
+    world.get_entity(eid).add_component(HasVelocity, velocity=np.array([5.0, 6.0], "float32"))  # re-add, same tick
+    world.update()
+
+    assert set(world.get_entity(eid).get_components()) == {HasPosition, HasVelocity}
+    np.testing.assert_array_equal(world.get_entity(eid).velocity, [5.0, 6.0])   # the re-added value wins
+    _assert_pool_ids_invariants(world)
+
+
+def test_add_remove_cycle_same_tick_ok():
+    """A longer churn on one entity in a single tick stages cleanly: add/remove/add/remove each validate against the
+    running projected set and commit to the expected final archetype."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    e = world.get_entity(eid)
+    e.add_component(HasVelocity, velocity=np.array([3.0, 4.0], "float32"))
+    e.remove_component(HasVelocity)
+    e.add_component(HasVelocity, velocity=np.array([5.0, 6.0], "float32"))
+    e.remove_component(HasVelocity)
+    world.update()
+
+    assert set(world.get_entity(eid).get_components()) == {HasPosition}
+    _assert_pool_ids_invariants(world)
+
+
+def test_double_add_raises_eagerly_at_second_call():
+    """Same-tick self-conflict is caught at the CALL, not deferred to commit: the second add of a component already
+    staged raises immediately and does NOT enter the buffer -- so update() never sees the poisoning command."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasVelocity, velocity=np.array([3.0, 4.0], "float32"))   # 1st: stages
+    with pytest.raises(ValueError):
+        world.get_entity(eid).add_component(HasVelocity, velocity=np.array([5.0, 6.0], "float32"))  # 2nd: eager reject
+    assert len(world._command_buffer) == 1                       # only the first add is staged
+
+
+def test_remove_staged_component_twice_raises_eagerly():
+    """Removing the same component twice in a tick: the second remove sees it already gone from the projected set
+    and rejects at the call -- it never stages a second, invalid REMOVE_COMPONENT."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition, HasVelocity),
+                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).remove_component(HasVelocity)          # 1st: stages the removal
+    with pytest.raises(ValueError):
+        world.get_entity(eid).remove_component(HasVelocity)      # 2nd: already gone from projected -> eager reject
+    assert len(world._command_buffer) == 1
+
+
+def test_add_component_wrong_shape_raises_eagerly():
+    """Field-data validation is eager too (mirroring add_entity): a wrong-shaped value is rejected at the call and
+    never staged -- today it slips past the name-only check and detonates in commit's _check_components_against_pool."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    with pytest.raises((ValueError, TypeError)):
+        world.get_entity(eid).add_component(HasVelocity, velocity=np.array([1.0, 2.0, 3.0], "float32"))  # (3,) != (2,)
+    assert len(world._command_buffer) == 0                       # nothing staged
+    world.update()                                               # pure no-op, no crash
+
+
+def test_add_component_wrong_dtype_raises_eagerly():
+    """Same for dtype: a float64 value where the field declares float32 is caught at the call, not at commit."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    with pytest.raises((ValueError, TypeError)):
+        world.get_entity(eid).add_component(HasVelocity, velocity=np.array([3.0, 4.0], "float64"))  # float64 != float32
+    assert len(world._command_buffer) == 0
+
+
+def test_add_component_missing_required_field_raises_eagerly():
+    """A component field with default=None must be supplied at add; omitting it is rejected at the call, not at
+    commit (where today it surfaces as a KeyError deep in materialization)."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    with pytest.raises((KeyError, ValueError)):
+        world.get_entity(eid).add_component(HasVelocity)         # velocity has default=None, not provided
+    assert len(world._command_buffer) == 0
+    world.update()
 
 
 # --- object-dtype components -------------------------------------------------------------------------------------
@@ -711,6 +827,23 @@ def test_world_rejects_str_dtype_component():
 
     with pytest.raises(AssertionError, match="str not in"):
         World(components=[HasName])
+
+
+@pytest.mark.xfail(strict=True, reason="task 23: unique-field-name guard not landed yet")
+def test_world_rejects_duplicate_field_name_across_components():
+    """Two components may not declare the SAME field name. A pool merges fields by name and query() sums
+    field names across components, so a clash would silently alias two components' data -- and add_component
+    of the colliding component slips past the eager buffer gate (which validates the new component in
+    isolation) only to crash inside update() on a -O-erasable assert (Duplicate keys). Enforce uniqueness at
+    construction, the earliest+loudest place, with a real raise. (Guards the task 22 exhaustiveness hole.)"""
+    class HasFoo(Component):
+        payload: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+
+    class HasBar(Component):
+        payload: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})  # same name!
+
+    with pytest.raises(ValueError, match="payload"):
+        World(components=[HasFoo, HasBar])
 
 
 def test_object_field_holds_python_string_and_compares_by_equality():
@@ -846,7 +979,7 @@ def test_get_entity_reads_current_row_after_sibling_swap_remove():
 def test_get_entity_unknown_id_raises():
     """An id the world never handed out has no data -> raise, not return an empty/garbage result."""
     world = World(components=[HasPosition])
-    with pytest.raises((AssertionError, KeyError)):                # ideally a clear AssertionError, like the other ops
+    with pytest.raises(ValueError):                               # a clear ValueError, like the other ops
         world.get_entity(123)
 
 
@@ -887,7 +1020,7 @@ def test_remove_entity_evicts_the_cached_entity():
 
     world.remove_entity(eid)                                      # eager eviction from the registry+cache
     assert eid not in world.live_entities
-    with pytest.raises(AssertionError):                          # a removed id no longer resolves
+    with pytest.raises(ValueError):                             # a removed id no longer resolves
         world.get_entity(eid)
 
 
@@ -1260,9 +1393,9 @@ def test_zero_dim_array_field_roundtrips():
 
 
 def test_add_entity_wrong_dtype_crashes_eagerly():
-    """A field declared float32 must reject an int32 array *at the add_entity call* (see task 170).
+    """A field declared float32 must reject an int32 array *at the add_entity call* (see task 20).
 
-    Field-name validation is eager (bad name crashes at the call) and, since task 170, dtype is too:
+    Field-name validation is eager (bad name crashes at the call) and, since task 20, dtype is too:
     _check_components_against_pool now validates dtype against component metadata, so a wrong dtype
     crashes at the call instead of slipping through to pool.add_entity at world.update()."""
     world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
@@ -1273,10 +1406,10 @@ def test_add_entity_wrong_dtype_crashes_eagerly():
 
 
 def test_add_entity_wrong_shape_crashes_eagerly():
-    """A field declared shape (1,) must reject a (2,) array *at the add_entity call* (see task 170).
+    """A field declared shape (1,) must reject a (2,) array *at the add_entity call* (see task 20).
 
     Companion to test_add_entity_wrong_dtype_crashes_eagerly: shape is the other half of the same guard.
-    Since task 170, _check_components_against_pool validates shape against component metadata, so a wrong
+    Since task 20, _check_components_against_pool validates shape against component metadata, so a wrong
     shape crashes at the call instead of slipping through to pool.add_entity at world.update()."""
     world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
 
@@ -1285,7 +1418,7 @@ def test_add_entity_wrong_shape_crashes_eagerly():
         world.add_entity((HasRadius,), radius=np.zeros((2,), "float32"))  # wrong shape must crash here
 
 
-# --- default metadata (task 171): omitted fields fall back to the component's declared default ---
+# --- default metadata (task 21): omitted fields fall back to the component's declared default ---
 
 def test_add_entity_fills_default_when_field_omitted():
     """Omitting a field whose metadata declares a (non-None) default fills it with that default."""
@@ -1323,7 +1456,7 @@ def test_default_and_explicit_coexist_per_row():
 
 
 def test_component_default_wrong_dtype_rejected():
-    """A default whose dtype mismatches the declared dtype is rejected (see task 171).
+    """A default whose dtype mismatches the declared dtype is rejected (see task 21).
 
     Filling a default runs it through the same dtype check as an explicit value, so an int32 default for
     a float32 field raises TypeError -- at World() construction if validated there, else when the default
@@ -1338,7 +1471,7 @@ def test_component_default_wrong_dtype_rejected():
 
 
 def test_component_default_wrong_shape_rejected():
-    """A default whose shape mismatches the declared shape is rejected (see task 171).
+    """A default whose shape mismatches the declared shape is rejected (see task 21).
 
     Companion to test_component_default_wrong_dtype_rejected: a (2,) default for a (1,) field raises
     ValueError -- at World() construction if validated there, else when the default is filled at the
@@ -1352,7 +1485,7 @@ def test_component_default_wrong_shape_rejected():
 
 
 def test_add_component_fills_default_when_field_omitted():
-    """add_component fills a defaulted field that's omitted, exactly like add_entity (see task 171)."""
+    """add_component fills a defaulted field that's omitted, exactly like add_entity (see task 21)."""
     world = World([HasPosition, HasColorDefault])
     eid = world.add_entity((HasPosition,), position=np.array([1, 2], "float32"))
     world.update()
