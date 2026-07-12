@@ -217,7 +217,7 @@ class World:
         for c in components:
             for name, default in zip(self.component_to_field_names[c], self.component_to_defaults[c]):
                 if name not in kwargs and default is not None:
-                    res.setdefault(c, {})[name] = default.copy()
+                    res[name] = default.copy()
         return res
 
     def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
