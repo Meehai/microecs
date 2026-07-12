@@ -1,3 +1,5 @@
+# pylint: disable=protected-access
+"""command_buffer.py - data structure that eagerly manages the staging area (add/rm entity/cmpt) before world.upate()"""
 from __future__ import annotations
 from .utils import Command, CommandType, EntityId
 from .component import ComponentType
@@ -26,7 +28,7 @@ class CommandBuffer:
 
     def _get_components_state(self, component: ComponentType, existing_components: list[ComponentType],
                               entity_id: EntityId) -> int:
-        # Look for the latest staste of this entity w.r.t this component given the unstaged command buffer.
+        # Look for the latest state of this entity w.r.t this component given the unstaged command buffer.
         # We look in the buffer from right to left and return 1 if the component was added, -1 if it was not
         # If the component is not in the buffer at all, we check if it is already in the entity and return +1/-1 as well
         for old_command in reversed(self.data):

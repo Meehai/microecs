@@ -186,9 +186,9 @@ class World:
 
     # other low-level methods
 
-    def _validate_components(self, components: list[ComponentType], **fields):
+    def _validate_components(self, components: list[ComponentType], **kwargs):
         """Pure check. Raises on: no components, unknown component, missing-required (default=None),
-            wrong dtype/shape, extra field. No mutation, no return."""
+            wrong dtype/shape, extra field. No mutation, no return. kwargs == fields data."""
         if len(cs := set(components)) == 0:
             raise ValueError(f"Entity has no components: {self.component_names}")
         if diff := cs - self.component_types:
@@ -198,25 +198,27 @@ class World:
             for name, shape, dtype, default in zip(self.component_to_field_names[c], self.component_to_shapes[c],
                                                     self.component_to_dtypes[c], self.component_to_defaults[c]):
                 expected.add(name)
-                if name not in fields:
+                if name not in kwargs:
                     if default is None:
                         raise KeyError(f"'{c.__name__}/{name}' required (default=None) but not supplied")
-                    continue                      # omitted but has a default -> fine; filling is not our job
-                if not isinstance(field := fields[name], np.ndarray):
+                    continue                      # omitted but has a default -> fine
+                if not isinstance(field := kwargs[name], np.ndarray):
                     raise TypeError(f"'{c.__name__}/{name}'. Expected np.ndarray, got {type(field)}")
                 if (dt := field.dtype) != dtype:
                     raise TypeError(f"'{c.__name__}/{name}'. Expected dtype {dtype}, got {dt}")
                 if (sh := field.shape) != shape:
                     raise ValueError(f"'{c.__name__}/{name}'. Expected shape {shape}, got {sh}")
-        if extra := set(fields) - expected:
+        if extra := set(kwargs) - expected:
             raise ValueError(f"Extra fields: {extra}; expected {expected}")
 
-    def _defaults_for(self, components: list[ComponentType], **fields) -> dict[str, np.ndarray]:
-      """Defaults for omitted fields. Assumes already validated. Pure -- no mutation of `fields`."""
-      return {name: default.copy()
-              for c in components
-              for name, default in zip(self.component_to_field_names[c], self.component_to_defaults[c])
-              if name not in fields and default is not None}
+    def _defaults_for(self, components: list[ComponentType], **kwargs) -> dict[str, np.ndarray]:
+        """Defaults for omitted fields. Assumes already validated. No mutation of `kwargs` (data) is done."""
+        res = {}
+        for c in components:
+            for name, default in zip(self.component_to_field_names[c], self.component_to_defaults[c]):
+                if name not in kwargs and default is not None:
+                    res.setdefault(c, {})[name] = default.copy()
+        return res
 
     def _get_entity_pool(self, components: list[ComponentType]) -> Pool:
         if (key := self._make_key(components)) not in self.pools:
