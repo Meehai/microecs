@@ -1,8 +1,27 @@
 # pylint: disable=protected-access
 """command_buffer.py - data structure that eagerly manages the staging area (add/rm entity/cmpt) before world.upate()"""
 from __future__ import annotations
-from .utils import Command, CommandType, EntityId
+from typing import Any
+from dataclasses import dataclass
+from enum import StrEnum
+
+from .utils import EntityId
 from .component import ComponentType
+
+class CommandType(StrEnum):
+    """The types of commands in the command pattern below"""
+    ADD_ENTITY       = "add_entity"
+    REMOVE_ENTITY    = "remove_entity"
+    ADD_COMPONENT    = "add_component"
+    REMOVE_COMPONENT = "remove_component"
+    SET_DATA         = "set_data"
+
+@dataclass
+class Command:
+    """A command that can happen between two world.updates(), e.g. add/rm entity or components"""
+    command_type: CommandType
+    entity_id: EntityId
+    args: Any | None = None
 
 class CommandBuffer:
     """A data structure that holds all the uncommited commands between two world updates. Support eager exceptions
@@ -59,7 +78,7 @@ class CommandBuffer:
         elif command.command_type == CommandType.ADD_COMPONENT:
             component = command.args["component"]
             fk = {k: v for k, v in command.args.items() if k != "component"}
-            world._validate_components([component], **fk)
+            world._validate_component(component, strict=True, check_extra=True, **fk)
 
             components = self._get_entity_components(entity_id)
             assert len(components) > 0, f"guaranteed to be >0 {entity_id} {components}"
@@ -68,7 +87,7 @@ class CommandBuffer:
                 raise ValueError(f"Component: {component} either added twice or exists already (id: {entity_id})")
 
         elif command.command_type == CommandType.REMOVE_COMPONENT:
-            component = command.args
+            component = command.args # TODO: use command.args["component"] for consistency
             if component not in world.component_types:
                 raise ValueError(f"Unknown component: {component} not in world components {world.component_types}")
 
@@ -77,6 +96,14 @@ class CommandBuffer:
             state = self._get_components_state(component, existing_components=components, entity_id=entity_id)
             if state == -1:
                 raise ValueError(f"Component: {component} either removed twice or doesn't exist (id: {entity_id})")
+
+        elif command.command_type == CommandType.SET_DATA:
+            component, data = command.args["component"], command.args["data"]
+            world._validate_component(component, strict=False, check_extra=True, **data)
+            components = self._get_entity_components(entity_id)
+            state = self._get_components_state(component, existing_components=components, entity_id=entity_id)
+            if state == -1:
+                raise ValueError(f"Component: {component} not found. Either removed or never existed (id: {entity_id})")
 
         self.data.append(command)
 

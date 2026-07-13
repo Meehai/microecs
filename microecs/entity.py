@@ -5,8 +5,8 @@ from typing import Any
 import numpy as np
 from .pool import Pool
 from .component import ComponentType
-from .utils import EntityId, Command, CommandType
-from .command_buffer import CommandBuffer
+from .utils import EntityId
+from .command_buffer import CommandBuffer, Command, CommandType
 
 # Note: if Entity gets new fields, add them here! Otherwise the user code may overwrite them e.g. ent._eid_to_pool_ix=xx
 ENTITY_INTERNAL_ATTRS = {"entity_id", "_eid_to_pool_ix", "_pool_to_components", "_world_command_buffer"}
@@ -46,6 +46,11 @@ class Entity:
         pool, _ = self._eid_to_pool_ix[self.entity_id]
         return pool.fields
 
+    def set_component_data(self, component: ComponentType, data: dict[str, np.ndarray]):
+        """Sets the data of a single component as a transaction. If the set fails, we try to revert the entity's data"""
+        self._world_command_buffer.append(
+            Command(CommandType.SET_DATA, self.entity_id, args={"component": component, "data": data}))
+
     def to_dict(self, serialization_field: str | None = None) -> dict[str, Any]:
         """
         Serializes a single entity. Assumes fields are numpy. numerics are converted via `.tolist()`. objects are
@@ -74,8 +79,8 @@ class Entity:
             raise AttributeError(f"Entity {self.entity_id} not committed yet. Call `world.update()` (reading '{name}')")
 
         if name not in (_fields := pool.fields_set):
-            raise AttributeError(f"Attribute '{name}' not in entity fields: {_fields} (entity id: {self.entity_id})")
-
+            raise AttributeError(f"Attribute '{name}' not found (entity id: {self.entity_id}). "
+                                 f"\n- Components: {[c.__name__ for c in self.get_components()]}\n- Fields: {_fields}")
         return pool.data[name][pool_index]
 
     def __setattr__(self, name: str, value: np.ndarray):

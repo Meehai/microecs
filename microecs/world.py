@@ -4,11 +4,11 @@ from dataclasses import fields
 import numpy as np
 
 from .pool import Pool
-from .utils import Shape, EntityId, PoolKey, Command, CommandType, logger
+from .utils import Shape, EntityId, PoolKey, logger
 from .component import ComponentType
 from .query_result import QueryResult, QUERY_RESULT_INTERNAL_ATTRS
 from .entity import Entity, ENTITY_INTERNAL_ATTRS
-from .command_buffer import CommandBuffer
+from .command_buffer import CommandBuffer, Command, CommandType
 
 class World:
     """
@@ -135,8 +135,12 @@ class World:
             elif command.command_type == CommandType.ADD_COMPONENT:
                 component = command.args.pop("component")
                 self._do_add_component(command.entity_id, component=component, **command.args)
-            else: # CommandType.REMOVE_COMPONENT
+            elif command.command_type == CommandType.REMOVE_COMPONENT:
                 self._do_remove_component(command.entity_id, component=command.args)
+            elif command.command_type == CommandType.SET_DATA:
+                self._do_set_data(command.entity_id, data=command.args["data"])
+            else: # CommandType.REMOVE_COMPONENT
+                raise NotImplementedError(command)
 
         if len(self._command_buffer) > 0:
             self._command_buffer.clear()
@@ -184,7 +188,36 @@ class World:
         new_components = [c for c in components if c != component]
         self._add_to_pool(entity_id, new_components, **entity_data)
 
+    def _do_set_data(self, entity_id: EntityId, data: dict[str, np.ndarray]):
+        pool, pool_ix = self._eid_to_pool_ix[entity_id]
+        for k, v in data.items():
+            pool.data[k][pool_ix] = v
+
     # other low-level methods
+
+    def _validate_component(self, component: ComponentType, strict: bool, check_extra: bool, **kwargs):
+        """
+        Validates a single component.
+        Parameters:
+        - strict Two modes: True -> kwargs==component fields, False -> kwargs is subset
+        - check_extra If set, extra data in kwargs unrelated to this component also raises (_validate_components)
+        """
+        if check_extra and (extra := set(kwargs) - set(self.component_to_field_names[component])):
+            raise ValueError(f"Extra fields: {extra}; expected {self.component_to_field_names[component]}")
+
+        for name, shape, dtype, default in zip(
+                self.component_to_field_names[component], self.component_to_shapes[component],
+                self.component_to_dtypes[component], self.component_to_defaults[component]):
+            if name not in kwargs:
+                if default is None and strict is True:
+                    raise KeyError(f"'{component.__name__}/{name}' required (default=None) but not supplied")
+                continue                      # omitted but has a default -> fine (or non-strict mode for set_data)
+            if not isinstance(field := kwargs[name], np.ndarray):
+                raise TypeError(f"'{component.__name__}/{name}'. Expected np.ndarray, got {type(field)}")
+            if (dt := field.dtype) != dtype:
+                raise TypeError(f"'{component.__name__}/{name}'. Expected dtype {dtype}, got {dt}")
+            if (sh := field.shape) != shape:
+                raise ValueError(f"'{component.__name__}/{name}'. Expected shape {shape}, got {sh}")
 
     def _validate_components(self, components: list[ComponentType], **kwargs):
         """Pure check. Raises on: no components, unknown component, missing-required (default=None),
@@ -194,20 +227,9 @@ class World:
         if diff := cs - self.component_types:
             raise ValueError(f"Unknown components: {diff}")
         expected = set()
-        for c in components:
-            for name, shape, dtype, default in zip(self.component_to_field_names[c], self.component_to_shapes[c],
-                                                    self.component_to_dtypes[c], self.component_to_defaults[c]):
-                expected.add(name)
-                if name not in kwargs:
-                    if default is None:
-                        raise KeyError(f"'{c.__name__}/{name}' required (default=None) but not supplied")
-                    continue                      # omitted but has a default -> fine
-                if not isinstance(field := kwargs[name], np.ndarray):
-                    raise TypeError(f"'{c.__name__}/{name}'. Expected np.ndarray, got {type(field)}")
-                if (dt := field.dtype) != dtype:
-                    raise TypeError(f"'{c.__name__}/{name}'. Expected dtype {dtype}, got {dt}")
-                if (sh := field.shape) != shape:
-                    raise ValueError(f"'{c.__name__}/{name}'. Expected shape {shape}, got {sh}")
+        for component in components:
+            expected.update(self.component_to_field_names[component]) # updated here for error message.
+            self._validate_component(component, strict=True, check_extra=False, **kwargs)
         if extra := set(kwargs) - expected:
             raise ValueError(f"Extra fields: {extra}; expected {expected}")
 
