@@ -6,4 +6,3 @@ EntityId = int
 Shape = tuple[int, ...]
 
 logger = make_logger("MICROECS")
-
