@@ -505,7 +505,7 @@ def test_add_unknown_component_raises():
     world = World(components=[HasPosition, HasVelocity])        # HasRadius is NOT registered with this world
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
 
-    with pytest.raises(ValueError):
+    with pytest.raises(KeyError):
         world.get_entity(eid).add_component(HasRadius, radius=np.array([5.0], "float32"))
 
 
@@ -679,7 +679,7 @@ def test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick():
     np.testing.assert_array_equal(pool.position[ix], [1.0, 1.0])
 
 
-# --- fully-eager staging (task 22, landed) ----------------------------------------------------------------------
+# --- fully-eager staging (task 178, landed) ----------------------------------------------------------------------
 # The command buffer is a STAGING area, like git's index: every op is FULLY validated at the call, so only valid
 # commands ever enter it and update() is a pure, infallible apply -- it materializes, it does NOT re-validate or
 # roll back (NOT atomic). Two halves, both eager:
@@ -829,13 +829,13 @@ def test_world_rejects_str_dtype_component():
         World(components=[HasName])
 
 
-@pytest.mark.xfail(strict=True, reason="task 23: unique-field-name guard not landed yet")
+@pytest.mark.xfail(strict=True, reason="task 179: unique-field-name guard not landed yet")
 def test_world_rejects_duplicate_field_name_across_components():
     """Two components may not declare the SAME field name. A pool merges fields by name and query() sums
     field names across components, so a clash would silently alias two components' data -- and add_component
     of the colliding component slips past the eager buffer gate (which validates the new component in
     isolation) only to crash inside update() on a -O-erasable assert (Duplicate keys). Enforce uniqueness at
-    construction, the earliest+loudest place, with a real raise. (Guards the task 22 exhaustiveness hole.)"""
+    construction, the earliest+loudest place, with a real raise. (Guards the task 178 exhaustiveness hole.)"""
     class HasFoo(Component):
         payload: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
 
@@ -1393,9 +1393,9 @@ def test_zero_dim_array_field_roundtrips():
 
 
 def test_add_entity_wrong_dtype_crashes_eagerly():
-    """A field declared float32 must reject an int32 array *at the add_entity call* (see task 20).
+    """A field declared float32 must reject an int32 array *at the add_entity call* (see task 170).
 
-    Field-name validation is eager (bad name crashes at the call) and, since task 20, dtype is too:
+    Field-name validation is eager (bad name crashes at the call) and, since task 170, dtype is too:
     _check_components_against_pool now validates dtype against component metadata, so a wrong dtype
     crashes at the call instead of slipping through to pool.add_entity at world.update()."""
     world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
@@ -1406,10 +1406,10 @@ def test_add_entity_wrong_dtype_crashes_eagerly():
 
 
 def test_add_entity_wrong_shape_crashes_eagerly():
-    """A field declared shape (1,) must reject a (2,) array *at the add_entity call* (see task 20).
+    """A field declared shape (1,) must reject a (2,) array *at the add_entity call* (see task 170).
 
     Companion to test_add_entity_wrong_dtype_crashes_eagerly: shape is the other half of the same guard.
-    Since task 20, _check_components_against_pool validates shape against component metadata, so a wrong
+    Since task 170, _check_components_against_pool validates shape against component metadata, so a wrong
     shape crashes at the call instead of slipping through to pool.add_entity at world.update()."""
     world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
 
@@ -1418,7 +1418,7 @@ def test_add_entity_wrong_shape_crashes_eagerly():
         world.add_entity((HasRadius,), radius=np.zeros((2,), "float32"))  # wrong shape must crash here
 
 
-# --- default metadata (task 21): omitted fields fall back to the component's declared default ---
+# --- default metadata (task 171): omitted fields fall back to the component's declared default ---
 
 def test_add_entity_fills_default_when_field_omitted():
     """Omitting a field whose metadata declares a (non-None) default fills it with that default."""
@@ -1456,7 +1456,7 @@ def test_default_and_explicit_coexist_per_row():
 
 
 def test_component_default_wrong_dtype_rejected():
-    """A default whose dtype mismatches the declared dtype is rejected (see task 21).
+    """A default whose dtype mismatches the declared dtype is rejected (see task 171).
 
     Filling a default runs it through the same dtype check as an explicit value, so an int32 default for
     a float32 field raises TypeError -- at World() construction if validated there, else when the default
@@ -1471,7 +1471,7 @@ def test_component_default_wrong_dtype_rejected():
 
 
 def test_component_default_wrong_shape_rejected():
-    """A default whose shape mismatches the declared shape is rejected (see task 21).
+    """A default whose shape mismatches the declared shape is rejected (see task 171).
 
     Companion to test_component_default_wrong_dtype_rejected: a (2,) default for a (1,) field raises
     ValueError -- at World() construction if validated there, else when the default is filled at the
@@ -1485,7 +1485,7 @@ def test_component_default_wrong_shape_rejected():
 
 
 def test_add_component_fills_default_when_field_omitted():
-    """add_component fills a defaulted field that's omitted, exactly like add_entity (see task 21)."""
+    """add_component fills a defaulted field that's omitted, exactly like add_entity (see task 171)."""
     world = World([HasPosition, HasColorDefault])
     eid = world.add_entity((HasPosition,), position=np.array([1, 2], "float32"))
     world.update()
