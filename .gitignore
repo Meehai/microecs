@@ -5,7 +5,6 @@ build/
 dist/
 microecs.egg-info/
 examples/*.json
-docs/
 public/
 test/manual/
 
