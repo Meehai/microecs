@@ -17,6 +17,28 @@ python examples/01-hello-world.py                 # run the basic hello world ex
 
 Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/)
 
+## Simple example
+
+```python
+from microecs import World, Component
+
+class HasPosition(Component):
+    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": np.float32([0, 0])})
+class HasVelocity(Component):
+    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": np.float32([0, 0])})
+
+world = World(components=[HasPosition, HasVelocity])
+# both velocity and position are optional since they have a default
+eid1 = world.add_entity(components=[HasPosition, HasVelocity],
+                        velocity=np.float32([1, 1]))
+eid2 = world.add_entity(components=[HasPosition, HasVelocity])
+world.update() # add_entity uses a command buffer internally until this is called
+print(f"Added 2 entities. Id1={eid1}, Id2={eid2}")
+
+qr = world.query(HasVelocity) # query result: operate on all entities at once
+qr.velocity += np.float32([0.1, 0.5])
+```
+
 ## Relevant primitives: `Component`, `Pool`, `QueryResult`, `World`
 
 These are the main primitives:
@@ -33,7 +55,7 @@ These are the main primitives:
 - All mutable operations are lazy. Entity lifecycle lives on `World` (`add_entity`, `remove_entity`); component changes live on the entity itself (`world.get_entity(eid).add_component(...)`, `.remove_component(...)`). They are added to a command buffer which is only executed when calling `world.update()`.
 - `Systems` are a convention, they are not part of this library. They can be defined at application level and act as hooks or callbacks. The `World` object doesn't need to know more than entities and components.
 
-## Super simplified main loop structure
+## Complete runnable 'hello world' example using microecs + raylib
 
 ```python
 from typing import Callable
