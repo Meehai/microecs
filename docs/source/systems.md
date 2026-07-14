@@ -82,7 +82,7 @@ def world_to_dict(world: World) -> dict:
     return res
 ```
 
-Runnable in [`examples/03-serialization.py`](examples/03-serialization.py): **F5** saves the world to JSON, **F6** reloads it.
+Runnable in [Example 3 — Serialization](example-3-serialization.md): **F5** saves the world to JSON, **F6** reloads it.
 
 ## Which one?
 

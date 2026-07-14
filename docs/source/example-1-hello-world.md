@@ -75,5 +75,5 @@ The order that matters: **`world.update()` first**, so entities added last tick 
 
 ## Next
 
-- [`examples/02-moving-colliding-balls.py`](examples/02-moving-colliding-balls.py) — adds velocity, wall bounce, and a fixed-`dt` physics clock.
-- [`examples/03-serialization.py`](examples/03-serialization.py) — save/load the whole world to JSON via `to_dict` (see [Systems](systems.md)).
+- [Moving & Colliding Balls](example-2-moving-colliding-balls.md) — adds velocity, wall bounce, and a fixed-`dt` physics clock.
+- [Serialization (save & load)](example-3-serialization.md) — save/load the whole world to JSON via `to_dict`.
