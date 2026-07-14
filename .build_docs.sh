@@ -991,6 +991,8 @@ DOC_PAGES = [
 ]
 EXAMPLE_PAGES = [
     ("example-1-hello-world", "1. Hello World (raylib)"),
+    ("example-2-moving-colliding-balls", "2. Moving & Colliding Balls"),
+    ("example-3-serialization", "3. Serialization (save & load)"),
 ]
 MD_PAGES = DOC_PAGES + EXAMPLE_PAGES
 md_files = [(root / "docs/source" / f"{stem}.md", stem, title) for stem, title in MD_PAGES]
