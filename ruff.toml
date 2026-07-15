@@ -1,0 +1,7 @@
+[lint]
+
+# E701: single line statements
+# E741: ambiguous variable name
+ignore = ["E701", "E741"]
+
+select = ["F"]
