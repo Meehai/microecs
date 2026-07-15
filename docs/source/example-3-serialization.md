@@ -14,8 +14,8 @@ Ask the `World` to require a `serializable` flag on every field, then each compo
 
 ```python
 class HasMotion2D(Component):
-    velocity:  np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "serializable": True})
-    magnitude: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": False})  # derived
+    velocity:  np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "serializable": True, "default": None})
+    magnitude: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": False, "default": None})  # derived
 class HasCustom(Component):   # a tag: no fields, just marks an entity
     pass
 

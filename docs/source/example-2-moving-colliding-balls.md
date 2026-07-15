@@ -10,9 +10,9 @@ Two new components carry the extra state (`HasColor` from Hello World is dropped
 
 ```python
 class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": None})
 class HasCollision(Component):
-    is_colliding: np.ndarray = field(metadata={"shape": (1, ), "dtype": "bool"})
+    is_colliding: np.ndarray = field(metadata={"shape": (1, ), "dtype": "bool", "default": None})
 ```
 
 ## Everything is a vectorized system
@@ -44,7 +44,7 @@ class CollisionDetectionSystem:    # pairwise overlap, one broadcast -> (N, N) d
 
 ## Fixed-timestep loop (the new idea)
 
-Physics must step at a constant `dt` regardless of frame rate, or fast and slow machines simulate differently. A small accumulator `Clock` decouples the two: it banks real elapsed time and hands out fixed-`dt` subticks.
+Physics must step at a constant `dt` regardless of frame rate, or fast and slow machines simulate differently. This is the accumulator pattern from the canonical [*Fix Your Timestep!*](https://gafferongames.com/post/fix_your_timestep/): a small `Clock` decouples the two — it banks real elapsed time and hands out fixed-`dt` subticks.
 
 ```python
 class Clock:

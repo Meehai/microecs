@@ -2,7 +2,7 @@
 
 Two benchmarks: microecs against plain OOP (why vectorize at all), and microecs against other Python ECS libraries (how it compares). Both verify every method against a numpy reference before timing it.
 
-## microecs vs OOP on a simple physics step
+## Benchmark 1: microecs vs OOP on a simple physics step
 
 We run the same physics step `pos += vel*dt` over N=100k entities split across 2 pools in various ways (ECS or OOP). All methods are verified to produce the identical result. Reproduce with `python examples/04-benchmark-ecs-vs-oop.py` (it prints `{mode: avg_seconds_per_step}`).
 
@@ -33,7 +33,7 @@ Three things to take from it:
 workload is *irreducibly* per-entity (data-dependent control flow), plain python objects beat
 microecs ~15× — use them there. microecs is the right tool for **vectorizable** simulation.
 
-## microecs vs other Python ECS libraries
+## Benchmark 2: microecs vs other Python ECS libraries
 
 Not one workload — **seven** × **five** libraries × an N-sweep (200 → 1,000,000), every result
 verified against a float64 reference. Full setup, fairness notes, and raw data in
@@ -69,71 +69,59 @@ suite covers what a real frame actually does — not just microecs' best case.
 | **snecs** | pure-python sparse-set | compiled `Query` loop; per-entity `if`; `entity_component(id)`; sparse-set migration (the migration champ) |
 | **ecs-pattern** | pure-python, dataclass AoS | `get_with_component` loop; direct object ref (fastest random access); **fixed inheritance classes → w7 N/A** |
 
-### Headline: there is no single winner — the fastest library flips by workload *and* by N
+### Experiment 1 — the full field: N=200 → 100k, all five libraries
 
-```
-fastest library   N=200        1k          5k          20k        100k
-w1 physics        xecs         xecs        microecs    microecs   microecs
-w2 bounce         xecs         xecs        microecs    microecs   microecs
-w3 ai             esper        microecs    microecs    microecs   microecs
-w4 random         ecs-pattern  ecs-pattern microecs    microecs   microecs
-w5 churn          ecs-pattern  ecs-pattern ecs-pattern ecs-pattern snecs
-w6 mixed          esper        xecs        xecs        microecs   microecs
-w7 migrate        snecs        snecs       microecs    microecs   snecs      (xecs/ecs-pattern N/A)
-```
+There is no single winner — the fastest library flips by workload *and* by N:
 
-### The large-N tail — columnar throughput to 1M entities (microecs vs xecs)
+| fastest library | N=200 | 1k | 5k | 20k | 100k |
+|---|---|---|---|---|---|
+| w1 physics | xecs | xecs | **microecs** | **microecs** | **microecs** |
+| w2 bounce | xecs | xecs | **microecs** | **microecs** | **microecs** |
+| w3 ai | esper | **microecs** | **microecs** | **microecs** | **microecs** |
+| w4 random | ecs-pattern | ecs-pattern | **microecs** | **microecs** | **microecs** |
+| w5 churn | ecs-pattern | ecs-pattern | ecs-pattern | ecs-pattern | snecs |
+| w6 mixed | esper | xecs | xecs | **microecs** | **microecs** |
+| w7 migrate | snecs | snecs | **microecs** | **microecs** | snecs |
 
-Past 100k the two vectorized libraries separate cleanly: xecs stays flat at its copy-bound rate,
-microecs holds near its in-place floor. Columnar step, **ns/entity per frame** (lower is better):
+*w7 migrate: xecs and ecs-pattern can't migrate (N/A).*
+
+**How close is the race, and against whom?** Each cell below is **how many times faster microecs is**
+than the fastest other library (that library's time ÷ microecs's), with that rival named. `>1` →
+microecs is faster; `<1` → slower (by `1/x`). So `3.31 (xecs)` = microecs **3.3× faster** than xecs;
+`0.79 (xecs)` = microecs **1.27× slower** than xecs; `0.94 (snecs)` = a near-tie, snecs just ahead.
+The named lib is microecs's nearest rival — the one it beats, or the one beating it. **Bold** =
+microecs wins that cell (ratio `>1`).
+
+| workload | N=200 | 1k | 5k | 20k | 100k |
+|---|---|---|---|---|---|
+| w1 physics | 0.79 (xecs) | 0.90 (xecs) | **1.78 (xecs)** | **3.41 (xecs)** | **3.31 (xecs)** |
+| w2 bounce | 0.69 (xecs) | 0.73 (xecs) | **1.38 (xecs)** | **2.45 (xecs)** | **2.51 (xecs)** |
+| w3 ai | 0.64 (esper) | **1.12 (xecs)** | **1.43 (xecs)** | **1.64 (xecs)** | **1.67 (xecs)** |
+| w4 random | 0.74 (ecs-pattern) | 0.85 (ecs-pattern) | **3.18 (ecs-pattern)** | **6.55 (xecs)** | **9.91 (xecs)** |
+| w5 churn | 0.08 (ecs-pattern) | 0.23 (ecs-pattern) | 0.40 (ecs-pattern) | 0.50 (ecs-pattern) | 0.94 (snecs) |
+| w6 mixed | 0.35 (esper) | 0.40 (xecs) | 0.85 (xecs) | **1.52 (xecs)** | **2.04 (xecs)** |
+| w7 migrate | 0.30 (snecs) | 0.93 (snecs) | **1.19 (snecs)** | **1.06 (snecs)** | 0.79 (snecs) |
+
+### Experiment 2 — columnar scaling to 1M (microecs vs xecs)
+
+Past 100k only the two vectorized libraries stay in the race, so experiment 2 pits just those two on
+the columnar workloads. xecs stays flat at its copy-bound rate; microecs holds near its in-place
+floor. Columnar step, **ns/entity per frame** (lower is better):
 
 | N | 100k | 200k | 500k | 1M |
 |---|--:|--:|--:|--:|
-| w1 physics — microecs | 1.51 | 1.44 | 1.65 | 2.76 |
-| w1 physics — xecs | 5.02 | 4.54 | 5.33 | 5.55 |
-| w2 bounce — microecs | 3.51 | 3.91 | 5.65 | 6.93 |
-| w2 bounce — xecs | 8.82 | 9.08 | 10.77 | 11.79 |
+| w1 physics — microecs | **1.51ns** | **1.44ns** | **1.65ns** | **2.76ns** |
+| w1 physics — xecs | 5.02ns | 4.54ns | 5.33ns | 5.55ns |
+| w2 bounce — microecs | **3.51ns** | **3.91ns** | **5.65ns** | **6.93ns** |
+| w2 bounce — xecs | 8.82ns | 9.08ns | 10.77ns | 11.79ns |
 
 At **1M entities** a physics frame is **2.8 ms (microecs) vs 5.5 ms (xecs)**, a bounce frame
 **6.9 ms vs 11.8 ms** — a steady ~2× lead. It holds because microecs mutates the pool arrays in
 place while xecs copies ~6 buffers across the Rust↔numpy boundary every step (the copy-boundary
-mechanism the ratio notes below explain). microecs is the only library in the suite that steps 1M
+mechanism explained in the takeaways below). microecs is the only library in the suite that steps 1M
 entities per frame in low-single-digit milliseconds with no GPU and no compile step.
 
-### Who's 2nd, and by how much — winner ▸ runner-up (margin)
-
-The winner alone hides how *close* the race is. `A▸B ×m` reads "A won, B was runner-up, A is m×
-faster than B." Where microecs isn't first it's usually the runner-up (xecs on columnar/composite,
-snecs on migration); the margin is how much the winner beats that runner-up.
-
-```
-workload    N=200                  1k                    5k                    20k                  100k
-w1 physics  xecs▸microecs 1.27     xecs▸microecs 1.11    microecs▸xecs 1.78    microecs▸xecs 3.41   microecs▸xecs 3.31
-w2 bounce   xecs▸microecs 1.44     xecs▸microecs 1.37    microecs▸xecs 1.38    microecs▸xecs 2.45   microecs▸xecs 2.51
-w3 ai       esper▸ecs-pat 1.22     microecs▸xecs 1.12    microecs▸xecs 1.43    microecs▸xecs 1.64   microecs▸xecs 1.67
-w4 random   ecs-pat▸microecs 1.36  ecs-pat▸microecs 1.17 microecs▸ecs-pat 3.18 microecs▸xecs 6.55   microecs▸xecs 9.91
-w5 churn    ecs-pat▸snecs 2.03     ecs-pat▸snecs 2.36    ecs-pat▸snecs 2.35    ecs-pat▸snecs 1.89   snecs▸ecs-pat 1.06
-w6 mixed    esper▸xecs 1.05        xecs▸microecs 2.48    xecs▸microecs 1.18    microecs▸xecs 1.52   microecs▸xecs 2.04
-w7 migrate  snecs▸esper 1.76       snecs▸microecs 1.08   microecs▸snecs 1.19   microecs▸snecs 1.06  snecs▸microecs 1.26
-```
-
-### microecs vs its nearest rival — the ratio (microecs / fastest competitor)
-
-`>1` = microecs slower by that factor; `<1` = microecs faster by `1/x`. E.g. w1 physics @100k = 0.30
-means microecs is **3.3× faster** than the next-best lib (xecs).
-
-```
-workload    N=200   1k     5k     20k    100k
-w1 physics  1.27   1.11   0.56   0.29   0.30
-w2 bounce   1.44   1.37   0.72   0.41   0.40
-w3 ai       1.57   0.89   0.70   0.61   0.60
-w4 random   1.36   1.17   0.31   0.15   0.10
-w5 churn   12.32   4.42   2.52   2.00   1.06
-w6 mixed    2.89   2.48   1.18   0.66   0.49
-w7 migrate  3.38   1.08   0.84   0.95   1.26
-```
-
-Four things to take from it:
+Four things to take from the two experiments:
 
 1. **microecs owns the large-N regime.** On the columnar tail it runs at **~1.5 ns/entity** and holds
    flat to 1M; on random access and the mixed frame it wins from N≈5–20k up (and by 100k it's
