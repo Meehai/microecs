@@ -265,10 +265,12 @@ Raises
   color: var(--lightblue);
 }
 
+/* markdown **bold** -- genuinely bold + bright white so it stands out (e.g. the benchmark
+   win-markers on the Benchmarks page); was font-weight:normal, which made bold invisible */
 .pdoc b,
 strong {
-  color: rgba(255, 255, 255, 0.8);
-  font-weight: normal;
+  color: #fff;
+  font-weight: 800;
 }
 
 /* markdown *emphasis* -- a plain italic that inherits the body color/size so it blends into the prose
