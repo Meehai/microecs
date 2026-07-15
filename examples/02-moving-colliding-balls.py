@@ -52,16 +52,16 @@ class Clock:
 # components
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32"})
+    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "default": None})
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": None})
 
 class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": None})
 
 class HasCollision(Component):
-    is_colliding: np.ndarray = field(metadata={"shape": (1, ), "dtype": "bool"})
+    is_colliding: np.ndarray = field(metadata={"shape": (1, ), "dtype": "bool", "default": None})
 
 # systems
 

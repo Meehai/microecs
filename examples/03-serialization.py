@@ -25,18 +25,18 @@ MAX_SUBTICKS_PER_RENDER_TICK = 3
 # components
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "serializable": True})
+    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "serializable": True, "default": None})
 
 class HasColor(Component):
-    color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32", "serializable": True})
+    color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32", "serializable": True, "default": None})
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "serializable": True})
+    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "serializable": True, "default": None})
 
 class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "serializable": True})
+    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "serializable": True, "default": None})
     # magnitude is a derived property from velocity (not a source a truth). Not serializable as it is updated each frame
-    magnitude: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "serializable": False})
+    magnitude: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "serializable": False, "default": None})
 
 class HasCustom(Component):
     pass
@@ -129,7 +129,7 @@ def main(args: Namespace):
             radius = random.randint(5, 20)
             position = rl.GetMousePosition().x, rl.GetMousePosition().y
             velocity = (20 * random.random() * 2 - 1, 20 * random.random() * 2 - 1) if random.random() < 1 else None
-            add_entity(world, color=rl.BLACK, radius=radius, position=position, velocity=velocity)
+            add_entity(world, color=rl.BLACK, radius=[radius], position=position, velocity=velocity)
 
         if rl.IsKeyPressed(rl.KEY_F5):
             with open(pth := Path(__file__).parent / "state.json", "w") as fp:

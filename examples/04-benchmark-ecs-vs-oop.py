@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Standalone benchmark: ECS (microecs) vs OOP, same physics step computed 8 ways.
 
 Intended home: examples/04-benchmark-ecs-vs-oop.py (kept under test/manual/ per project rules
@@ -12,7 +13,9 @@ Output: {mode: avg_seconds_per_step}
 """
 import time
 from dataclasses import field
+from pprint import pformat
 import numpy as np
+from loggez import loggez_logger as logger
 
 from microecs import World, Component
 
@@ -36,11 +39,11 @@ MODES = [
 
 # ---- components: (2,) pos/vel; HasTag only exists to force a 2nd pool ----
 class HasPos(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 class HasVel(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32"})
+    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
 class HasTag(Component):
-    tag: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32"})
+    tag: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
 
 
 # ---- OOP object-first scene (the thing an ECS replaces) ----
@@ -151,6 +154,7 @@ def oop_scalar(n=N):
 def main():
     timings, keys = {}, {}
     for mode in MODES:
+        logger.info(f"Running '{mode}'")
         if mode == "micro-ecs-pool-vectorized":
             sec, key = micro_ecs_pool_vectorized(n=N)
         elif mode == "micro-ecs-vectorized":
@@ -174,7 +178,7 @@ def main():
     for mode, key in keys.items():
         assert np.allclose(key, ref, rtol=1e-3, atol=1e-3), f"{mode} diverged from {MODES[0]}"
 
-    print({mode: round(sec, 8) for mode, sec in timings.items()})
+    logger.info(pformat({mode: round(sec, 8) for mode, sec in timings.items()}))
 
 
 if __name__ == "__main__":
