@@ -1,8 +1,11 @@
 # microecs vs. the vectorized-entity landscape — analysis & positioning
 
 **Created**: 2026-06-04
-**Updated**: 2026-06-05 (refocused on the vectorized + Python-interop niche; added GPU batch-ECS, JAX, and
-dataframe-ABM clusters; turned "ideas" into a ranked borrow list)
+**Updated**: 2026-07-15 (added **Part 8 — empirical multi-workload benchmark**: 6 workloads × 5 libs ×
+N-sweep, verified crossover + copy-boundary mechanism; corrected the efficiency scorecard with measured
+numbers; competitor status re-verified — no material drift since June)
+**Prev update**: 2026-06-05 (refocused on the vectorized + Python-interop niche; added GPU batch-ECS, JAX,
+and dataframe-ABM clusters; turned "ideas" into a ranked borrow list)
 **Type**: Reference / competitive analysis
 **Scope**: Assess microecs (efficient? good? nice?), then compare **only against projects in the same domain**:
 must (a) interop with Python and (b) be **vectorized** (numpy / torch / jax / polars — bulk array math, not
@@ -21,6 +24,14 @@ entities. Its differentiator — numpy **SoA by archetype** + a **cross-archetyp
 (`qr.position[:] = qr.position + qr.velocity*dt` lands in *every* matching pool via numpy's array protocols) —
 appears **genuinely unique among Python libraries**.
 
+**Now measured (Part 8).** A 6-workload × 5-library × N-sweep confirms the thesis *and* bounds it honestly:
+**there is no global winner — the ranking flips by workload and by N.** microecs wins the **large-N regime broadly**
+(N≥~20k: columnar physics, random-access-via-scatter, and a realistic mixed frame) and is the *only* vectorized-numpy
+lib that can also churn/migrate. Below N≈10k its fixed per-op query/Field overhead loses to leaner libs (xecs,
+ecs-pattern). The single most important mechanism finding: **microecs beats the Rust ECS (xecs) at scale precisely
+because it has no FFI boundary** — xecs does its arithmetic in numpy anyway and pays a Rust↔numpy *copy* per op;
+microecs mutates the pool arrays in place. The Rust core is a marshalling tax for CPU-vectorized work, not a win.
+
 - **The direct peer set is nearly empty**, and both peers have a fatal gap vs microecs:
   - **xecs** — the "serious" attempt (Rust core + numpy). **Effectively dead** (last commit 2023-10-05, 3★),
     **AND-only** queries, and **no archetypes** (per-component columns).
@@ -38,9 +49,10 @@ appears **genuinely unique among Python libraries**.
 - **Validated by the big engines**: deferred command buffer (Unity ECB), single archetype-SoA path (Bevy is
   trying to *delete* its second/sparse-set storage), cache-matching-pools + invalidate-on-commit (flecs), and
   "export the column as a view, never copy" (Madrona's zero-copy tensors == microecs's `QueryResult`).
-- **Best ideas to borrow** (Part 5): per-pool **optional/OR** (the mechanism that unblocks the deferred
-  `any_of`), **masked soft-delete at the commit boundary** (from JAX ABM), **group-by/reduction** (from
-  Polars ABM), and an optional **batch-over-worlds** axis (from Madrona).
+- **Ideas evaluated** (Part 5/6): optional/OR, masked soft-delete, and group-by/reduction were **reviewed
+  2026-07-15 and set aside** — each is derivable at user-code level or a bad trade for a query-first lib
+  (rationale in Part 6). The live perf need is **low-N `Field` overhead** ([task 26](../todos/open/26-low-n-field-overhead/TASK.md),
+  robosim's 500-UAV driver); an optional **batch-over-worlds** axis (from Madrona) stays a roadmap candidate.
 
 microecs's slot, stated precisely: **the only Python, CPU, dynamic-archetype ECS with a cross-pool vectorized
 write — esper's accessibility with numpy's bulk speed, no compile step, no GPU, ~300 LoC, 2 deps.**
@@ -59,10 +71,14 @@ write — esper's accessibility with numpy's bulk speed, no compile step, no GPU
 | Deferred command buffer (no iterator invalidation) | `world.py:38-45` | ✅ same approach as flecs/Bevy/Unity |
 | Vectorized cross-pool write | `query_result.py:56-71` | ✅ the differentiator (no Python peer has it) |
 
-For a motion/physics system over thousands of same-archetype entities, the work runs in numpy and beats
-per-entity Python loops by **1–2 orders of magnitude**. That is the headline benchmark to publish. The SoA-per-
-field choice is **universally validated** — Brax (`QP`), MJX (`Data`), Madrona (component columns), mesa-frames
-(Polars columns) all store one array per field. microecs is on the canonical path.
+For a motion/physics system over **tens of thousands** of same-archetype entities, the work runs in numpy and
+beats per-entity Python loops by **1–2 orders of magnitude** (measured 30–60× vs esper at N=100k; Part 8). But the
+win is **N-gated**: below N≈10k the per-op overhead (query + `_Field` construction) dominates and per-entity libs
+are actually *faster* — at N=200 microecs is ~4× *slower* than xecs and neck-and-neck with esper. The headline to
+publish is therefore not "microecs is fast" but "**microecs is fast at scale** (N≳10k) — at small N its fixed
+overhead makes leaner libs win." The SoA-per-field choice is **universally validated** — Brax (`QP`), MJX
+(`Data`), Madrona (component columns), mesa-frames (Polars columns) all store one array per field. microecs is on
+the canonical path.
 
 **Honest inefficiencies** (inherent to the approach, not bugs):
 
@@ -260,16 +276,24 @@ warmup, and debuggability.
 Deferring **all four** ops through one commit point, as the *only* path, is a genuine strength — arguably cleaner
 than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity and Bevy.
 
-### Efficiency scorecard (honest)
+### Efficiency scorecard (honest — now measured, Part 8)
 
-- **microecs wins:** small-to-mid N, **dynamic** structure, **zero warmup**, no compile/GPU, debuggable, tiny
-  dep surface. Bulk numeric step over a few thousand same-archetype entities ≈ 1–2 orders over per-entity loops.
-- **microecs loses:** large N on accelerators (JAX/Madrona run 10⁴–10⁶ via GPU+fusion), **autodiff** through the
-  sim (can't), and per-pool Python overhead when a query spans many tiny pools.
-- **The honest framing to publish** (from AMBER's measured 1.7×–93× spread vs Mesa `[claim]`): **bulk numeric
-  updates = huge win; irreducibly sequential / branchy per-entity logic = modest win.** Don't over-claim. MJX's
-  own "10× slower than C MuJoCo for a *single* scene" is the analogous honesty from the GPU side — vectorization
-  is a large-N bet.
+- **microecs wins (N ≳ 20k):** columnar physics/bounce/AI (3× vs xecs at 100k, 30–60× vs per-entity libs),
+  random access *if scattered* (10× vs the field at 100k), and the realistic mixed frame (1.7× vs xecs). Plus
+  **dynamic** structure, **zero warmup**, no compile/GPU, debuggable, tiny dep surface. It is also the **only
+  vectorized-numpy lib that can churn or migrate at all** (xecs can do neither).
+- **microecs loses (N ≲ 10k):** the fixed per-op cost (query + `_Field` alloc + per-pool python loop) dominates,
+  so xecs (leaner Rust path) wins columnar and ecs-pattern/esper win random/churn. Real games often live *here*
+  (hundreds–few thousand entities) — this is not microecs' regime.
+- **microecs loses regardless of N:** structural **churn** (ecs-pattern/snecs beat it; the archetype pop-swap +
+  realloc tax) and is *mid* on **component migration** (snecs' sparse-set beats archetype migration — copying the
+  whole entity to a new pool, exactly the cost flagged in Part 1). Large N on accelerators (JAX/Madrona 10⁴–10⁶
+  via GPU) and **autodiff** are out of reach by design.
+- **The one usage rule that decides microecs' fate: batch *everything*, including random access.** The public
+  `get_entity(id).f` per-id loop is a **~2600 ns/hit trap** (400× a scattered `col[rows]-=x`). Any hot loop that
+  falls back to it erases the vectorization win (it sank the mixed-frame number by 4–5× until fixed).
+- **Honest framing to publish:** **bulk numeric updates at scale = huge win; small-N or per-entity-scalar logic =
+  loss.** vectorization is a large-N bet (MJX says the same: "10× slower than C MuJoCo for a *single* scene").
 
 ---
 
@@ -350,15 +374,28 @@ than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity a
 2. ✅ **Zero-size tag components** — **shipped** (task 9, 2026-06-05). Compose with `exclude=`.
 3. **Single-component get/set by id** — **open, minor.** No `get_component`/`set_component`; `get_entity` copies
    all fields (`world.py:68`). The only remaining original "need."
+4. **Low-N `QueryResult`/`Field` overhead** — **open ([task 26](../todos/open/26-low-n-field-overhead/TASK.md)).**
+   microecs loses the **500–10k** band to xecs on fixed per-op `Field`-allocation overhead (Part 8 crossover
+   ~10k). **Concrete driver:** robosim needs ~500 UAVs at 60 fps and can't today. Focused tracker:
+   `examples/06-benchmark-vs-xecs-low-entities/` (the per-frame breakdown shows the step at N=500 is ~21× the
+   raw-numpy floor, and it's `Field` churn — `query()` is already cheap/cached).
 
-### Evaluated candidates (from Part 5 — not committed, just on the table)
+### Evaluated candidates (from Part 5)
 
-- **Optional / `any_of`** — was "deferred because it breaks the aligned column." **Now we know the mechanism**
-  (per-pool placeholder parts + presence mask, Part 5 #1). Still no current use case, but it's no longer a
-  mystery — promote from "deferred" to "designed, unbuilt" if a need lands.
-- **`group_by` / reduction** — new candidate, **conditional on wanting ABM users**. Highest ergonomic ROI.
-- **Masked soft-delete + compaction at `update()`** — internal optimization candidate (no API change).
-- **Batch-over-worlds axis** — roadmap candidate for multi-sim/RL throughput on CPU.
+- **Optional / `any_of`** — **reviewed 2026-07-15 → not pursuing.** No use case, and it's derivable at
+  user-code level: two queries (`query(A, D)` + `query(A, exclude=[D])`). The placeholder-part + presence-mask
+  machinery (plus the write-to-placeholder hazard) is real complexity for convenience you already have. The
+  mechanism is understood (Part 5 #1) if a concrete need ever lands.
+- **`group_by` / reduction** — **reviewed 2026-07-15 → not pursuing.** Adds no *capability* over today's AND +
+  numpy on the exported column (`np.add.at` / `np.bincount` over `qr.field.numpy()` with a group key). Per
+  "enabler, not solutioner," don't wrap what the user can already do in one numpy call. Reconsider only if
+  courting ABM users as a distinct audience.
+- **Masked soft-delete + compaction at `update()`** — **reviewed 2026-07-15 → not pursuing.** The current
+  deferred pop-swap already keeps live rows dense with no per-query tax; soft-delete would tax **every** query
+  with an active-mask filter to speed up only the (cold, already-batched) delete path — the wrong trade for a
+  query-first lib. Revisit only if churn benchmarks show pop-swap is the bottleneck (w5 has microecs mid-pack;
+  the cost there is build/add, not remove).
+- **Batch-over-worlds axis** — still a roadmap candidate for multi-sim/RL throughput on CPU (not reviewed).
 
 ### Don't need (scope discipline — matches CLAUDE.md minimalism)
 
@@ -371,24 +408,162 @@ than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity a
 
 ## Part 7 — Positioning & recommended follow-ups
 
-**Positioning (honest, evidence-based):** *"A pure-Python + numpy ECS that's **alive** (xecs isn't),
-**standalone** (manifoldx is a renderer), with **AND + NOT + tags** queries (neither peer has) and a
+**Positioning (honest, evidence-based — now measured):** *"A pure-Python + numpy ECS that's **alive** (xecs
+isn't), **standalone** (manifoldx is a renderer), with **AND + NOT + tags** queries (neither peer has) and a
 **cross-pool vectorized write-through view** (no Python library has it), in ~300 LoC + 2 deps. esper's
-accessibility with numpy's bulk speed — no compile step, no GPU."* The honest perf caveat: vectorization wins on
-bulk numeric updates (large-N), modest on sequential/branchy logic; GPU/JAX engines win at 10⁴–10⁶ + autodiff;
-per-entity Python libs win on churn/branchy game logic.
+accessibility with numpy's bulk speed — no compile step, no GPU."* The honest perf caveat, now with numbers
+(Part 8): microecs wins the **large-N regime** (N≳20k) — 3× over xecs on columnar, and it's the only
+vectorized-numpy lib that can churn/migrate — but **loses below N≈10k** to leaner libs, is **mid on churn/migration**
+(sparse-set snecs / object ecs-pattern beat it), and demands you **batch even random access** (`get_entity` in a
+hot loop is a 400× trap). GPU/JAX engines still win at 10⁴–10⁶ + autodiff.
 
 1. ✅ **[task 8](../todos/done/8-query-exclusion-none-of/TASK.md)** — query exclusion. **Done.**
 2. ✅ **[task 9](../todos/done/9-tag-components/TASK.md)** — tag components. **Done.**
 3. **README "Comparison / positioning" section** — *(not filed)* use the positioning paragraph above; name the
    real peers (xecs, manifoldx) + the adjacent clusters (Madrona, JAX ABM, mesa-frames); the cross-pool view as
-   the headline.
-4. **Benchmark task** — *(not filed)* publish the headline number against honest baselines: **esper** (per-entity
-   loop), **mesa-frames** (Polars per-type), and **manifoldx** (per-archetype). The story is the 1–2 orders over
-   esper and the cross-pool-view advantage over manifoldx.
-5. **Single-component get/set by id** — *(not filed; minor)* Part 6 #3.
+   the headline. Fold in the Part 8 crossover chart + the copy-boundary mechanism.
+4. ✅ **Benchmark** — **DONE (2026-07-15).** Superseded the single-number plan: not "1–2 orders over esper" but a
+   full 6-workload × 5-lib × N-sweep with a verified crossover + mechanism (Part 8). Code + data:
+   `examples/05-benchmark-workloads/` (README, `results.json`, `FINDINGS.md`, `probes/`). *Not yet done:*
+   mesa-frames (Polars) and manifoldx (per-archetype) baselines — worthwhile future additions.
+5. **Single-component get/set by id** — *(not filed; minor)* Part 6 #3. **Newly urgent:** Part 8 shows
+   `get_entity(id).f` is a ~2600 ns/hit trap; a real `get_component`/`set_component` (or a public
+   `entity_row(id)`) would give users an O(1) fast path and let them avoid the batching gymnastics.
 6. **(designed, unbuilt) optional / `any_of`** — *(not filed)* the per-pool mechanism in Part 5 #1 if a use case
    appears.
+
+---
+
+## Part 8 — Empirical multi-workload benchmark (July 2026)
+
+**Why?** The old benchmark measured **one** workload (columnar physics at N=100k) — microecs' best case — and
+published a single "189× / 3.4×" headline. That's true but misleading: it doesn't tell a user what happens on the
+workloads a *real* game/sim actually runs, or at the entity counts they actually use. This section answers that.
+
+**What?** Six workloads × five libraries × an N-sweep (200 → 1,000,000), every result verified against a float64
+reference (order-independent fingerprint, so a lib can't look fast by skipping work). Code, raw numbers, and
+mechanism probes: **`examples/05-benchmark-workloads/`** (`README.md`, `results.json`, `FINDINGS.md`,
+`probes/`, organized one folder per workload × one file per library). Env: numpy 2.5.1, Py 3.12, times =
+min-over-reps of mean-over-30-frames, GC off.
+
+Workloads (each = the real game system it models): **w1** physics (columnar integrate), **w2** bounce (columnar +
+`np.where` branch), **w3** ai (per-entity health FSM), **w4** random (K read-modify-write by id/frame), **w5**
+churn (spawn+FIFO-despawn/frame), **w6** mixed (physics+ai+targeted damage — a realistic steady frame), **w7**
+migrate (component add/remove → archetype change). Libs: **microecs** (numpy SoA), **xecs** (Rust SoA, no
+archetypes), **esper**/**snecs**/**ecs-pattern** (pure-python per-entity).
+
+**Fairness:** both SoA libs (microecs, xecs) batch — w4/w6 use the *same* `col[rows]-=x` scatter for each; the
+AoS libs loop with O(1) id lookups (their fast path). The naive microecs `get_entity` loop is quantified as "the
+trap" (P3), not as microecs' number.
+
+### The headline: there is no global winner — it flips by workload AND by N
+
+```
+fastest lib     N=200        1k          5k          20k        100k
+w1 physics      xecs         xecs        xecs        microecs   microecs
+w2 bounce       xecs         xecs        xecs        microecs   microecs
+w3 ai           esper        xecs        xecs        microecs   microecs
+w4 random       ecs-pattern  ecs-pattern microecs    microecs   microecs
+w5 churn        ecs-pattern  ecs-pattern ecs-pattern ecs-pattern snecs
+w6 mixed        esper        xecs        xecs        microecs   microecs
+w7 migrate      snecs        snecs       microecs    microecs   snecs      (xecs, ecs-pattern: N/A)
+```
+
+microecs / fastest-competitor (>1 = microecs slower):
+
+| workload | N=200 | 1k | 5k | 20k | 100k |
+|---|--:|--:|--:|--:|--:|
+| w1 physics | 4.10 | 3.25 | 1.52 | **0.56** | **0.32** |
+| w3 ai | 6.11 | 3.01 | 1.64 | **0.96** | **0.66** |
+| w4 random | 1.45 | 1.10 | **0.34** | **0.16** | **0.10** |
+| w5 churn | 13.3 | 4.51 | 2.54 | 2.07 | 1.04 |
+| w6 mixed | 4.45 | 3.32 | 1.72 | **0.85** | **0.58** |
+| w7 migrate | 4.51 | 1.32 | **0.87** | **0.89** | 1.22 |
+
+**Read it as:** microecs owns the **N≳20k regime** (columnar, scattered random access, and the realistic mixed
+frame — all *faster* than the whole field), is competitive on migration, and only genuinely *loses* structural
+churn. Below N≈10k it loses almost everything to the leaner libs — its per-op query/`_Field` overhead isn't
+amortized yet.
+
+### The columnar crossover and the "why is Rust slower?" answer
+
+Columnar physics, ns/entity (microecs vs xecs, main sweep + large-N tail):
+
+| N | 200 | 1k | 5k | 20k | 100k | 200k | 500k | 1M |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| microecs | 178 | 40 | 8.9 | **2.8** | **1.7** | **1.7** | **1.8** | **2.8** |
+| xecs | 44 | 12 | 5.8 | 5.1 | 5.3 | 5.4 | 5.5 | 5.6 |
+
+**Crossover ≈ N=10k.** xecs is *flat* at ~5–6 ns/e everywhere; microecs falls to ~1.7 ns/e as fixed overhead
+amortizes. Why does a **pure-Python+numpy** lib beat a **Rust** lib 3× at scale? Verified with probes (P1–P3 in
+FINDINGS):
+
+- **Not a dtype artifact (P1).** numpy 2.x (NEP 50) keeps `Float32 * python_float` in float32; forcing float32 dt
+  gives 0 speedup. Refuted.
+- **It's the Rust↔numpy copy boundary (P2, the key finding).** `xecs.view.x * dt` returns a **plain numpy array** —
+  xecs does its arithmetic *in numpy*, not in Rust; the Rust core is just storage. `.numpy()` is a **copy** (its
+  own docstring; no zero-copy accessor exists), so every columnar op copies operand columns out of Rust and writes
+  results back — ≈6 buffer copies/step, **5–7× raw in-place numpy**. microecs' `QueryResult`/`_Field` operate
+  **in place on the very pool arrays** (verified zero-copy: `pool.py:67`, `query_result.py:106`, in-place write
+  `query_result.py:55`). So microecs wins *because it has no FFI boundary* — the Rust core is a marshalling **tax**
+  for CPU-vectorized work, not an asset. (Ruled out the `get_view()`-cost confound and the x/y-split confound: raw
+  2-column numpy ≈ fused `(N,2)` numpy.)
+- At small N, microecs' fixed per-op cost (query dict lookup + `_Field` alloc + per-pool python loop) exceeds
+  xecs' leaner path → xecs wins < N≈10k.
+
+### The random-access trap (P3) — and why it decides the mixed frame
+
+`world.get_entity(id).f` in a hot loop costs **~2600 ns/hit** (Entity view + `__getattr__` dict lookup, flat in
+N). The batched SoA idiom `col[rows] -= x` costs **6 ns/hit at 100k — 400× less.** This is not academic: with the
+naive loop microecs was **4–5× slower than xecs on the mixed frame at every N**; with the (fair) scatter it
+**wins the mixed frame above N≈20k**. The whole vectorization advantage lives or dies on whether the user batches
+random access. Caveat: batching needs a static set / a row-map rebuilt after `update()` (pop-swap reorders rows) —
+so a *churning* world with per-id edits is genuinely hard, and argues for the `get_component(id)` fast-path
+follow-up (Part 7 #5).
+
+### Capability gaps decide churn & migration (not just speed)
+
+- **xecs cannot despawn OR migrate** — `Commands.spawn` only; fixed-capacity, per-component pools. It is
+  **disqualified** from any birth/death or component-toggling sim, regardless of its columnar speed. This is the
+  sharpest practical differentiator vs microecs.
+- **ecs-pattern cannot migrate** — entities are fixed inheritance-classes; no runtime component add/remove.
+- Only **microecs / esper / snecs** do component migration. **snecs (sparse-set) is the migration champ**;
+  microecs is *mid* — the archetype pop-swap + whole-entity copy to a new pool (flagged in Part 1) is a real cost.
+  Honest: archetype-SoA buys contiguous columns at the price of expensive structural change; that's the trade.
+
+### Workload → real game/sim regimes (which of these matters?)
+
+| workload | real systems | typical N | who wins there |
+|---|---|--:|---|
+| w1/w2/w3 columnar | particles/VFX, bullet-hell, boids, N-body, **UAV/vehicle integrators**, RL rollouts, ABM ticks | 1k–1M | xecs <10k, **microecs >10k** |
+| w4 random | ARPG/MOBA damage, hitscan, targeted heals, net delta-apply | hits 1–100 / 100s–few-k live | ecs-pattern tiny-N, **microecs/xecs at scale** |
+| w5 churn | bullet emitters, TD creep waves, spawn/despawn pools | births 10–1k/frame | ecs-pattern / snecs (**not xecs**) |
+| w7 migrate | state tags (Alive↔Dead), buff/debuff add-remove | K/frame | snecs; microecs mid (**not xecs/ecs-pattern**) |
+
+**Reality check:** most *games* live **below** the crossover (RTS units 200–2k, ARPG hundreds, roguelikes tens) —
+that's xecs/ecs-pattern territory. microecs' large-N advantage is real only for **particle systems, big
+bullet-hell, and agent-based / physics simulation at N≳10k** — which is exactly its stated niche. For robosim
+itself (~2 robots + tens of world entities, N≈10²) microecs is three orders of magnitude below its own crossover;
+here it's chosen for its **API + zero-copy state + dynamic structure**, not throughput, and at that N *all* libs
+are sub-millisecond so it doesn't matter.
+
+**Strategic verdict:** microecs' real audience is **vectorizable ABM / physics sim at scale**, and for that
+audience the winning competitor is *microecs itself at large N* — xecs only wins the small-N/tight-loop regimes
+this audience doesn't operate in, and forfeits churn and migration entirely. The one thing microecs users must
+internalize: **batch everything, including random access.**
+
+### Honest limitations of this benchmark (pre-empting the skeptic)
+
+- **GC-off + min-over-reps flatters the object-per-entity libs** (a real frame budget cares about p99, not the
+  min, and long GC-on sessions expose the object-churn pauses esper/snecs/ecs-pattern generate). A GC-on
+  p50/p99 long-run variant would be the fairer "real session" number — worthwhile future work.
+- **float32 (SoA) vs float64 (object libs)** is half the bytes — a real bandwidth edge for SoA at large N,
+  independent of python overhead. microecs vs xecs is fair (both f32).
+- Workloads use **1–2 archetypes** (except w7); heavy **archetype fragmentation** (many tiny pools, where
+  `_Field`-concat-across-pools degrades) is untested and is microecs' theoretical soft spot.
+- Verification is an **order-independent multiset** fingerprint: catches skipped/wrong-magnitude work, not a
+  which-entity permutation. Adequate for "didn't cheat," not a per-entity correctness proof.
+- min-16 touch floor → small-N w4/w5 touch ~8%/frame, heavier than the advertised ~2%/1%.
 
 ---
 
@@ -429,11 +604,18 @@ layout https://rams3s.github.io/blog/2019-01-09-ecs-deep-dive/ · EnTT views/gro
 https://github.com/skypjack/entt/wiki/Crash-Course:-entity-component-system · tcod-ecs
 https://github.com/HexDecimal/python-tcod-ecs · ecs-faq https://github.com/SanderMertens/ecs-faq
 
-**Per-entity Python (pruned)** — esper https://github.com/benmoran56/esper · ecs-pattern
-https://pypi.org/pypi/ecs-pattern/json · snecs https://pypi.org/pypi/snecs/json · entitas-python
+**Per-entity Python (benchmark baselines)** — esper https://github.com/benmoran56/esper · ecs-pattern
+https://github.com/ikvk/ecs_pattern (PyPI `ecs-pattern`) · snecs https://github.com/slavfox/snecs · entitas-python
 https://github.com/Aenyhm/entitas-python
 
-**Method note:** facts verified June 2026 via GitHub API / PyPI JSON / docs / arXiv. Star counts are
-point-in-time and drift. Author-run benchmarks (mesa-frames 10×, AMBER 1.7–93×, DataFrames-as-ECS 9ns) are
-`[claim]` — credible but unreplicated. "Bevy removing sparse-set" is a maintainer proposal, not shipped. No
-JAX/torch-backed Python ECS *library* was found as of June 2026.
+**Part 8 benchmark** — `examples/05-benchmark-workloads/` (harness, per-workload adapters, `results.json`,
+`FINDINGS.md`, `probes/xecs_dtype.py` / `probes/boundary.py` / `probes/microecs_random.py`). xecs numpy-boundary confirmed in its
+installed source `xecs/_internal/vec2.py` (`__iadd__`/`__mul__` do `self.numpy()` + `np.*` + write-back) and
+`Float32.numpy.__doc__` ("Copy the elements into a NumPy array").
+
+**Method note:** landscape facts re-verified **2026-07-15** via GitHub API / PyPI JSON / docs (prev June 2026);
+**no material drift** — xecs still dead (3★, last commit 2023-10-05, no despawn/migrate), snecs dead, esper 688→695★
+& ecs-pattern (`ikvk/ecs_pattern`, 54★) both lightly-active but unvectorized, manifoldx still renderer-locked with
+no cross-archetype write, and **still no JAX/torch-backed Python ECS *library***. Part 8 numbers are this-machine
+point-in-time (numpy 2.5.1, Py 3.12); the *ratios/crossover* are the portable result. Author-run third-party
+benchmarks (mesa-frames 10×, AMBER 1.7–93×) remain `[claim]`. "Bevy removing sparse-set" is still a proposal.

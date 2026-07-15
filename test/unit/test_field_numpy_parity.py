@@ -16,8 +16,7 @@ from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import World, Component
-from microecs.query_result import Field
+from microecs import World, Component, QRField
 
 
 class HasVel(Component):
@@ -72,7 +71,7 @@ def assert_parity(qr_field, logical, op):
             f"numpy {'raised '+type(e_np).__name__ if e_np else 'did NOT raise'}, "
             f"Field {'raised '+type(e_f).__name__ if e_f else 'did NOT raise'}")
         return
-    r_f = r_f.numpy() if isinstance(r_f, Field) else np.asarray(r_f)
+    r_f = r_f.numpy() if isinstance(r_f, QRField) else np.asarray(r_f)
     assert r_f.shape == r_np.shape, f"shape {r_f.shape} vs numpy {r_np.shape}"
     assert np.allclose(r_f, r_np), f"values diverge:\n{r_f}\nvs\n{r_np}"
 

@@ -1,98 +1,24 @@
 """query_result.py - A list of pools seen as a contiguous view. Implements array interface to look like numpy"""
-from typing import Callable, T
 import numpy as np
 
 from .utils import Shape
 from .pool import Pool
+from .qr_field import QRField
 
 # Note: if QueryResult gets new fields, add them here! Otherwise the user code may overwrite them e.g. qr._len=xxx
-QUERY_RESULT_INTERNAL_ATTRS = {"pool_list", "entity_ids", "fields", "_field_shapes", "_field_dtypes", "_data", "_len"}
+QUERY_RESULT_INTERNAL_ATTRS = {"pool_list", "entity_ids", "fields", "_field_shapes",
+                               "_field_dtypes", "_data", "_len", "_cache"}
 
-class Field(np.lib.mixins.NDArrayOperatorsMixin):
-    """Field is a single field (column) from a QueryResult object obtained from world.query(...)"""
-    def __init__(self, parts: list[np.ndarray]):
-        self.parts = parts
-        self._lens = [len(p) for p in self.parts]
-        self.len = sum(self._lens)
-        self.shape: Shape = (len(self), *self.parts[0].shape[1:])
-        self.dtype = self.parts[0].dtype
-        self._bounds = np.cumsum([0, *self._lens])
-
+class _QRArray(np.ndarray):
+    """small shim array so we don't instantiate QRField which is more expensive (contiguous view for >=2 pools)"""
     def numpy(self) -> np.ndarray:
-        """Creates a numpy array from the underlying pool parts. For len==1, we return the same object!"""
-        return np.concatenate(self.parts) if len(self.parts) != 1 else self.parts[0]
+        """for compatibility with QRField.numpy()"""
+        return np.asarray(self)
 
-    def _chunk(self, x: T, i: int) -> T:
-        if isinstance(x, Field):
-            return x.parts[i]
-        if isinstance(x, np.ndarray) and x.ndim == len(self.shape) and x.shape[0] == self.len:
-            return x[self._bounds[i]:self._bounds[i + 1]]
-        return x
-
-    def _apply_fn_on_parts(self, fn: Callable, op_args: list, **kwargs):
-        # op args can be 1 element (-qr.velocity), 2 elements (qr.position * 0.1), 3 elements (np.where(a, b, c)), etc.
-        # all of them must be chunked based on how many we have in this Field so each subpart is called independently.
-        results = []
-        for i, part in enumerate(self.parts):
-            pool_args = [self._chunk(x, i) for x in op_args]
-            part_result: Field = fn(*pool_args, **kwargs)
-            # we expect f(arr(N, ...)) -> arr(N, ...) where N = number of items in the pool
-            # for e.g. np.linalg.norm(velocity, axis=1) should do (N, 2) -> (N, 1) so the first axis is preserved
-            assert len(part_result) == part.shape[0], f"Result: {part_result.shape} vs {part.shape}"
-            results.append(part_result)
-        return Field(results)
-
-    def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
-        """wrapper for elementwise (python) primitives, e.g. qr.position[:] += 1"""
-        if method != "__call__":
-            return NotImplemented
-        if out is None:
-            return self._apply_fn_on_parts(ufunc, inputs, **kwargs)
-
-        assert len(out) == 1 and isinstance(out[0], Field), out
-        for i in range(len(self.parts)):
-            pool_args = [self._chunk(x, i) for x in inputs]
-            ufunc(*pool_args, out=out[0].parts[i], **kwargs)
-        return out[0]
-
-    def __array_function__(self, func: Callable, _types, args: list, kwargs: dict):
-        """wrapper for elementwise numpy functions, e.g. qr.velocity[:] = np.where(mask, -qr.velocity, qr.velocity)"""
-        return self._apply_fn_on_parts(func, args, **kwargs)
-
-    # qr.position[:] = <field | scalar | per-entity broadcast>   -> scatter through the views
-    def __setitem__(self, key, value):
-        if (not (isinstance(key, slice) and key == slice(None)) and
-            not (isinstance(key, tuple) and key and key[0] == slice(None))):
-            raise TypeError("entity-axis assignment crosses pools; use [:] or [:, k] or [i][...]")
-
-        if isinstance(value, Field):
-            for i, part in enumerate(self.parts):
-                part[key] = value.parts[i]
-            return
-
-        # follow numpy's rules for broadcasting
-        views = [part[key] for part in self.parts] # per-pool destinations (views)
-        logical = (self.len, *views[0].shape[1:]) # the (N, *e) the user "sees"
-        full = np.broadcast_to(value, logical) # numpy rules: (*e,)/scalar fill, (N,*e) positional; raises otherwise
-        for v, chunk in zip(views, np.split(full, np.cumsum(self._lens)[:-1])):
-            v[:] = chunk
-
-    def __getitem__(self, key):
-        if key is Ellipsis or (isinstance(key, tuple) and key and (key[0] is Ellipsis or key[0] == slice(None))):
-            return Field([part[key] for part in self.parts])
-
-        raise TypeError(("Only batch updates are supported, e.g. `qr.attr[:]=xxx` or `qr.attr[:, k]=xxx`. "
-                         "Use .numpy() for a proper array. For entity-level ops use `world.get_entity(eid).attr=xxx`"))
-
-    def __iter__(self):
-        for part in self.parts:
-            yield from part
-
-    def __len__(self):
-        return self.len
-
-    def __repr__(self):
-        return f"[Field] Shape: {self.shape} (across {len(self.parts)} pools)"
+    @property
+    def parts(self) -> list[np.ndarray]:
+        """for compatibility with QRField.numpy()"""
+        return [np.asarray(self)]
 
 class QueryResult:
     """A query result containing entities. Fields (e.g. qr.position) implement array interface to look like numpy"""
@@ -103,14 +29,24 @@ class QueryResult:
         self.fields = list(field_shapes)
         self._field_shapes = field_shapes
         self._field_dtypes = field_dtypes
-        self._data: dict[str, np.ndarray] = {f: [p.data[f][0:len(p)] for p in pool_list] for f in field_shapes.keys()}
+        self._data: dict[str, list[np.ndarray]] = {f: [p.data[f][0:len(p)] for p in pool_list]
+                                                   for f in field_shapes.keys()}
         self._len = sum(len(pool) for pool in self.pool_list)
+        self._cache: dict[str, QRField] = {}
 
     def __getattr__(self, name):
-        if (data := self.__dict__.get("_data")) is not None and name in data:
-            # the 'or' part is in case no pools match the query and we want qr.position[:] += 1 still to work (noop)
-            return Field(data[name] or [np.empty((0, *self._field_shapes[name]), self._field_dtypes[name])])
-        raise AttributeError(f"'{name}' not part of {self.fields}")
+        data: dict[str, list[np.ndarray]]
+        if (data := self.__dict__.get("_data")) is None or name not in data:
+            raise AttributeError(f"'{name}' not part of {self.fields}")
+
+        if name not in self._cache:
+            if len(parts := data[name]) in (0, 1): # optimized path for a single pool -> return an actual np array
+                # the 'or' part is in case no pools match the query so we create a (0, k) array for that field.
+                arr = parts[0] if parts else np.empty((0, *self._field_shapes[name]), self._field_dtypes[name])
+                self._cache[name] = arr.view(_QRArray)
+            else:
+                self._cache[name] = QRField(parts)
+        return self._cache[name]
 
     def __setattr__(self, name, value):
         if (data := self.__dict__.get("_data")) is not None and name in data:

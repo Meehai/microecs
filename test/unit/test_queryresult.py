@@ -8,8 +8,8 @@ from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import Pool, Component
-from microecs.query_result import QueryResult, Field
+from microecs import Pool, Component, QRField
+from microecs.query_result import QueryResult
 
 
 class HasPosition(Component):  # owns the `position` field the pools below carry
@@ -306,8 +306,8 @@ def test_ellipsis_indexing_reshapes_a_mask_to_broadcast_over_a_higher_rank_field
     b = _pose_pool([(np.full((4, 4), 2.0), 0.0), (np.full((4, 4), 3.0), 1.0)])          # inactive, then active
     qr = _query([a, b], "pose", "active")
 
-    mask = qr.active > 0.5                          # (N, 1) bool Field
-    assert isinstance(mask, Field) and mask.shape == (3, 1)
+    mask = qr.active > 0.5                          # (N, 1) bool QRField (two pools)
+    assert isinstance(mask, QRField) and mask.shape == (3, 1)
     assert mask[..., None].shape == (3, 1, 1)       # ellipsis + None -> trailing axis, ready to broadcast over (4, 4)
     assert qr.pose[...].shape == (3, 4, 4)          # bare ellipsis round-trips the whole field
 
@@ -335,13 +335,13 @@ def test_entity_axis_index_stays_rejected():
 
 
 def test_single_entity_int_index_is_forbidden():
-    """A bare-int entity index is gone (task 16): `qr.position[i]` no longer returns a row -- it raises
-    TypeError for ANY int (in-range, negative, out-of-range, or on an empty query). The entity axis is now
-    fully off-limits on a QueryResult; per-entity access is `world.get_entity(qr.entity_ids[i])`, iteration is
-    `zip(qr.position, ...)`."""
+    """A bare-int entity index is gone (task 16) FOR A MULTI-POOL query: `qr.position[i]` raises TypeError for
+    ANY int (in-range, negative, out-of-range) because it would cross pools. Per-entity access is
+    `world.get_entity(qr.entity_ids[i])`, iteration is `zip(qr.position, ...)`. NOTE: a SINGLE-pool query is a
+    raw ndarray (_QRArray), so int indexing there is plain numpy -- the guard is a QRField (multi-pool) feature."""
     a = _pos_pool([[0.0, 0.0], [1.0, 1.0]])                 # global indices 0, 1
     b = _pos_pool([[2.0, 2.0], [3.0, 3.0], [4.0, 4.0]])     # global indices 2, 3, 4
-    qr = _query([a, b], "position")                          # 5 entities across two pools
+    qr = _query([a, b], "position")                          # 5 entities across two pools -> QRField
 
     for i in (0, 1, 3, 4, -1):                               # in-range, across the pool seam, negative
         with pytest.raises(TypeError):
@@ -351,8 +351,8 @@ def test_single_entity_int_index_is_forbidden():
         with pytest.raises(TypeError):
             qr.position[oob]
 
-    with pytest.raises(TypeError):
-        _query([], "position").position[0]                  # zero-entity query: still a forbidden int index
+    # a SINGLE-pool query is a raw ndarray (_QRArray): int indexing is numpy, NOT the QueryResult entity guard
+    assert _query([_pos_pool([[7.0, 7.0]])], "position").position[0].tolist() == [7.0, 7.0]
 
 
 def test_wallbounce_per_axis_via_column_indexing():
@@ -568,7 +568,7 @@ def test_assigning_a_field_scatters_like_a_recarray():
     assert (a.position == 0).all() and (b.position == 0).all()
 
     assert "position" not in vars(qr)                   # never shadowed; still served by __getattr__
-    assert isinstance(qr.position, Field)
+    assert isinstance(qr.position, QRField)              # two pools -> QRField
 
     with pytest.raises(ValueError):                     # bad shape -> numpy rules, like recarray
         qr.position = np.array([1.0, 2.0, 3.0], "float32")

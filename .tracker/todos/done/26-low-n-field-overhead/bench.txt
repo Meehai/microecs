@@ -1,0 +1,43 @@
+initial
+      N   microecs       xecs   np-floor   mecs/xecs  mecs/floor  ok
+    200    0.0293m    0.0061m    0.0013m       4.78x      21.90x  ok
+    500    0.0368m    0.0083m    0.0016m       4.43x      22.57x  ok <-- target band
+   1000    0.0382m    0.0110m    0.0019m       3.46x      19.92x  ok <-- target band
+   2000    0.0388m    0.0165m    0.0025m       2.35x      15.56x  ok <-- target band
+   5000    0.0430m    0.0352m    0.0044m       1.22x       9.78x  ok <-- target band
+  10000    0.0487m    0.0677m    0.0075m       0.72x       6.50x  ok <-- target band
+  20000    0.0552m    0.1354m    0.0151m       0.41x       3.66x  ok
+
+cache field
+
+      N   microecs       xecs   np-floor   mecs/xecs  mecs/floor  ok
+    200    0.0213m    0.0061m    0.0014m       3.47x      15.37x  ok
+    500    0.0227m    0.0083m    0.0016m       2.73x      14.37x  ok <-- target band
+   1000    0.0232m    0.0110m    0.0018m       2.11x      12.80x  ok <-- target band
+   2000    0.0244m    0.0172m    0.0024m       1.42x      10.13x  ok <-- target band
+   5000    0.0276m    0.0354m    0.0045m       0.78x       6.11x  ok <-- target band
+  10000    0.0342m    0.0672m    0.0078m       0.51x       4.36x  ok <-- target band
+  20000    0.0489m    0.1299m    0.0137m       0.38x       3.57x  ok
+
+
+lazy np.cumsum
+
+      N   microecs       xecs   np-floor   mecs/xecs  mecs/floor  ok
+    200    0.0117m    0.0063m    0.0014m       1.87x       8.49x  ok
+    500    0.0129m    0.0083m    0.0017m       1.56x       7.56x  ok <-- target band
+   1000    0.0142m    0.0113m    0.0019m       1.26x       7.30x  ok <-- target band
+   2000    0.0155m    0.0169m    0.0025m       0.92x       6.23x  ok <-- target band
+   5000    0.0182m    0.0352m    0.0045m       0.52x       4.06x  ok <-- target band
+  10000    0.0231m    0.0642m    0.0075m       0.36x       3.08x  ok <-- target band
+  20000    0.0384m    0.1263m    0.0144m       0.30x       2.67x  ok
+
+aftrr creating _QRArray as a specialized np.array inherited class for len(parts) == 1
+
+      N   microecs       xecs   np-floor   mecs/xecs  mecs/floor  ok
+    200    0.0049m    0.0061m    0.0013m       0.80x       3.73x  ok
+    500    0.0054m    0.0077m    0.0015m       0.69x       3.46x  ok <-- target band
+   1000    0.0059m    0.0107m    0.0018m       0.55x       3.30x  ok <-- target band
+   2000    0.0066m    0.0162m    0.0024m       0.41x       2.76x  ok <-- target band
+   5000    0.0102m    0.0340m    0.0042m       0.30x       2.40x  ok <-- target band
+  10000    0.0145m    0.0634m    0.0074m       0.23x       1.96x  ok <-- target band
+  20000    0.0301m    0.1231m    0.0140m       0.24x       2.15x  ok

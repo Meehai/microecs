@@ -20,8 +20,7 @@ from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import World, Component
-from microecs.query_result import Field
+from microecs import World, Component, QRField
 
 
 class HasPose(Component):  # 2D field: the (4,4) the contract is written around
@@ -168,46 +167,47 @@ def test_transient_op_preserves_entity_axis_not_feature():
 
     qr = world.query(HasVelocity)
     mag = np.linalg.norm(qr.velocity, axis=1)
-    assert isinstance(mag, Field)
+    assert isinstance(mag, np.ndarray)                       # single pool -> raw numpy (_QRArray), not QRField
     assert mag.shape == (2,)                                 # N kept, feature collapsed
-    assert np.allclose(mag.numpy(), [5.0, 13.0])             # == norm on the materialized array
+    assert np.allclose(mag, [5.0, 13.0])                     # == norm on the materialized array
 
 
 def test_op_breaking_entity_axis_raises():
-    """Reducing over the entity axis violates the (N, ...) contract and is rejected -- BUT only
-    because the guard compares result.shape[0] to the pool's row count. With 3 rows, axis=0 sum
-    -> (2,) and 2 != 3 trips it. See the coincidence hole below: the guard is necessary, not
-    sufficient (same class as the sort footgun)."""
-    world = World(components=[HasVelocity])
-    for v in ([3, 4], [5, 12], [1, 1]):                      # 3 rows in one pool: reduced len 2 != 3
+    """Reducing over the entity axis violates the (N, ...) contract and is rejected -- BUT only for a
+    MULTI-pool query, where QRField runs the op per pool and the guard compares result.shape[0] to each
+    pool's row count. Pool B (1 row) makes axis=0 sum -> (2,) trip it. A single-pool query bypasses QRField
+    (raw numpy, no guard) -- see test_single_pool_axis0_is_unguarded_raw_numpy."""
+    world = World(components=[HasVelocity, HasScale])
+    for v in ([3, 4], [5, 12]):                              # pool A: vel-only, 2 rows
         world.add_entity(components=[HasVelocity], velocity=np.array(v, "float32"))
+    world.add_entity(components=[HasVelocity, HasScale],     # pool B: 1 row -> reduced len 2 != 1 -> trips guard
+                     velocity=np.array([1, 1], "float32"), scale=np.array(0.0, "float32"))
     world.update()
 
-    qr = world.query(HasVelocity)
-    with pytest.raises(AssertionError):                      # axis=0 -> (2,), rows mismatch -> line 36
+    qr = world.query(HasVelocity)                            # spans 2 pools -> QRField
+    with pytest.raises(AssertionError):                      # axis=0 -> (2,), pool B rows (1) mismatch -> guard
         np.sum(qr.velocity, axis=0)
-    # NOTE for dev: a full reduction yields a numpy scalar, so `len(part_result)` (query_result.py:36)
+    # NOTE for dev: a full reduction yields a numpy scalar, so `len(part_result)` (qr_field.py)
     # raises TypeError ("no len()") instead of a clean AssertionError. Guard `ndim >= 1` in
     # _apply_fn_on_parts for a better message; widen/adjust this raises() if you do.
     with pytest.raises((AssertionError, TypeError)):
         np.sum(qr.velocity)
 
 
-def test_entity_axis_collapse_can_slip_through_when_len_coincides():
-    """The guard is shape[0]==rows, not 'is this a reduction'. A single pool whose row count
-    equals the reduced feature length passes silently -- documented hole, same family as
-    test_sort_axis0_is_documented_per_pool_footgun. Pinned so nobody assumes axis=0 is safe."""
+def test_single_pool_axis0_is_unguarded_raw_numpy():
+    """A SINGLE-pool query returns a raw ndarray (_QRArray), so there is NO per-pool guard at all: an axis=0
+    reduction just runs numpy and silently returns (feat,) -- a worse footgun than the multi-pool guard, which
+    at least trips on uneven pools. Pinned so the single-pool fast path's dropped guard stays visible."""
     world = World(components=[HasVelocity])
-    for v in ([3, 4], [5, 12]):                              # 2 rows; sum(axis=0) -> (2,), 2 == 2
+    for v in ([3, 4], [5, 12]):                              # one pool, 2 rows; sum(axis=0) -> (2,)
         world.add_entity(components=[HasVelocity], velocity=np.array(v, "float32"))
     world.update()
 
     qr = world.query(HasVelocity)
-    sneaky = np.sum(qr.velocity, axis=0)                     # does NOT raise: coincidence rows==2==feat
-    assert isinstance(sneaky, Field)
-    assert sneaky.shape == (2,)                              # presented as N=2, but it's one summed row
-    # it is NOT the per-entity data: the materialized field would be the two original rows
-    assert not np.array_equal(sneaky.numpy(), qr.velocity.numpy())
+    sneaky = np.sum(qr.velocity, axis=0)                     # does NOT raise: single pool -> raw numpy, no guard
+    assert isinstance(sneaky, np.ndarray)                    # a plain array, not a QRField
+    assert sneaky.shape == (2,)                              # entity axis silently collapsed to one summed row
+    assert not np.array_equal(sneaky, qr.velocity.numpy())   # NOT the per-entity data
 
 
 def test_axis0_reduction_assign_back_broadcasts_silently():
@@ -256,7 +256,7 @@ def test_sort_axis0_is_documented_per_pool_footgun():
 
     qr = world.query(HasVelocity)
     result = np.sort(qr.velocity, axis=0)                    # does NOT raise
-    assert isinstance(result, Field)
+    assert isinstance(result, QRField)
     assert result.shape == (3, 2)                            # N preserved -> passes the guard
     # per-pool result differs from the global sort the user probably expected
     assert not np.array_equal(result.numpy(), np.sort(qr.velocity.numpy(), axis=0))

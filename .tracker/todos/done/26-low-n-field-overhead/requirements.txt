@@ -1,0 +1,5 @@
+# Just the two vectorized libraries. Install with:
+#   pip install -r requirements.txt
+#   pip install -e ../../../../    # microecs (pkg/microecs root)
+numpy>=2.2.0
+xecs>=0.9.0        # tweng/xecs -- Rust-backed SoA baseline (microecs now wins this band; see TASK.md)
