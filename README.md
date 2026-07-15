@@ -1,6 +1,6 @@
 # MicroECS
 
-Minimal (~400 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
+Minimal (~500 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
 
 Usage:
 
@@ -30,14 +30,16 @@ class HasVelocity(Component):
     velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": np.float32([0, 0])})
 
 world = World(components=[HasPosition, HasVelocity])
-# both velocity and position are optional since they have a default
-eid1 = world.add_entity(components=[HasPosition, HasVelocity],
+# both velocity and position (data) are optional since they have a default
+eid1 = world.add_entity(components=[HasPosition, HasVelocity])
+# data is passed as kwargs to add_entity
+eid2 = world.add_entity(components=[HasPosition, HasVelocity],
                         velocity=np.float32([1, 1]))
-eid2 = world.add_entity(components=[HasPosition, HasVelocity])
 world.update() # add_entity uses a command buffer internally until this is called
 print(f"Added 2 entities. Id1={eid1}, Id2={eid2}")
 
-qr = world.query(HasVelocity) # query result: operate on all entities at once
+# Querying: batch operate on all entities at once.
+qr = world.query(HasVelocity) # qr is a QueryResult object, a numpy-based Structure of Arrays (SoA).
 qr.velocity += np.float32([0.1, 0.5])
 ```
 

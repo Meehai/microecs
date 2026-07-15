@@ -1,7 +1,7 @@
-# Shared deps for the cross-library ECS benchmark (test/manual/benchmark-vs-similar-libs).
+# Third-party ECS libraries compared against microecs. Install with:
 #   pip install -r requirements.txt
 # microecs itself is the project under test -- install it from the repo root with:
-#   pip install -e .
+#   pip install -e ../../
 numpy>=2.2.0
 esper>=3.7          # benmoran56/esper  -- pure-python, the most popular Python ECS
 snecs>=1.2.2        # slavfox/snecs     -- pure-python sparse-set, type-hinted
