@@ -35,11 +35,13 @@ microecs ~15× — use them there. microecs is the right tool for **vectorizable
 
 ## Benchmark 2: microecs vs other Python ECS libraries
 
-Not one workload — **seven** × **five** libraries × an N-sweep (200 → 1,000,000), every result
-verified against a float64 reference. Full setup, fairness notes, and raw data in
-`examples/05-benchmark-workloads/` (one folder per workload; `FINDINGS.md` has every number; run
-`./run_benchmark.sh` to regenerate). Environment: numpy 2.5.1, Python 3.12; times are min-over-reps
-of the mean over 30 frames, GC off.
+Not one workload — **seven** × **seven** libraries × an N-sweep (200 → 1,000,000), every result
+verified against a float64 reference. The field spans all three ways to build an ECS reachable from
+Python: numpy-vectorized (microecs), a native core with a native columnar store (xecs), a native core
+with per-entity Python components (**EnTT**, **flecs**), and pure Python (esper, snecs, ecs-pattern).
+Full setup, fairness notes, and raw data in `examples/05-benchmark-workloads/` (one folder per workload;
+`FINDINGS.md` has every number; run `./run_benchmark.sh` to regenerate). Environment: numpy 2.5.1,
+Python 3.12; times are min-over-reps of the mean over 30 frames, GC off.
 
 ### The seven workloads — what each models and why it's here
 
@@ -59,17 +61,25 @@ suite covers what a real frame actually does — not just microecs' best case.
 `k = max(16, n//50)` entities touched/frame (w4/w6); `b = max(16, n//100)` churned/frame (w5);
 `2·max(4, n//200)` migrations/frame (w7).
 
-### The five libraries
+### The seven libraries
 
-| library | model | how each workload is driven (idiomatic, best-case) |
-|---|---|---|
-| **microecs** | numpy SoA by archetype | columnar via `QueryResult` write-through; branch via `np.where`; random via batched column scatter; churn/migrate via `add/remove_entity` + `update()` |
-| **xecs** | Rust SoA, per-component columns, no archetypes | columnar via in-place `view.x += …`; random scatters a column; **no despawn/migration → w5/w7 N/A** |
-| **esper** | pure-python, per-entity objects | `get_components` loop; `if` per entity; O(1) `component_for_entity(id)`; `create/delete_entity` |
-| **snecs** | pure-python sparse-set | compiled `Query` loop; per-entity `if`; `entity_component(id)`; sparse-set migration (the migration champ) |
-| **ecs-pattern** | pure-python, dataclass AoS | `get_with_component` loop; direct object ref (fastest random access); **fixed inheritance classes → w7 N/A** |
+| library | core | model | how each workload is driven (idiomatic, best-case) |
+|---|---|---|---|
+| **microecs** | pure python | numpy SoA by archetype | columnar via `QueryResult` write-through; branch via `np.where`; random via batched column scatter; churn/migrate via `add/remove_entity` + `update()` |
+| **xecs** | **Rust** (pyo3) | SoA, per-component columns, no archetypes | columnar via in-place `view.x += …`; random scatters a column; **no despawn/migration → w5/w7 N/A** |
+| **entt** | **C++** (nanobind) | [EnTT](https://github.com/skypjack/entt) sparse-set; components are python objects | `registry.view(A, B)` yields `(entity, *comps)`; `registry.get(e, T)`; `create`/`destroy`/`emplace`/`remove` |
+| **flecs** | **C** (pybind11) | [flecs](https://www.flecs.dev) archetype tables; components are python objects | `world.query(A, B)`; `entity.get/set/remove`; `entity.destroy()` |
+| **esper** | pure python | per-entity objects | `get_components` loop; `if` per entity; O(1) `component_for_entity(id)`; `create/delete_entity` |
+| **snecs** | pure python | sparse-set | compiled `Query` loop; per-entity `if`; `entity_component(id)`; sparse-set migration (the migration champ) |
+| **ecs-pattern** | pure python | dataclass AoS | `get_with_component` loop; direct object ref (fastest random access); **fixed inheritance classes → w7 N/A** |
 
-### Experiment 1 — the full field: N=200 → 100k, all five libraries
+Getting the two native engines to run at all is part of the finding — neither is a `pip install`:
+**PyEnTT** publishes no Linux wheel *and* no sdist (build from the repo with its `entt` submodule);
+the PyPI **flecs** Linux wheel is cp39-only (build from sdist), and that binding **segfaults** when a
+`Query` is iterated twice without `.reset()` in between, and again at interpreter shutdown. The
+adapters call `.reset()` before every iteration. Install notes are in `requirements.txt`.
+
+### Experiment 1 — the full field: N=200 → 100k, all seven libraries
 
 There is no single winner — the fastest library flips by workload *and* by N:
 
@@ -79,11 +89,11 @@ There is no single winner — the fastest library flips by workload *and* by N:
 | w2 bounce | xecs | xecs | **microecs** | **microecs** | **microecs** |
 | w3 ai | esper | **microecs** | **microecs** | **microecs** | **microecs** |
 | w4 random | ecs-pattern | ecs-pattern | **microecs** | **microecs** | **microecs** |
-| w5 churn | ecs-pattern | ecs-pattern | ecs-pattern | ecs-pattern | snecs |
+| w5 churn | ecs-pattern | ecs-pattern | ecs-pattern | ecs-pattern | entt |
 | w6 mixed | esper | xecs | xecs | **microecs** | **microecs** |
-| w7 migrate | snecs | snecs | **microecs** | **microecs** | snecs |
+| w7 migrate | snecs | entt | **microecs** | **microecs** | entt |
 
-*w7 migrate: xecs and ecs-pattern can't migrate (N/A).*
+*w7 migrate: xecs and ecs-pattern can't migrate (N/A). Every other library does all seven.*
 
 **How close is the race, and against whom?** Each cell below is **how many times faster microecs is**
 than the fastest other library (that library's time ÷ microecs's), with that rival named. `>1` →
@@ -94,13 +104,17 @@ microecs wins that cell (ratio `>1`).
 
 | workload | N=200 | 1k | 5k | 20k | 100k |
 |---|---|---|---|---|---|
-| w1 physics | 0.79 (xecs) | 0.90 (xecs) | **1.78 (xecs)** | **3.41 (xecs)** | **3.31 (xecs)** |
-| w2 bounce | 0.69 (xecs) | 0.73 (xecs) | **1.38 (xecs)** | **2.45 (xecs)** | **2.51 (xecs)** |
-| w3 ai | 0.64 (esper) | **1.12 (xecs)** | **1.43 (xecs)** | **1.64 (xecs)** | **1.67 (xecs)** |
-| w4 random | 0.74 (ecs-pattern) | 0.85 (ecs-pattern) | **3.18 (ecs-pattern)** | **6.55 (xecs)** | **9.91 (xecs)** |
-| w5 churn | 0.08 (ecs-pattern) | 0.23 (ecs-pattern) | 0.40 (ecs-pattern) | 0.50 (ecs-pattern) | 0.94 (snecs) |
-| w6 mixed | 0.35 (esper) | 0.40 (xecs) | 0.85 (xecs) | **1.52 (xecs)** | **2.04 (xecs)** |
-| w7 migrate | 0.30 (snecs) | 0.93 (snecs) | **1.19 (snecs)** | **1.06 (snecs)** | 0.79 (snecs) |
+| w1 physics | 0.78 (xecs) | 0.92 (xecs) | **1.76 (xecs)** | **3.10 (xecs)** | **3.70 (xecs)** |
+| w2 bounce | 0.66 (xecs) | 0.79 (xecs) | **1.35 (xecs)** | **2.53 (xecs)** | **2.57 (xecs)** |
+| w3 ai | 0.59 (esper) | **1.09 (xecs)** | **1.26 (xecs)** | **1.84 (xecs)** | **1.51 (xecs)** |
+| w4 random | 0.72 (ecs-pattern) | 0.95 (ecs-pattern) | **3.05 (ecs-pattern)** | **6.31 (xecs)** | **10.69 (xecs)** |
+| w5 churn | 0.09 (ecs-pattern) | 0.24 (ecs-pattern) | 0.40 (ecs-pattern) | 0.49 (ecs-pattern) | 0.84 (entt) |
+| w6 mixed | 0.35 (esper) | 0.43 (xecs) | 0.81 (xecs) | **1.45 (xecs)** | **1.87 (xecs)** |
+| w7 migrate | 0.24 (snecs) | 0.86 (entt) | **1.14 (snecs)** | **1.08 (entt)** | 0.80 (entt) |
+
+Note who the rival *is*: on every columnar/branchy/random workload it is another **vectorized** library
+(xecs), never a native per-entity one. The only cells microecs loses to a C/C++ engine are the two
+structural ones (w5 churn, w7 migrate) — which is exactly Experiment 3's point.
 
 ### Experiment 2 — columnar scaling to 1M (microecs vs xecs)
 
@@ -110,18 +124,61 @@ floor. Columnar step, **ns/entity per frame** (lower is better):
 
 | N | 100k | 200k | 500k | 1M |
 |---|--:|--:|--:|--:|
-| w1 physics — microecs | **1.51ns** | **1.44ns** | **1.65ns** | **2.76ns** |
-| w1 physics — xecs | 5.02ns | 4.54ns | 5.33ns | 5.55ns |
-| w2 bounce — microecs | **3.51ns** | **3.91ns** | **5.65ns** | **6.93ns** |
-| w2 bounce — xecs | 8.82ns | 9.08ns | 10.77ns | 11.79ns |
+| w1 physics — microecs | **1.60ns** | **1.52ns** | **1.67ns** | **2.74ns** |
+| w1 physics — xecs | 5.91ns | 5.17ns | 5.08ns | 5.55ns |
+| w2 bounce — microecs | **3.96ns** | **4.00ns** | **5.05ns** | **7.03ns** |
+| w2 bounce — xecs | 10.16ns | 10.12ns | 10.29ns | 11.95ns |
 
-At **1M entities** a physics frame is **2.8 ms (microecs) vs 5.5 ms (xecs)**, a bounce frame
-**6.9 ms vs 11.8 ms** — a steady ~2× lead. It holds because microecs mutates the pool arrays in
+At **1M entities** a physics frame is **2.7 ms (microecs) vs 5.6 ms (xecs)**, a bounce frame
+**7.0 ms vs 12.0 ms** — a steady ~2× lead. It holds because microecs mutates the pool arrays in
 place while xecs copies ~6 buffers across the Rust↔numpy boundary every step (the copy-boundary
 mechanism explained in the takeaways below). microecs is the only library in the suite that steps 1M
 entities per frame in low-single-digit milliseconds with no GPU and no compile step.
 
-Four things to take from the two experiments:
+### Experiment 3 — does a C/C++ core help? (EnTT and flecs vs pure Python)
+
+The obvious objection to a pure-Python ECS is "just bind a real one." So we did: **EnTT** (the C++
+sparse-set engine behind a lot of shipped games) and **flecs** (the C archetype engine). Both store
+entities in native memory; both hand back Python objects as components, so the *system body* is still
+a Python loop.
+
+That makes the comparison clean: **entt/flecs and esper/snecs/ecs-pattern do identical Python work per
+entity — only the storage engine differs.** Ratio = best(entt, flecs) ÷ best(esper, snecs, ecs-pattern);
+`>1` means the native core is **slower**:
+
+| workload | N=200 | 1k | 5k | 20k | 100k |
+|---|--:|--:|--:|--:|--:|
+| w1 physics | 3.16 | 2.99 | 2.83 | 2.72 | 2.44 |
+| w2 bounce | 2.66 | 2.78 | 2.79 | 2.86 | 2.36 |
+| w3 ai | 3.54 | 3.21 | 3.01 | 2.81 | 2.62 |
+| w4 random | 2.43 | 2.34 | 2.64 | 2.78 | 2.40 |
+| w5 churn | 1.96 | 2.18 | 2.16 | 1.69 | **0.92** |
+| w7 migrate | 1.07 | 1.00 | 1.01 | **0.94** | **0.89** |
+
+**A native core costs ~2.4–2.6× on field arithmetic and only pays off on structural work.** Where the
+work is per-entity `p.x += p.vx * dt`, you pay Python's loop *plus* a boundary crossing per component
+access — so binding a world-class C++ engine lands you *behind* plain esper. Where the work **is** the
+data-structure operation (spawn/despawn, add/remove component), the whole thing happens in C++ and EnTT
+becomes the fastest library in the suite.
+
+Against microecs at N=100,000, ns/entity/frame:
+
+| workload | microecs | entt (C++) | flecs (C) | esper (pure py) | microecs vs entt |
+|---|--:|--:|--:|--:|--:|
+| w1 physics | **1.6** | 277.9 | 873.6 | 113.7 | **174× faster** |
+| w2 bounce | **4.0** | 455.5 | 1405.0 | 192.9 | **115× faster** |
+| w3 ai | **4.6** | 156.7 | 472.8 | 69.5 | **34× faster** |
+| w4 random | **0.1** | 6.4 | 27.2 | 13.2 | **67× faster** |
+| w5 churn | 201.7 | **169.3** | 522.8 | 386.4 | 1.2× slower |
+| w6 mixed | **6.6** | 446.1 | 1347.6 | 243.5 | **68× faster** |
+| w7 migrate | 204.9 | **163.2** | 539.8 | 468.7 | 1.3× slower |
+
+This is the same mechanism that makes microecs beat Rust-backed xecs (takeaway 2 below), pushed to its
+conclusion across three different native runtimes. **In Python, the only thing that buys per-entity
+arithmetic throughput is vectorization.** A faster storage engine cannot — it can only make structural
+operations cheaper, and it charges you a boundary crossing for everything else.
+
+Five things to take from the three experiments:
 
 1. **microecs owns the large-N regime.** On the columnar tail it runs at **~1.5 ns/entity** and holds
    flat to 1M; on random access and the mixed frame it wins from N≈5–20k up (and by 100k it's
@@ -139,7 +196,11 @@ Four things to take from the two experiments:
 4. **Batch random access; capability gaps decide churn/migration.** `get_entity(id).f` in a hot loop
    is a ~2900 ns/hit trap — up to **459× slower** than a batched `col[rows] -= …` scatter (6 ns/hit),
    which is what the benchmark uses. And xecs can't despawn *or* migrate; ecs-pattern can't migrate —
-   for spawn/die churn and buff-on/off migration only microecs/esper/snecs qualify (snecs, sparse-set,
-   is the migration champ; microecs is mid — the archetype whole-entity copy). Structural **churn**
-   (w5) is microecs' one genuine loss at every N but 100k. If your update loop *isn't* vectorizable
-   and stays small, a per-entity python ECS is simpler and faster — see the microbenchmark above.
+   for spawn/die churn and buff-on/off migration the qualifying set is microecs/entt/flecs/esper/snecs.
+   Structural **churn** (w5) is microecs' one genuine loss at every N: below 100k to ecs-pattern, at
+   100k to EnTT. If your update loop *isn't* vectorizable and stays small, a per-entity python ECS is
+   simpler and faster — see the microbenchmark above.
+5. **Binding a native ECS is not the shortcut it looks like.** Experiment 3: EnTT and flecs are
+   ~2.4–2.6× *slower* than plain esper on every arithmetic workload, and 34–547× slower than microecs.
+   They win only churn and migration, where the work happens entirely inside the native engine. The
+   axis that matters in Python is vectorized-vs-per-entity, **not** native-vs-interpreted.

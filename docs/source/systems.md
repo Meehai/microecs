@@ -42,18 +42,23 @@ for pos, color, radius in zip(qr.position, qr.color, qr.radius):    # one entity
     rl.DrawCircle(int(pos[0]), int(pos[1]), float(radius[0]), color)   # per-entity by necessity (no "draw all")
 ```
 
-There is no `qr.field[i]` shortcut — the entity axis is off-limits on a query result; it raises. For random single-entity access, go by id (next section): `world.get_entity(qr.entity_ids[i])`.
+There is no `qr.field[i]` shortcut — the entity axis is off-limits on a query result. For random single-entity access, go by id (next section): `world.get_entity(qr.entity_ids[i])`. (It happens to work when a query matches exactly one archetype, and raises as soon as a second one exists — don't rely on it; see the known gap in [Primitives](primitives.md#how-much-are-pool-and-queryresult-numpy-like-and-corner-cases).)
 
 ## 3. The `Entity` API (a single entity, structure, foreign formats)
 
 `world.get_entity(eid)` returns an `Entity`: an OOP-like view of **one** row. Reach for it when you address a single entity by id, when you change an entity's **structure** (add/remove a component), or when you convert to a **foreign format** (e.g. JSON). It always re-checks which pool the entity lives in, so it is slower than the vectorized path — keep it out of hot loops (see [Benchmarks](benchmarks.md)).
 
+**Every write through an `Entity` is buffered.** Reads are not — they go straight to the pool, so they show you the *committed* state, not your own staged writes. See [Mutation timing](primitives.md#mutation-timing-the-entity-api-is-buffered-the-queryresult-api-is-eager).
+
 ```python
 e = world.get_entity(eid)
-e.position += np.float32([1, 0])      # read/write one field -- eager, visible at once (no update() needed)
-if e.is_colliding.item():             # pull a python scalar out for control flow / a reply
+e.set_data(position=e.position + np.float32([1, 0]))   # staged; `e.position = ...` raises on purpose
+if e.is_colliding.item():             # reads are eager -- pull a python scalar out for control flow
     ...
+world.update()                        # now e.position reflects the write
 ```
+
+`set_data` takes any number of fields across any number of components in one call, and applies them as a single transaction — if one field is rejected (dtype, shape, unknown name), nothing is staged.
 
 ### Capabilities are additive (add / remove components live)
 

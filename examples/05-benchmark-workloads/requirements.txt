@@ -7,3 +7,15 @@ esper>=3.7          # benmoran56/esper  -- pure-python, the most popular Python 
 snecs>=1.2.2        # slavfox/snecs     -- pure-python sparse-set, type-hinted
 ecs-pattern>=1.4.0  # ikvk/ecs-pattern  -- pure-python, dataclass/entity-inheritance
 xecs>=0.9.0         # tweng/xecs         -- Rust-backed struct-of-arrays (the vectorized rival)
+
+# --- native-core ECS with python bindings (the "big guns") -------------------------------------
+# entt: PyEnTT (ominkk/PyEnTT), nanobind bindings over skypjack/EnTT, the C++ sparse-set ECS.
+#   NOTE: PyPI ships only macOS-arm64 + Windows wheels and NO sdist -> on Linux it must be built
+#   from source (needs a C++17 compiler + cmake):
+#       git clone --recursive https://github.com/ominkk/PyEnTT && pip install ./PyEnTT
+# flecs: pyflecs11 (Wesxdz/pyflecs11), pybind11 bindings over SanderMertens/flecs, the C ECS.
+#   NOTE: the PyPI linux wheel is cp39-only -> on py3.12 build from the sdist:
+#       pip install --no-binary :all: flecs
+#   NOTE: this binding segfaults when a Query is iterated twice without .reset() in between, and
+#   again at interpreter shutdown. The adapters call .reset() before every iteration.
+

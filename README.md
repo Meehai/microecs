@@ -1,6 +1,6 @@
 # MicroECS
 
-Minimal (~500 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
+Minimal (~850 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
 
 Usage:
 
@@ -48,4 +48,4 @@ qr.velocity += np.float32([0.1, 0.5])
 - [Primitives](docs/source/primitives.md) — the five building blocks (`Component`, `Entity`, `Pool`, `QueryResult`, `World`), mutation timing, and how numpy-like the query views really are.
 - [Systems & Per-Entity Iteration](docs/source/systems.md) — writing systems, the three ways to touch data (vectorized, `zip`-rows, the `Entity` API), and when each is right.
 - [Hello World (raylib)](docs/source/example-1-hello-world.md) — a complete runnable program, walked through part by part.
-- [Benchmarks](docs/source/benchmarks.md) — microecs vs OOP, and microecs vs other Python ECS libraries.
+- [Benchmarks](docs/source/benchmarks.md) — microecs vs OOP, and microecs vs six other Python ECS libraries (including the C++ **EnTT** and C **flecs** bindings) across seven workloads and an N-sweep to 1M.

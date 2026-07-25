@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find common +
 import numpy as np
 import common as C
 
-LIBS      = ["microecs", "xecs", "esper", "snecs", "ecs_pattern"]
+LIBS      = ["microecs", "xecs", "entt", "flecs", "esper", "snecs", "ecs_pattern"]
 WORKLOADS = ["w1_physics", "w2_bounce", "w3_ai", "w4_random", "w5_churn", "w6_mixed", "w7_migrate"]
 MAIN_NS   = [200, 1000, 5000, 20000, 100000]
 TAIL_NS   = [200000, 500000, 1000000]          # columnar-only, microecs vs xecs
