@@ -23,7 +23,7 @@ Three update systems, each one batched over the whole query — no per-entity lo
 class MotionSystem:                # integrate: pos += vel*dt, all entities at once
     def __call__(self, world):
         qr = world.query(HasMotion2D, HasPosition2D)
-        qr.position[:] = qr.position + qr.velocity * DT
+        qr.position = qr.position + qr.velocity * DT
 
 class WallBounceSystem:            # flip velocity where a ball crossed a wall (data-parallel branch)
     def __call__(self, world):
@@ -32,12 +32,12 @@ class WallBounceSystem:            # flip velocity where a ball crossed a wall (
         mask = np.zeros((len(qr), 2), bool)
         mask[:, 0] = (qr.position[:, 0] - r < 0) | (qr.position[:, 0] + r > w)
         mask[:, 1] = (qr.position[:, 1] - r < 0) | (qr.position[:, 1] + r > h)
-        qr.velocity[:] = np.where(mask, -qr.velocity, qr.velocity)
+        qr.velocity = np.where(mask, -qr.velocity, qr.velocity)
 
 class CollisionDetectionSystem:    # pairwise overlap, one broadcast -> (N, N) distances
     def __call__(self, world):
         qr = world.query(HasPosition2D, HasMotion2D, HasRadius, HasCollision)
-        qr.is_colliding[:] = self._get_collisions(qr.position.numpy(), qr.radius.numpy())
+        qr.is_colliding = self._get_collisions(qr.position.numpy(), qr.radius.numpy())
 ```
 
 `WallBounceSystem` is the textbook case for pushing an `if` into `np.where`; `CollisionDetectionSystem` does the whole O(N²) overlap test as a single broadcast (`(N,1,2) - (1,N,2) → (N,N)` distances). `RenderSystem` is the same `zip` loop as [Hello World](example-1-hello-world.md), just coloured red when `is_colliding`. See [Systems](systems.md) for why the batched form wins.

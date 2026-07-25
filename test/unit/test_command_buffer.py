@@ -226,9 +226,9 @@ def test_buffer_rejects_missing_required_field():
 
 
 # ==================================================================================================================
-# SET_DATA — deferred set_component_data (microecs #25). Same gate as ADD/REMOVE: append a raw Command, assert
-# accept/reject + len(buf), apply via update(). TDD: xfail(strict=True) until the SET_DATA verb + its append
-# validation + update() apply land; then these XPASS -> strict fails -> drop the class marker.
+# SET_DATA — the verb behind entity.set_data (microecs #25, renamed in #29). Same gate as ADD/REMOVE: append a
+# raw Command, assert accept/reject + len(buf), apply via update(). The command is still scoped to ONE component;
+# #29 only changed the ENTITY-level signature (field kwargs, component resolved from the field name), not this.
 # ==================================================================================================================
 
 class HasPair(Component):    # two fields -> multi-field SET_DATA atomicity
@@ -237,12 +237,13 @@ class HasPair(Component):    # two fields -> multi-field SET_DATA atomicity
 
 
 def _set_cmd(entity_id, component, **data):
-    """The SET_DATA command entity.set_component_data queues (#25): the component + the field data to write.
-    Assumed args shape {"component": <type>, "data": {field: value}} — the impl must match this."""
-    return Command(CommandType.SET_DATA, entity_id, args={"component": component, "data": data})
+    """The SET_DATA command entity.set_data queues (#25/#29): the component + the field data to write.
+    args shape {"component": <type>, <field>: value, ...} — flat, exactly like ADD_COMPONENT, so both verbs
+    project their field data the same way (`{k: v for k, v in args.items() if k != "component"}`)."""
+    return Command(CommandType.SET_DATA, entity_id, args={"component": component, **data})
 
 
-# SET_DATA is the 5th verb: entity.set_component_data queues one, validated at append, applied at update().
+# SET_DATA is the 5th verb: entity.set_data queues one per component, validated at append, applied at update().
 # Schema (dtype/shape) is validated at append; VALUES are not (NaN/Inf pass — finiteness is robosim #167).
 # Standalone functions, no shared state. The buffer path is implemented (#25) so these run live.
 
@@ -388,3 +389,80 @@ def test_set_data_partial_multifield_accepted():
     world.update()
     np.testing.assert_array_equal(world.get_entity(eid).x, [9.0, 8.0])             # x updated
     np.testing.assert_array_equal(world.get_entity(eid).y, [3.0, 4.0])             # y untouched
+
+
+# ==================================================================================================================
+# ADD_ENTITY through the gate — task 23 subtasks 1 & 3
+# world.add_entity is NOT yet a thin command-builder: it runs _validate_components + _defaults_for itself, and then
+# append runs BOTH again on the same args (subtask 1: dead work, and it undercuts "append is the single gate").
+# The tests below pin the two properties that make deleting that pre-validation safe:
+#   * append alone fully validates a raw ADD_ENTITY (so nothing is lost by removing the earlier pass), and
+#   * append alone fills defaults into the staged command (so update() never has to compute them).
+# The bookkeeping half — a rejected spawn must not burn an id or leak a live_entities entry (subtask 2) — is in
+# test_world.py, since that is world.add_entity's own state.
+# ==================================================================================================================
+
+class HasColorDefault(Component):   # optional field: a real default, filled when omitted
+    color: np.ndarray = field(metadata={"shape": (3,), "dtype": "int32",
+                                        "default": np.array([10, 20, 30], "int32")})
+
+
+def _spawn_cmd(entity_id, components, **data):
+    """The ADD_ENTITY command world.add_entity queues: the component list plus the field data."""
+    return Command(CommandType.ADD_ENTITY, entity_id, args={"components": components, **data})
+
+
+def _register_id(world, entity_id):
+    """Mint an id the way add_entity does, so append's liveness gate passes without going through add_entity."""
+    world.live_entities[entity_id] = None
+    world._last_id = entity_id
+
+
+@pytest.mark.parametrize("bad_data,reason", [
+    ({"position": np.array([1.0, 2.0, 3.0], "float32")}, "wrong shape"),
+    ({"position": np.array([1.0, 2.0], "float64")},      "wrong dtype"),
+    ({"position": [1.0, 2.0]},                           "not an ndarray"),
+    ({"bogus": np.array([1.0, 2.0], "float32")},         "unknown field"),
+    ({},                                                 "missing required"),
+], ids=["shape", "dtype", "not-ndarray", "unknown-field", "missing-required"])
+def test_buffer_alone_fully_validates_a_raw_add_entity(bad_data, reason):
+    """append is already a COMPLETE gate for ADD_ENTITY: every field-data error is refused here, with no help from
+    world.add_entity's pre-validation. This is what makes subtask 1 (delete that pre-pass) a safe no-op."""
+    world = World([HasPosition])
+    _register_id(world, 0)
+
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        world._command_buffer.append(_spawn_cmd(0, [HasPosition], **bad_data))
+    assert len(world._command_buffer) == 0                       # nothing staged
+    world.update()
+    assert len(world.pools) == 0                                 # nothing materialized
+
+
+def test_buffer_alone_fills_defaults_into_a_staged_add_entity():
+    """append fills omitted defaulted fields into command.args, so a staged ADD_ENTITY carries a COMPLETE arg set
+    and update() never computes defaults. (world.add_entity also pre-fills them -- the redundancy of subtask 1.)"""
+    world = World([HasPosition, HasColorDefault])
+    _register_id(world, 0)
+
+    world._command_buffer.append(                                # color omitted; it has a default
+        _spawn_cmd(0, [HasPosition, HasColorDefault], position=np.array([1.0, 2.0], "float32")))
+
+    (cmd,) = world._command_buffer.data
+    assert set(cmd.args) == {"components", "position", "color"}   # default filled AT APPEND, not at commit
+    np.testing.assert_array_equal(cmd.args["color"], [10, 20, 30])
+
+
+@pytest.mark.xfail(strict=True, reason="task 23 subtask 3: ADD_COMPONENT defers default-filling to commit")
+def test_buffer_alone_fills_defaults_into_a_staged_add_component():
+    """The asymmetry subtask 3 wants gone: ADD_ENTITY fills defaults at append (above) but ADD_COMPONENT defers to
+    commit, so its staged args are incomplete. Both are correct today; pick one story -- fill at append for both,
+    so a staged command always carries everything update() needs."""
+    world = World([HasPosition, HasColorDefault])
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasColorDefault)         # color omitted; it has a default
+
+    (cmd,) = world._command_buffer.data
+    assert set(cmd.args) == {"component", "color"}                # today: just {"component"}
+    np.testing.assert_array_equal(cmd.args["color"], [10, 20, 30])

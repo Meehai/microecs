@@ -75,7 +75,7 @@ class RenderSystem:
 class MotionSystem:
     def __call__(self, world: World):
         qr = world.query(HasMotion2D, HasPosition2D)
-        qr.position[:] = qr.position + qr.velocity * DT # (N, 2)
+        qr.position = qr.position + qr.velocity * DT # (N, 2)
 
 class WallBounceSystem:
     def __init__(self, scene_size: tuple[int, int]):
@@ -88,13 +88,13 @@ class WallBounceSystem:
                                             qr.position[:, 0] + qr.radius[:, 0] > self.scene_size[0])
         mask_velocity[:, 1] = np.logical_or(qr.position[:, 1] - qr.radius[:, 0] < 0,
                                             qr.position[:, 1] + qr.radius[:, 0] > self.scene_size[1])
-        qr.velocity[:] = np.where(mask_velocity, -qr.velocity, qr.velocity)
+        qr.velocity = np.where(mask_velocity, -qr.velocity, qr.velocity)
 
 class CollisionDetectionSystem:
     def __call__(self, world: World):
         qr = world.query(HasPosition2D, HasMotion2D, HasRadius, HasCollision)
         collisions = self._get_collisions(qr.position.numpy(), qr.radius.numpy())
-        qr.is_colliding[:] = np.where(collisions, True, False)
+        qr.is_colliding = np.where(collisions, True, False)
 
     def _get_collisions(self, positions: np.ndarray, radii: np.ndarray) -> np.ndarray:
         dists = np.sqrt(((positions[:, None] - positions[None])**2).sum(-1))  # (N, 1, 2) - (1, N, 2) -> ... -> (N, N)

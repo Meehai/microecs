@@ -9,7 +9,7 @@ We run the same physics step `pos += vel*dt` over N=100k entities split across 2
 | pattern | ns/entity | vs OOP-scalar |
 |---|---:|---:|
 | `micro-ecs-pool-vectorized` — `for pool: pool.f[:] = pool.f + …` | 0.9 | **52× faster** |
-| `micro-ecs-vectorized` — `qr.f[:] = qr.f + …` (the `Field`) | 1.8 | **27× faster** |
+| `micro-ecs-vectorized` — `qr.f = qr.f + …` (the `Field`) | 1.8 | **27× faster** |
 | **`oop-scalar`** — `for o: o.x += o.vx*dt` (python floats) | 48 | 1× (baseline) |
 | `oop-numpy` — objects holding `(2,)` numpy arrays | 605 | 13× slower |
 | `micro-ecs-zip-rows` — `for p, v in zip(qr.pos, qr.vel)` | 744 | 15× slower |

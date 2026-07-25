@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from microecs import Pool
+from microecs.pool import POOL_RESERVED_NAMES, _POOL_INTERNAL_ATTRS
 
 
 def _pool_pos_vel() -> Pool:
@@ -86,9 +87,10 @@ def test_pop_returns_independent_copy():
 
 
 def test_pop_oob_raises():
+    """pop_entity delegates the bounds check to remove_entity, so it rejects the same way (task 34)."""
     pool = _pool_pos_vel()
     pool.add_entity(position=np.array([1.0, 2.0], "float32"), velocity=np.zeros(2, "float32"))
-    with pytest.raises(AssertionError):
+    with pytest.raises(IndexError, match="OOB"):
         pool.pop_entity(5)
 
 
@@ -147,13 +149,43 @@ def test_add_wrong_dtype_raises():
 
 
 def test_remove_oob_raises():
+    """An out-of-bounds index is caller error on a public method, so it's a real `raise` (task 34), not an
+    assert `python -O` would strip. Measured with the check removed (test/manual/34-assert-sweep): the call
+    succeeds, a never-live row gets written and `size` goes to -1, after which `len(pool)` itself blows up --
+    a corrupt pool complaining somewhere else entirely. Once per removal, so the check is not hot."""
     pool = _pool_pos_vel()
     pool.add_entity(
         position=np.array([1.0, 2.0], "float32"),
         velocity=np.zeros(2, "float32"),
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(IndexError, match="OOB"):
         pool.remove_entity(5)
+
+
+@pytest.mark.parametrize("bad_index", [-1, -3, -4])
+def test_remove_negative_index_raises_and_changes_nothing(bad_index):
+    """The bound has a bottom too: a negative index would pass `entity_index >= self.size` and then index numpy
+    from the other end, swap-removing the TAIL -- the caller asks to drop an entity that doesn't exist and a
+    different one disappears instead. Measured (3 entities, `remove_entity(-7)`): no error, [0,1,2] -> [0,1].
+    Assert on the contents, not just `len` -- the size does change, which is what makes it look like it worked."""
+    pool = _pool_pos_vel()
+    for i in range(3):
+        pool.add_entity(position=np.array([float(i), 0.0], "float32"), velocity=np.zeros(2, "float32"))
+
+    with pytest.raises(IndexError, match="OOB"):
+        pool.remove_entity(bad_index)
+    assert pool.position[:, 0].tolist() == [0.0, 1.0, 2.0]  # nothing removed, nothing shuffled
+
+
+def test_pop_negative_index_raises_and_changes_nothing():
+    """pop_entity has the same hole, plus it reads (and would return) the row before the check runs."""
+    pool = _pool_pos_vel()
+    for i in range(3):
+        pool.add_entity(position=np.array([float(i), 0.0], "float32"), velocity=np.zeros(2, "float32"))
+
+    with pytest.raises(IndexError, match="OOB"):
+        pool.pop_entity(-1)
+    assert pool.position[:, 0].tolist() == [0.0, 1.0, 2.0]
 
 
 def test_rebind_field_raises_and_keeps_storage():
@@ -171,26 +203,40 @@ def test_rebind_field_raises_and_keeps_storage():
     assert pool.position[0].tolist() == [3.0, 4.0]
 
 
-def test_reserved_field_names_raise():
-    """Field names clashing with Pool internals must be rejected at construction, not fail cryptically later."""
-    for reserved in Pool.RESERVED_NAMES:
-        with pytest.raises(AssertionError):
-            Pool(fields=[reserved], shapes=[(1,)], dtypes=["float32"])
+# Pool resolves data fields through __getattr__, which Python only calls AFTER normal lookup fails -- so a field
+# named like ANY member of Pool (instance attr or method) is shadowed by that member and unreachable except via
+# pool.data[...]. POOL_RESERVED_NAMES is both halves: the _POOL_INTERNAL_ATTRS attrs plus the class dict.
+@pytest.mark.parametrize("reserved", sorted(POOL_RESERVED_NAMES))
+def test_reserved_field_names_raise(reserved):
+    """Field names clashing with a Pool member must be rejected at construction, not fail cryptically later.
+    A field list is user input, so this is a `raise` (survives `python -O`), not an `assert`. The method half was
+    measured broken: Pool(fields=['add_entity'], ...) was accepted, then `pool.add_entity` returned the bound
+    method and the column was reachable only via `pool.data['add_entity']`."""
+    with pytest.raises(ValueError):
+        Pool(fields=[reserved], shapes=[(1,)], dtypes=["float32"])
 
 
 def test_reserved_name_mixed_with_valid_raises():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         Pool(fields=["position", "size"], shapes=[(2,), (1,)], dtypes=["float32", "float32"])
 
 
-def test_fields_set_is_a_reserved_name():
-    """task 15 part B added `self.fields_set` as a Pool attribute. Like the other Pool attributes (fields, data,
-    size, ...), a component field of that exact name would shadow it -- `pool.fields_set` would return the set,
-    not the column. So `fields_set` must be a reserved name, rejected at construction, not silently shadowing.
-    (RED until `fields_set` is added to Pool.RESERVED_NAMES.)"""
-    assert "fields_set" in Pool.RESERVED_NAMES
-    with pytest.raises(AssertionError):
-        Pool(fields=["fields_set"], shapes=[(2,)], dtypes=["float32"])
+def test_internal_attrs_cover_every_init_attribute():
+    """_POOL_INTERNAL_ATTRS must be EXACTLY the attrs __init__ creates. Unlike Entity/QueryResult, nothing inside
+    Pool reads it at runtime (__setattr__ guards via the data dict), so a new attr left out of it breaks nothing
+    here -- it silently drops out of POOL_RESERVED_NAMES and a component may then be named after it. This is the
+    only thing standing between that and a shadowed field. `fields_set` (task 15 part B) is why it exists."""
+    pool = _pool_pos_vel()
+
+    assert set(vars(pool)) == _POOL_INTERNAL_ATTRS
+    assert _POOL_INTERNAL_ATTRS <= POOL_RESERVED_NAMES
+
+
+def test_mismatched_field_shape_dtype_lengths_raise():
+    """fields/shapes/dtypes are three parallel lists -- a length mismatch means the caller lost track of which
+    shape belongs to which field. Rejected at construction (a `raise`: zip() would silently truncate)."""
+    with pytest.raises(ValueError, match="Lens not match"):
+        Pool(fields=["position", "velocity"], shapes=[(2,)], dtypes=["float32", "float32"])
 
 
 def test_object_dtype_stores_python_objects_by_reference():

@@ -38,9 +38,9 @@ def _ai_tick(q):
     respawn   = dead & (new_timer <= 0)
     new_state = np.where(respawn, 0, new_state)
     new_hp    = np.where(respawn, np.float32(100.0), new_hp)
-    q.hp[:]    = new_hp.astype(np.float32)
-    q.state[:] = new_state.astype(np.int32)
-    q.timer[:] = new_timer.astype(np.float32)
+    q.hp    = new_hp.astype(np.float32)
+    q.state = new_state.astype(np.int32)
+    q.timer = new_timer.astype(np.float32)
 
 
 def build(n):

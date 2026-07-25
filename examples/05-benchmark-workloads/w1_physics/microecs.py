@@ -36,9 +36,9 @@ def build(n):
 
 def step(w):
     qv = w.query(Pos, Acc)
-    qv.velocity[:] = qv.velocity + qv.acceleration * DT32
+    qv.velocity = qv.velocity + qv.acceleration * DT32
     qp = w.query(Pos)
-    qp.position[:] = qp.position + qp.velocity * DT32
+    qp.position = qp.position + qp.velocity * DT32
 
 
 def collect(w):

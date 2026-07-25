@@ -83,7 +83,7 @@ class RenderSystem:
 class MotionSystem:
     def __call__(self, world: World):
         qr = world.query(HasMotion2D, HasPosition2D)
-        qr.position[:] = qr.position + qr.velocity * DT # (N, 2)
+        qr.position = qr.position + qr.velocity * DT # (N, 2)
 
 class WallBounceSystem:
     def __init__(self, scene_size: tuple[int, int]):
@@ -96,7 +96,7 @@ class WallBounceSystem:
                                             qr.position[:, 0] + qr.radius[:, 0] > self.scene_size[0])
         mask_velocity[:, 1] = np.logical_or(qr.position[:, 1] - qr.radius[:, 0] < 0,
                                             qr.position[:, 1] + qr.radius[:, 0] > self.scene_size[1])
-        qr.velocity[:] = np.where(mask_velocity, -qr.velocity, qr.velocity)
+        qr.velocity = np.where(mask_velocity, -qr.velocity, qr.velocity)
 
 def create_init_world(n_objects: int, scene_size: tuple[int, int]) -> World:
     world = World(components=[HasRadius, HasColor, HasMotion2D, HasPosition2D, HasCustom],

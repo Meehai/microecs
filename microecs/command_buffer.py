@@ -98,7 +98,8 @@ class CommandBuffer:
                 raise ValueError(f"Component: {component} either removed twice or doesn't exist (id: {entity_id})")
 
         elif command.command_type == CommandType.SET_DATA:
-            component, data = command.args["component"], command.args["data"]
+            component = command.args["component"]
+            data = {k: v for k, v in command.args.items() if k != "component"}
             world._validate_component(component, strict=False, check_extra=True, **data)
             components = self._get_entity_components(entity_id)
             state = self._get_components_state(component, existing_components=components, entity_id=entity_id)

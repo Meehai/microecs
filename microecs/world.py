@@ -3,11 +3,11 @@ from typing import get_type_hints
 from dataclasses import fields
 import numpy as np
 
-from .pool import Pool
 from .utils import Shape, EntityId, PoolKey, logger
 from .component import ComponentType
-from .query_result import QueryResult, QUERY_RESULT_INTERNAL_ATTRS
-from .entity import Entity, ENTITY_INTERNAL_ATTRS
+from .query_result import QueryResult, QUERY_RESULT_RESERVED_NAMES
+from .entity import Entity, ENTITY_RESERVED_NAMES
+from .pool import Pool, POOL_RESERVED_NAMES
 from .command_buffer import CommandBuffer, Command, CommandType
 
 class World:
@@ -20,12 +20,14 @@ class World:
     def __init__(self, components: list[ComponentType], extra_metadata: list[str] | None = None):
         self._default_metadata = {"shape", "dtype", "default"}
         self.extra_metadata = extra_metadata or []
-        assert isinstance(self.extra_metadata, list), type(self.extra_metadata)
+        if not isinstance(self.extra_metadata, list):
+            raise TypeError(type(self.extra_metadata))
         self._check_components(components)
 
         # pools management
         self.pools: dict[PoolKey, Pool] = {}
         self.pool_to_components: dict[Pool, list[ComponentType]] = {}
+        self.field_to_component: dict[str, ComponentType] = {}
 
         # components management
         self.component_names = [x.__name__ for x in components]
@@ -43,6 +45,11 @@ class World:
                 self.component_to_shapes[c].append(field_shape := f.metadata["shape"])
                 self.component_to_dtypes[c].append(field_dtype := f.metadata["dtype"])
                 self.component_to_defaults[c].append(field_default := f.metadata["default"])
+
+                if f.name in self.field_to_component:
+                    raise ValueError(f"Duplicate field '{c.__name__}/{f.name}': {self.field_to_component[f.name]}")
+                self.field_to_component[f.name] = c
+
                 if field_default is not None:
                     if (dt := field_default.dtype) != field_dtype:
                         raise TypeError(f"'{c.__name__}/{f.name}'. Expected dtype: {field_dtype}. Got: {dt}")
@@ -87,7 +94,8 @@ class World:
         if self.live_entities[entity_id] is None:
             # only instantiate on first request, so the object is not created for no reason at add_entity time.
             self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components,
-                                                   world_command_buffer=self._command_buffer)
+                                                   world_command_buffer=self._command_buffer,
+                                                   world_field_to_component=self.field_to_component)
 
         return self.live_entities[entity_id]
 
@@ -138,7 +146,7 @@ class World:
             elif command.command_type == CommandType.REMOVE_COMPONENT:
                 self._do_remove_component(command.entity_id, component=command.args)
             elif command.command_type == CommandType.SET_DATA:
-                self._do_set_data(command.entity_id, data=command.args["data"])
+                self._do_set_data(command.entity_id, data={k: v for k, v in command.args.items() if k != "component"})
             else: # CommandType.REMOVE_COMPONENT
                 raise NotImplementedError(command)
 
@@ -176,7 +184,9 @@ class World:
     def _do_add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
         entity_data, components = self._pop_from_pool(entity_id)
         new_components = [*components, component]
-        assert entity_data.keys().isdisjoint(kwargs), f"Duplicate keys: {entity_data.keys()} vs {kwargs.keys()}"
+        if not entity_data.keys().isdisjoint(kwargs):
+            raise ValueError(f"Duplicate keys: {entity_data.keys()} vs {kwargs.keys()}")
+
         default_kwargs = self._defaults_for(new_components, **entity_data, **kwargs)
         self._add_to_pool(entity_id, new_components, **entity_data, **kwargs, **default_kwargs)
 
@@ -254,28 +264,33 @@ class World:
     def _make_key(self, components: list[ComponentType]) -> PoolKey:
         key = 0
         for c in components:
-            assert c in self.component_types, f"c '{c.__name__}' not in {self.component_names}"
+            if c not in self.component_types:
+                raise ValueError(f"c '{c.__name__}' not in {self.component_names}")
             key |= self.component_to_bit[c]
         return key
 
     def _check_components(self, components: list[ComponentType]):
-        reserved_names = (ENTITY_INTERNAL_ATTRS | {n for n in vars(Entity) if not n.startswith("__")} |
-                          QUERY_RESULT_INTERNAL_ATTRS | {n for n in vars(QueryResult) if not n.startswith("__")})
+        reserved_names = ENTITY_RESERVED_NAMES | POOL_RESERVED_NAMES | QUERY_RESULT_RESERVED_NAMES
         dtypes = {"float32", "int32", "bool", "object"}
         expected_meta = {*self._default_metadata, *self.extra_metadata}
 
         for c in components:
-            cn = c.__name__
-            assert hasattr(c, "__dataclass_fields__"), f"c '{cn}' is not a dataclass"
+            if not hasattr(c, "__dataclass_fields__"):
+                raise TypeError(f"c '{c.__name__}' is not a dataclass")
+
             hints = get_type_hints(c) # make it work with from __future__ import annotations
             for f in fields(c):
-                assert hints[f.name] is np.ndarray, f"Field '{cn}/{f.name}' not an array: {f}"
-                assert f.name not in reserved_names, f"Field '{cn}/{f.name}' in {reserved_names}"
-                assert f.metadata.keys() == expected_meta, (
-                    f"Field '{cn}/{f.name}'\n{list(f.metadata.keys())}\nvs\n{expected_meta}\n"
-                    "Perhaps missing World(extra_metadata=[...])?")
-                assert isinstance(f.metadata["shape"], tuple), f.metadata["shape"]
-                assert isinstance(fmd := f.metadata["dtype"], str) and fmd in dtypes, f"{fmd} not in {dtypes}"
+                if hints[f.name] is not np.ndarray:
+                    raise TypeError(f"Field '{c.__name__}/{f.name}' not an array: {f}")
+                if f.name in reserved_names:
+                    raise ValueError(f"Field '{c.__name__}/{f.name}' in {reserved_names}")
+                if f.metadata.keys() != expected_meta:
+                    raise ValueError(f"Field '{c.__name__}/{f.name}'\n{list(f.metadata.keys())}\nvs\n{expected_meta}\n"
+                                      "Perhaps missing World(extra_metadata=[...])?")
+                if not isinstance(f.metadata["shape"], tuple):
+                    raise TypeError(f"Expected tuple, got {type(f.metadata['shape'])}: {f.metadata['shape']}")
+                if not isinstance(fmd := f.metadata["dtype"], str) or fmd not in dtypes:
+                    raise TypeError(f"{fmd} not a string or not in {dtypes}")
 
     def __len__(self):
         return len(self.live_entities)

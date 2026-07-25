@@ -3,6 +3,21 @@
 **Created**: 2026-07-10
 **Priority**: 2
 
+## Status (2026-07-25): the guard is DONE — only subtasks 1–3 remain
+
+The field-name guard landed with microecs **#29** (`world.py:49-51`), which needed it: `set_data(**fields)`
+resolves a field name to its component via `world.field_to_component`, and that map is only well-defined if
+names are unique. Raises `ValueError` naming the field, at construction, as specified below.
+
+Consequence, as predicted: the commit-time `Duplicate keys` path is now **unreachable through the public API**,
+so `test_add_component_with_field_name_clash_raises_at_update` was removed and
+`test_world_rejects_duplicate_field_name_across_components` lost its xfail and is a live test.
+
+**Still open: subtasks 1–3** (the "single gate" tidy-ups at the bottom). Re-verified 2026-07-25 — `add_entity`
+(`world.py:76-77`) still runs `_validate_components` + `_defaults_for`, and `CommandBuffer.append`
+(`command_buffer.py:73-76`) still runs both again on the same args; `_last_id` / `live_entities` are still
+mutated before the `append` that could raise.
+
 ## Why
 
 The fully-eager command buffer (task 22) claims "nothing invalid ever reaches `update()`". One case slips
@@ -57,11 +72,12 @@ Once landed, the 178 exhaustiveness hole closes: `add_component` can never intro
 because no two registered components can share one. The `_do_add_component` disjoint `assert` becomes a true
 never-happens internal invariant.
 
-## Tests
+## Tests — done for the guard
 
 - `test_world.py::test_world_rejects_duplicate_field_name_across_components` — two components sharing a field
-  name → `World([...])` raises `ValueError`. Marked `@pytest.mark.xfail(strict=True)` until the guard lands;
-  drop the marker (flip to XPASS) when it does. (Mirrors the 178 flip pattern.)
+  name → `World([...])` raises `ValueError`. xfail marker dropped, live and green.
+- `test_world.py::test_field_to_component_is_keyed_by_field_name` / `..._resolves_the_name_entity_set_data_passes`
+  — the uniqueness rule is what makes the field→component map usable; these pin the consumer.
 
 ## Subtasks (redundancy cleanups from the 178 review — the gate works, these are tidy-ups)
 
@@ -82,7 +98,26 @@ undercut the "one gate" story and leave dead work / fragile coupling.
    defers to commit. Both correct, but pick one story — simplest is fill-at-append for both, so a staged
    command always carries a complete arg set and `update()` never computes defaults. (Do after 1/2.)
 
-Land the field-name guard first; 1–3 are lower value. No test flips needed for 1–3 (behaviour is unchanged).
+Land the field-name guard first; 1–3 are lower value.
+
+### Tests for 1–3 (in place 2026-07-25)
+
+Subtask 1 has no observable behaviour of its own (deleting dead work), so what protects it is the pair of
+invariants around it — both **green today**, so they are a safety net, not a spec:
+
+- `test_command_buffer.py::test_buffer_alone_fully_validates_a_raw_add_entity` (5 cases: shape / dtype /
+  non-ndarray / unknown field / missing-required) — proves `append` is already a complete gate for ADD_ENTITY,
+  so removing `add_entity`'s pre-pass loses no validation.
+- `test_command_buffer.py::test_buffer_alone_fills_defaults_into_a_staged_add_entity` — same for `_defaults_for`.
+- `test_world.py::test_rejected_add_entity_burns_no_id` and
+  `..._leaves_no_live_entity_and_nothing_staged` — **subtask 2's net.** Mutation-checked
+  (`test/manual/23-single-gate/mutation_check.py`): deleting the pre-pass *without* reordering fails exactly
+  these two; deleting it *and* reordering (build → append → then commit `_last_id`/`live_entities`) passes.
+  So they tell the good refactor from the bad one.
+
+Subtask 3 is the only one with a real behaviour change, so it gets the xfail:
+- `test_command_buffer.py::test_buffer_alone_fills_defaults_into_a_staged_add_component` —
+  `xfail(strict=True)`, flips to XPASS when ADD_COMPONENT fills defaults at append like ADD_ENTITY does.
 
 ## Relates
 

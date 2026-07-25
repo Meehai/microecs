@@ -47,7 +47,7 @@ def step(st):
         order.append(w.add_entity([Pos, Pay], position=st["spos"], velocity=st["svel"], payload=_s(p)))
     w.update()
     qp = w.query(Pos)
-    qp.position[:] = qp.position + qp.velocity * DT32
+    qp.position = qp.position + qp.velocity * DT32
 
 
 def collect(st):

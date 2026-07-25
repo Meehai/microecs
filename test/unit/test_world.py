@@ -22,13 +22,19 @@ command passes through. Those buffer-level unit tests live in test_command_buffe
 tests below exercise the same staging model through the Entity/World API.
 """
 from dataclasses import field
+import os
 import random
+import subprocess
+import sys
+from pathlib import Path
 import numpy as np
 import pytest
 
+import microecs
 from microecs import World, Component
-from microecs.query_result import QueryResult
-from microecs.entity import Entity, ENTITY_INTERNAL_ATTRS
+from microecs.query_result import QueryResult, QUERY_RESULT_RESERVED_NAMES
+from microecs.entity import ENTITY_RESERVED_NAMES
+from microecs.pool import POOL_RESERVED_NAMES
 
 
 class HasPosition(Component):
@@ -305,13 +311,14 @@ def test_query_exclude_cache_invalidated_on_mutation():
 
 
 def test_query_exclude_unregistered_component_raises():
-    """Excluding a component the world never registered is an error, surfaced by _make_key's assert -- the
-    same guard that protects the include side. (HasRadius is not registered in this world.)"""
+    """Excluding a component the world never registered is an error, surfaced by _make_key's raise -- the
+    same guard that protects the include side. A query is user input, so it must survive `python -O`:
+    ValueError, not AssertionError. (HasRadius is not registered in this world.)"""
     world = World(components=[HasPosition])
     world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
     world.update()
 
-    with pytest.raises(AssertionError, match="not in"):
+    with pytest.raises(ValueError, match="not in"):
         world.query(HasPosition, exclude=[HasRadius])
 
 
@@ -620,6 +627,37 @@ def test_operate_on_uncommitted_spawn_same_tick():
     np.testing.assert_array_equal(pool.velocity[ix], [3.0, 4.0])
 
 
+# --- task 23 subtask 2: a REJECTED add_entity must not leave bookkeeping behind ------------------------------------
+# add_entity bumps _last_id and inserts live_entities[id]=None BEFORE the append that could raise. That is safe
+# today only because add_entity pre-validates (subtask 1's redundant pass) before mutating -- so a bad spawn raises
+# before any bookkeeping happens. Subtask 1 wants that pre-validation deleted (append is already a complete gate,
+# pinned in test_command_buffer.py). Delete it WITHOUT reordering and a rejected spawn burns an id and leaks a
+# dangling live_entities entry, i.e. `world.get_entity(that_id)` returns a handle to an entity that will never
+# exist. These two are green now and are the safety net for that refactor.
+
+def test_rejected_add_entity_burns_no_id():
+    """A refused spawn must not consume an entity id: the next successful add_entity gets the id it would have."""
+    world = World(components=[HasPosition])
+
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        world.add_entity((HasPosition,), position=np.array([1.0, 2.0, 3.0], "float32"))   # (3,) into a (2,) field
+
+    assert world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32")) == 0   # id 0, not 1
+
+
+def test_rejected_add_entity_leaves_no_live_entity_and_nothing_staged():
+    """A refused spawn must leave live_entities and the buffer exactly as they were -- no dangling handle."""
+    world = World(components=[HasPosition])
+
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        world.add_entity((HasPosition,), position=np.array([1.0, 2.0, 3.0], "float32"))
+
+    assert list(world.live_entities) == []                  # no id registered -> get_entity(0) raises, correctly
+    assert len(world._command_buffer) == 0
+    world.update()
+    assert len(world.pools) == 0                            # and nothing materialized
+
+
 def test_remove_entity_twice_fails_on_second_call():
     """Removing the same id twice in a tick: the second call targets an already-removed entity -> reject eagerly."""
     world = World(components=[HasPosition])
@@ -825,25 +863,139 @@ def test_world_rejects_str_dtype_component():
     class HasName(Component):
         name: np.ndarray = field(metadata={"shape": (1,), "dtype": "str", "default": None})
 
-    with pytest.raises(AssertionError, match="str not in"):
+    with pytest.raises(TypeError, match="str not a string or not in"):
         World(components=[HasName])
 
 
-@pytest.mark.xfail(strict=True, reason="task 179: unique-field-name guard not landed yet")
-def test_world_rejects_duplicate_field_name_across_components():
-    """Two components may not declare the SAME field name. A pool merges fields by name and query() sums
-    field names across components, so a clash would silently alias two components' data -- and add_component
-    of the colliding component slips past the eager buffer gate (which validates the new component in
-    isolation) only to crash inside update() on a -O-erasable assert (Duplicate keys). Enforce uniqueness at
-    construction, the earliest+loudest place, with a real raise. (Guards the task 178 exhaustiveness hole.)"""
+def test_world_rejects_non_dataclass_component():
+    """A component that isn't a dataclass has no fields to lay out -- rejected with the TypeError that names it."""
+    class NotADataclass:                                    # not a Component subclass -> no @dataclass applied
+        pass
+
+    with pytest.raises(TypeError, match="NotADataclass"):
+        World(components=[NotADataclass])
+
+
+@pytest.mark.parametrize("bad", ["serializable", ("serializable",), {"serializable"}])
+def test_world_rejects_non_list_extra_metadata(bad):
+    """extra_metadata is a ctor arg -- user input -- so a wrong type is a real `raise` (task 34), not an assert.
+    Measured with the assert stripped by -O: a bare str is splatted into single characters and construction dies
+    later with `expected_meta = {'i','e','s','z',...}` -- the right rejection for an unreadable reason."""
+    with pytest.raises(TypeError):
+        World(components=[HasPosition], extra_metadata=bad)
+
+
+def _two_components_sharing_a_field_name() -> tuple[type[Component], type[Component]]:
+    """Two components declaring the SAME field name -- illegal: rejected at World construction (task 23)."""
     class HasFoo(Component):
         payload: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
 
     class HasBar(Component):
         payload: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})  # same name!
 
+    return HasFoo, HasBar
+
+
+def test_world_rejects_duplicate_field_name_across_components():
+    """Two components may not declare the SAME field name, rejected at construction -- earliest and loudest.
+
+    A pool merges fields by name and query() sums field names across components, so a clash would silently
+    alias two components' data. It is also what makes `entity.set_data(**fields)` well-defined (#29): the
+    field name alone must identify its component, via world.field_to_component.
+
+    This used to be caught only late, inside update()'s field-dict merge ("Duplicate keys") -- reachable
+    because World() accepted the clash. With the construction guard that path is now unreachable through the
+    public API, so the merge check in _do_add_component is pure defence-in-depth and has no test of its own."""
+    HasFoo, HasBar = _two_components_sharing_a_field_name()
+
     with pytest.raises(ValueError, match="payload"):
         World(components=[HasFoo, HasBar])
+
+
+# --- reserved field names: a field named like an internal attr must be rejected at construction --------------------
+# A field name that collides with QueryResult's own attrs can never be caught downstream -- QueryResult.__setattr__
+# checks the allow-list BEFORE the data-field branch, so `qr.entity_ids = v` replaces the id array instead of
+# scattering, and len()/repr()/id lookups then read the written value. World._check_components (world.py:264) is the
+# one gate: ENTITY_RESERVED_NAMES | POOL_RESERVED_NAMES | QUERY_RESULT_RESERVED_NAMES, each set being that class's
+# instance attrs plus its class dict. Both task-31 gaps are closed -- Pool's names are in the union, and every check
+# is a real `raise`, so `python -O` no longer erases them (pinned below).
+
+def _component_with_field(name: str) -> type[Component]:
+    """A one-field Component whose field is named `name` (a dataclass field name can't be dynamic in a class body)."""
+    return type("HasClash", (Component,), {
+        "__annotations__": {name: np.ndarray},
+        name: field(metadata={"shape": (1,), "dtype": "float32", "default": None}),
+    })
+
+
+# A field name colliding with a class's own attribute is rejected with ValueError (world.py:277) -- the guard is a
+# real raise, so it survives `python -O` (task 31 gap 2, landed).
+_REJECTED = ValueError
+
+
+@pytest.mark.parametrize("name", sorted(QUERY_RESULT_RESERVED_NAMES - POOL_RESERVED_NAMES))
+def test_world_rejects_field_name_colliding_with_queryresult_internals(name):
+    """A field may not be named like one of QueryResult's own attrs -- rejected at World construction, the earliest
+    place that sees every component's fields (and the only place: the collision is invisible to Pool and wins over
+    the data branch in QueryResult.__setattr__)."""
+    with pytest.raises(_REJECTED, match=name):
+        World(components=[_component_with_field(name)])
+
+
+@pytest.mark.parametrize("name", sorted(POOL_RESERVED_NAMES - QUERY_RESULT_RESERVED_NAMES))
+def test_world_rejects_field_name_colliding_with_pool_reserved_names(name):
+    """Same rule for POOL's own names -- attrs (size/data/...) AND methods (add_entity/pop_entity/...), since
+    Pool.__getattr__ only runs after normal lookup fails. These used to slip past World and blow up much later,
+    when the first entity of that archetype commits and Pool rejects at construction -- the late, quiet failure
+    this construction-time check exists to prevent. One union, one gate."""
+    with pytest.raises(_REJECTED, match=name):
+        World(components=[_component_with_field(name)])
+
+
+def test_world_reserved_name_guard_survives_python_dash_o():
+    """The guard must survive `python -O`, which strips asserts. A component definition is user input, so it is
+    `raise` territory, not `assert` (asserts are for our own bugs). Before task 31 this was measured broken: under
+    -O, World() accepted a field named `entity_ids` and the first write through a QueryResult silently replaced the
+    id array. Run in a subprocess because -O is decided at interpreter start."""
+    script = ("import numpy as np\n"
+              "from dataclasses import field\n"
+              "from microecs import World, Component\n"
+              "C = type('HasClash', (Component,), {'__annotations__': {'entity_ids': np.ndarray},\n"
+              "     'entity_ids': field(metadata={'shape': (1,), 'dtype': 'float32', 'default': None})})\n"
+              "World(components=[C])\n")
+    env = {**os.environ, "PYTHONPATH": str(Path(microecs.__file__).parent.parent)}
+
+    res = subprocess.run([sys.executable, "-O", "-c", script], capture_output=True, text=True, env=env, check=False)
+
+    assert res.returncode != 0, f"-O accepted a field named 'entity_ids'\nstdout: {res.stdout}\nstderr: {res.stderr}"
+
+
+# --- task 35: World's own kwarg names are a fourth collidable surface ----------------------------------------------
+# The union above covers the three CLASSES' attrs+methods. It misses the keyword-PARAMETER names of the World
+# methods that take field data as **kwargs, so `**kwargs` shadows the parameter. These four pass World() and only
+# die at the first add_entity, with an internal "got multiple values for argument" TypeError that names a parameter
+# instead of the offending field -- the late, cryptic failure this gate exists to prevent. `data` and `entity_id`
+# are already rejected, but only incidentally (they happen to be Pool / Entity attrs).
+
+_WORLD_KWARG_NAMES = ["check_extra", "component", "components", "strict"]
+@pytest.mark.xfail(strict=True, reason="task 35: World's internal kwarg names not reserved yet")
+@pytest.mark.parametrize("name", _WORLD_KWARG_NAMES)
+def test_world_rejects_field_name_colliding_with_its_own_kwargs(name):
+    """A field named like one of World's own **kwargs-taking parameters must be refused at construction."""
+    with pytest.raises(_REJECTED, match=name):
+        World(components=[_component_with_field(name)])
+
+
+@pytest.mark.parametrize("name", _WORLD_KWARG_NAMES)
+def test_world_kwarg_name_clash_is_currently_a_confusing_late_typeerror(name):
+    """Pins the CURRENT bad behaviour so task 35 has a measured before/after: World() accepts the component and
+    add_entity dies with a TypeError about a *parameter*. Delete this test when the guard lands (the xfail above
+    flips green and construction never reaches add_entity)."""
+    world = World(components=[_component_with_field(name)])          # accepted today -- that is the bug
+
+    # "...for argument 'component'" vs "...for keyword argument 'strict'" depending on the shadowed parameter
+    with pytest.raises(TypeError, match="got multiple values for"):
+        world.add_entity((world.component_types.copy().pop(),), **{name: np.array([1.0], "float32")})
 
 
 def test_object_field_holds_python_string_and_compares_by_equality():
@@ -1287,23 +1439,23 @@ def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserv
     than be silently shadowed when queried."""
     bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
                                       reserved: field(metadata={"shape": (2,), "dtype": "float32", "default": None})})
-    with pytest.raises((AssertionError, ValueError)):
+    with pytest.raises(_REJECTED):
         World(components=[bad])
 
 
 # An Entity (world.get_entity(id)) exposes the row by attribute, so a component field named like one of Entity's
 # own members would be shadowed: e.entity_id would return the id (not the field), e.get_components a bound method.
-# These must be rejected at world creation. Derived programmatically (not hardcoded) so new attrs/methods are picked
-# up automatically. Entity isn't slotted, so its collidable surface is split in two: instance-attr names live in the
-# module constant ENTITY_INTERNAL_ATTRS, public methods live in the class dict -- union covers both (mirrors the impl).
-_ENTITY_RESERVED = sorted(ENTITY_INTERNAL_ATTRS | {n for n in vars(Entity) if not n.startswith("__")})
+# These must be rejected at world creation. Entity isn't slotted, so its collidable surface is split in two:
+# instance-attr names in the private _ENTITY_INTERNAL_ATTRS, public methods in the class dict. ENTITY_RESERVED_NAMES
+# is the union of both, derived at import (not hardcoded), so new attrs/methods are picked up automatically.
+_ENTITY_RESERVED = sorted(ENTITY_RESERVED_NAMES)
 @pytest.mark.parametrize("reserved", _ENTITY_RESERVED)
 def test_world_rejects_component_field_named_like_an_entity_attribute(reserved):
     """A component whose field is named like an Entity attribute/method must be rejected at world creation,
     rather than be silently shadowed when read/written through get_entity."""
     bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
                                       reserved: field(metadata={"shape": (2,), "dtype": "float32", "default": None})})
-    with pytest.raises((AssertionError, ValueError)):
+    with pytest.raises(_REJECTED):
         World(components=[bad])
 
 
@@ -1325,9 +1477,9 @@ def test_extra_metadata_required_strictly_on_every_field():
     World([Plain])                                          # ok: {shape,dtype} == {shape,dtype}
     World([Serial], extra_metadata=["serializable"])  # ok: {shape,dtype,ser} == {shape,dtype,ser}
 
-    with pytest.raises(AssertionError):                     # missing the required "serializable"
+    with pytest.raises(ValueError):                         # missing the required "serializable"
         World([Plain], extra_metadata=["serializable"])
-    with pytest.raises(AssertionError):                     # carries "serializable" the world never declared
+    with pytest.raises(ValueError):                         # carries "serializable" the world never declared
         World([Serial])
 
 
@@ -1509,3 +1661,39 @@ def test_add_component_explicit_value_overrides_default():
 
     pool = world.query(HasPosition, HasColorDefault).pool_list[0]
     np.testing.assert_array_equal(pool.color[0], np.array([1, 2, 3], "int32"))
+
+
+# --- field -> component map: what makes entity.set_data(**fields) possible (microecs #29) -------------------------
+# set_data takes field names, no component arg, so the World must be able to answer "which component owns field
+# 'pose'?". That lookup is world.field_to_component, built at __init__ and keyed by field NAME. It is only
+# well-defined if names are unique across components -- so a duplicate name is rejected at world creation
+# (microecs #23). Two things to pin: the map is keyed by str (not by dataclasses.Field, which hashes by identity
+# and would make both the lookup and the duplicate check silently useless), and the duplicate actually raises.
+
+def test_field_to_component_is_keyed_by_field_name():
+    """world.field_to_component maps 'field name' -> owning component type, for every field of every component."""
+    world = World([HasPosition, HasBox])
+
+    assert world.field_to_component["position"] is HasPosition
+    assert world.field_to_component["lo"] is HasBox
+    assert world.field_to_component["hi"] is HasBox                     # every field, not just the first
+    assert set(world.field_to_component) == {"position", "lo", "hi"}     # plain strings, nothing else
+
+
+def test_field_to_component_resolves_the_name_entity_set_data_passes():
+    """The map is the resolution set_data does: a field name reaches the component that owns it."""
+    world = World([HasPosition, HasVelocity])
+    eid = world.add_entity((HasPosition, HasVelocity),
+                           position=np.array([1, 2], "float32"), velocity=np.array([3, 4], "float32"))
+    world.update()
+
+    world.get_entity(eid).set_data(velocity=np.array([9, 8], "float32"))
+
+    (cmd,) = world._command_buffer.data
+    assert cmd.args["component"] is world.field_to_component["velocity"] is HasVelocity
+
+
+def test_world_accepts_the_same_component_field_names_in_separate_worlds():
+    """The uniqueness rule is per-World, not global: the same component can be reused in another world."""
+    World([HasPosition, HasVelocity])
+    World([HasPosition, HasBox])                                        # no leakage between worlds

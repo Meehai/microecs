@@ -6,7 +6,7 @@
 class MotionSystem:
     def __call__(self, world: World):
         qr = world.query(HasPosition, HasVelocity)          # 1. select the entities you care about
-        qr.position[:] = qr.position + qr.velocity * DT     # 2. operate (here: vectorized)
+        qr.position = qr.position + qr.velocity * DT     # 2. operate (here: vectorized)
 ```
 
 Every system has the same shape: **query, then operate**. There are three ways to operate — pick by what the work needs.
@@ -17,7 +17,7 @@ Batch the whole query in one numpy op. Two equivalent forms:
 
 ```python
 qr = world.query(HasPosition, HasVelocity)
-qr.position[:] = qr.position + qr.velocity * DT     # writes back to every underlying pool (numpy rules)
+qr.position = qr.position + qr.velocity * DT     # writes back to every underlying pool (numpy rules)
 
 # per-pool variant: less ergonomic, but avoids the Field object -- maybe faster in extreme cases
 for pool in qr.pool_list:
@@ -27,7 +27,7 @@ for pool in qr.pool_list:
 Push branches into numpy too — `np.where` / `np.clip` instead of a per-entity `if`:
 
 ```python
-qr.velocity[:] = np.where(hit_wall, -qr.velocity, qr.velocity)      # data-parallel bounce, all entities at once
+qr.velocity = np.where(hit_wall, -qr.velocity, qr.velocity)      # data-parallel bounce, all entities at once
 ```
 
 This is what microecs is for. Kept vectorized, a system runs at 1–2 ns/entity — see [Benchmarks](benchmarks.md).

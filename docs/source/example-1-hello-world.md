@@ -43,10 +43,10 @@ class CollisionSystem:
         collisions = self._get_collisions(qr.position.numpy(), qr.radius.numpy())    # (N, 1) bool
         _red   = np.array(rl.RED,   "int32")[None].repeat(len(qr), axis=0)
         _black = np.array(rl.BLACK, "int32")[None].repeat(len(qr), axis=0)
-        qr.color[:] = np.where(collisions, _red, _black)                             # recolor all entities at once
+        qr.color = np.where(collisions, _red, _black)                             # recolor all entities at once
 ```
 
-`RenderSystem` must loop — there is no "draw all circles" call — so it `zip`s the fields. `CollisionSystem` never loops over entities: the overlap check is one broadcasted numpy expression (`(N,1,2) - (1,N,2) → (N,N)` pairwise distances) and the recolor is a single `np.where` written back through `qr.color[:]`.
+`RenderSystem` must loop — there is no "draw all circles" call — so it `zip`s the fields. `CollisionSystem` never loops over entities: the overlap check is one broadcasted numpy expression (`(N,1,2) - (1,N,2) → (N,N)` pairwise distances) and the recolor is a single `np.where` written back through `qr.color`.
 
 ## World + main loop
 

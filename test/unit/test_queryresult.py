@@ -4,12 +4,14 @@ QueryResult wraps the pools a query matched, plus the component types that were 
 behave like a single sequence of entities. No World here: we build the pools and components directly so
 the test pins QueryResult's own behaviour, nothing else.
 """
+import copy
+import pickle
 from dataclasses import field
 import numpy as np
 import pytest
 
 from microecs import Pool, Component, QRField
-from microecs.query_result import QueryResult
+from microecs.query_result import QueryResult, _QR_INTERNAL_ATTRS
 
 
 class HasPosition(Component):  # owns the `position` field the pools below carry
@@ -355,6 +357,70 @@ def test_single_entity_int_index_is_forbidden():
     assert _query([_pos_pool([[7.0, 7.0]])], "position").position[0].tolist() == [7.0, 7.0]
 
 
+# --- both dunders now ask ONE question about the key (task 33) ------------------------------------------------------
+# They used to each spell out "is the entity axis untouched?" and disagreed: __setitem__ accepted a bare slice(None),
+# __getitem__ accepted Ellipsis or a TUPLE leading with `:` -- but never a bare slice(None). Python desugars
+# `x[k] += v` into __getitem__(k) -> op -> __setitem__(k, ...), so the read half rejected the exact key the write half
+# allowed: `qr.f[:] = v` worked, `qr.f[:] += 1` raised, and `qr.f[...]` -- the identical thing to numpy -- worked.
+# `QRField._selects_axis0` is now the single predicate both call (qr_field.py:86, :104), so they cannot drift again.
+
+def test_qr_field_whole_slice_read_returns_the_whole_field():
+    """Reading `qr.f[:]` must hand back every entity: it selects nothing, so it crosses no pool boundary. Pinned
+    against `qr.f[...]`, which means the same to numpy and already works -- the two must not disagree."""
+    qr = _query([_pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])], "position")
+
+    assert qr.position[:].numpy().tolist() == qr.position[...].numpy().tolist()
+    assert qr.position[:].numpy().tolist() == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+
+
+def test_qr_field_whole_slice_augmented_write_scatters():
+    """`qr.f[:] += 1` must write through both pools -- the user-visible symptom of the old split: the write half took
+    `[:]`, but Python reads first, so the whole statement died on the read. The taught form (`qr.f += 1`) and the
+    single-axis form (`qr.f[:, k] += 1`) always worked -- see the control test below."""
+    a, b = _pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])
+    qr = _query([a, b], "position")
+
+    qr.position[:] += 1
+
+    assert a.position.tolist() == [[2.0, 2.0]]
+    assert b.position.tolist() == [[3.0, 3.0], [4.0, 4.0]]
+
+
+def test_qr_field_whole_field_write_keys_are_interchangeable():
+    """Sharing the predicate also WIDENED __setitem__ (it never accepted an Ellipsis key before): `[...]` and
+    `[..., None]` keep every entity, so they must scatter exactly like `[:]`. Sound because `part[...]` is a view, so
+    the write reaches the pool -- pinned here because it is new behaviour, not a leftover."""
+    a, b = _pos_pool([[0.0, 0.0]]), _pos_pool([[0.0, 0.0], [0.0, 0.0]])
+    qr = _query([a, b], "position")
+
+    qr.position[...] = 3.0                                   # bare Ellipsis -> every entity, both pools
+    assert a.position.tolist() == [[3.0, 3.0]]
+    assert b.position.tolist() == [[3.0, 3.0], [3.0, 3.0]]
+
+    qr.position[..., None] = 5.0                             # trailing axis per pool -> still every entity
+    assert a.position.tolist() == [[5.0, 5.0]]
+    assert b.position.tolist() == [[5.0, 5.0], [5.0, 5.0]]
+
+
+def test_qr_field_whole_field_keys_that_work_and_selections_that_must_not():
+    """Control for the two xfails: the whole-field forms that work today keep working, and keys that genuinely SELECT
+    entities keep raising. So accepting a bare `[:]` must not widen the guard to anything else."""
+    a, b = _pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])
+    qr = _query([a, b], "position")
+
+    assert qr.position[...].numpy().tolist() == [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]   # whole field: allowed
+    assert [p.tolist() for p in qr.position[:, 0].parts] == [[1.0], [2.0, 3.0]]        # one component: allowed
+
+    qr.position[:, 0] += 10                             # augmented, single axis -> reads a tuple key, allowed
+    assert a.position.tolist() == [[11.0, 1.0]]
+    qr.position += 1                                    # the taught form -> __setattr__, no __getitem__ involved
+    assert a.position.tolist() == [[12.0, 2.0]]
+
+    for bad in (0, -1, slice(0, 2), np.array([True, False, True])):   # each one picks/reorders entities
+        with pytest.raises(TypeError):
+            qr.position[bad]
+
+
 def test_wallbounce_per_axis_via_column_indexing():
     """Flip the x-velocity of entities whose x is past a wall, operating on the x column. The entity at x=0
     flips its vx to -3; the one at x=5 keeps +3. Combines a component-axis read, np.where, and a component-axis
@@ -411,6 +477,21 @@ def test_numpy_multi_pool_is_a_fresh_concatenation():
     assert flat.tolist() == [[0.0, 0.0], [1.0, 1.0]]                # both pools' rows, pool-by-pool order
     assert not np.shares_memory(flat, field.parts[0])              # a real concatenation, not pool A's view
     assert not np.shares_memory(flat, field.parts[1])              # ... nor pool B's
+
+
+def test_qrfield_rejects_a_single_part_so_numpy_needs_no_special_case():
+    """QRField is the >=2-pool representation only: 0 or 1 part raises ValueError instead of building a degenerate
+    Field. That guarantee is what lets numpy() be an unconditional concatenate -- its old `if len(parts) != 1`
+    branch was unreachable (all three construction sites preserve the part count) and duplicated _QRArray's
+    zero-copy promise. ValueError, not assert, so it survives `python -O`."""
+    part = np.zeros((2, 2), "float32")
+
+    with pytest.raises(ValueError, match="_QRArray"):
+        QRField([part])                                     # one pool -> that's _QRArray's job
+    with pytest.raises(ValueError, match="_QRArray"):
+        QRField([])                                         # no pools -> likewise
+
+    assert QRField([part, part]).numpy().shape == (4, 2)    # >= 2 parts: the only path, always a concatenation
 
 
 def test_collision_round_trips_via_gather_single_archetype():
@@ -572,6 +653,172 @@ def test_assigning_a_field_scatters_like_a_recarray():
 
     with pytest.raises(ValueError):                     # bad shape -> numpy rules, like recarray
         qr.position = np.array([1.0, 2.0, 3.0], "float32")
+
+
+# --- the __setattr__ name guard (task 28): unknown names raise, queried fields still scatter -----------------------
+# `qr.postion = v` (typo) used to fall through to super().__setattr__: the write "succeeded", created a dead instance
+# attr, changed no data, raised nothing -- while the READ half raised. Entity guards both (entity.py:85-91), so the
+# asymmetry was the bug. The guard (query_result.py:51-57) closed it; the tests below pin both halves.
+
+def test_qr_unknown_attribute_read_raises_named_error():
+    """The READ half already holds: an unknown name raises AttributeError naming it and the valid field set. Pins
+    the contract the write half must mirror."""
+    qr = _query([_pos_pool([[1.0, 1.0]])], "position")
+
+    with pytest.raises(AttributeError, match="postion"):
+        _ = qr.postion                                   # typo
+    with pytest.raises(AttributeError, match="velocity"):
+        _ = qr.velocity                                  # a real field name, just not queried here
+
+
+def test_qr_known_field_write_scatters_single_and_multi_pool():
+    """Positive control for the guard: assigning a QUERIED field still writes through, for one pool (the _QRArray
+    fast path) and for two (the QRField scatter). Scalar broadcast and a positional (N, 2) block both land, and the
+    name is never shadowed in __dict__."""
+    one = _pos_pool([[1.0, 1.0], [2.0, 2.0]])
+    qr = _query([one], "position")
+
+    qr.position = 5.0                                    # scalar -> every entity, single pool
+    assert one.position.tolist() == [[5.0, 5.0], [5.0, 5.0]]
+    qr.position = np.array([[1.0, 2.0], [3.0, 4.0]], "float32")      # positional (N, 2) block
+    assert one.position.tolist() == [[1.0, 2.0], [3.0, 4.0]]
+
+    a, b = _pos_pool([[0.0, 0.0]]), _pos_pool([[0.0, 0.0], [0.0, 0.0]])
+    qr2 = _query([a, b], "position")
+
+    qr2.position = 7.0                                   # scatters across both pools
+    assert a.position.tolist() == [[7.0, 7.0]]
+    assert b.position.tolist() == [[7.0, 7.0], [7.0, 7.0]]
+    assert "position" not in vars(qr) and "position" not in vars(qr2)   # served by __getattr__, never shadowed
+
+
+@pytest.mark.parametrize("name", ["postion", "velocity", "foo"])
+def test_qr_unknown_attribute_write_raises_named_error(name):
+    """Writing a name that is not a queried field raises AttributeError naming it -- never a silent dead attr,
+    never a silent no-op. Covers a typo, a real-but-unqueried field name, and junk. Mirrors Entity's
+    test_entity_unknown_field_write_raises_named_error."""
+    a, b = _pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])
+    qr = _query([a, b], "position")
+
+    with pytest.raises(AttributeError, match=name):
+        setattr(qr, name, np.array([9.0, 9.0], "float32"))
+
+    assert name not in vars(qr)                          # no dead attr left behind
+    assert a.position.tolist() == [[1.0, 1.0]]           # and nothing written anywhere
+    assert b.position.tolist() == [[2.0, 2.0], [3.0, 3.0]]
+
+
+def test_qr_write_to_unqueried_field_raises_even_though_the_pool_has_it():
+    """The QUERY's field set is the contract, not the pool's: a field the pool carries but the query didn't select
+    is absent from _data, so writing it would be a silent no-op on data the caller thinks it just changed."""
+    p = _pv_pool([([1.0, 1.0], [0.5, 0.5])])
+    qr = _query([p], "position")                         # velocity lives in the pool, but is NOT queried
+
+    with pytest.raises(AttributeError, match="velocity"):
+        qr.velocity = np.array([9.0, 9.0], "float32")
+
+    assert p.velocity.tolist() == [[0.5, 0.5]]           # untouched
+    assert "velocity" not in vars(qr)
+
+
+def test_qr_internal_attrs_stay_settable():
+    """The guard must allow-list QueryResult's own attrs (_QR_INTERNAL_ATTRS): they are set in __init__
+    before _data exists, so a too-strict 'only queried fields' guard would break construction outright. Pins that
+    every internal attr is present after construction and re-settable without a raise."""
+    qr = _query([_pool_with(2)], "position")
+
+    for name in _QR_INTERNAL_ATTRS:
+        assert name in vars(qr), name
+        setattr(qr, name, getattr(qr, name))             # re-set to its own value: allowed, changes nothing
+    assert len(qr) == 2
+
+
+def test_qr_internal_attrs_cover_every_init_attribute():
+    """The allow-list must be EXACTLY the set of attrs __init__ creates. That equality is what makes a
+    '_data is not set yet' escape hatch in __setattr__ unnecessary: construction only ever writes allow-listed
+    names, so such a clause is dead code -- and dead code that would silently accept the one case it looks like it
+    protects (below). If someone adds state to __init__ and forgets the list, this fails loudly right here."""
+    qr = _query([_pool_with(2)], "position")
+
+    assert set(vars(qr)) == _QR_INTERNAL_ATTRS
+
+
+def test_qr_write_on_uninitialised_instance_is_rejected_not_silently_allowed():
+    """A name that is neither allow-listed nor a queried field is rejected even on an instance with no __init__
+    state. This is the case an `or self.__dict__.get("_data") is None` clause in __setattr__ would wave through:
+    it never fires during a real __init__ (see the test above), so its only reachable effect is to silently accept
+    a NEW internal attr that __init__ sets but _QR_INTERNAL_ATTRS forgot -- which then becomes clobberable
+    by the first user write of that name. Must raise, and must leave no attr behind."""
+    fresh = QueryResult.__new__(QueryResult)              # no __init__: empty __dict__, _data absent
+
+    with pytest.raises(Exception):                        # AttributeError once __getattr__ stops recursing (below)
+        fresh._extra = 1
+
+    assert "_extra" not in vars(fresh)
+
+
+# --- neither dunder may reach its own state through normal attribute lookup -----------------------------------------
+# Both used to: __getattr__'s message interpolated `self.fields`, and __setattr__'s guard read `self._data`. On an
+# instance whose __dict__ lacks them, those lookups miss, __getattr__ runs again, and the stack blows -- an ordinary
+# AttributeError path becomes RecursionError. Not exotic: copy/deepcopy/pickle.loads build their target with
+# cls.__new__(cls) and immediately probe it (`hasattr(y, "__setstate__")`), so all three died. Both now go through
+# self.__dict__.get(...) (query_result.py:40-41, :58-59); these tests pin that they stay that way.
+
+def test_qr_read_on_uninitialised_instance_raises_attributeerror_not_recursion():
+    """A read on an instance with no __init__ state raises a plain AttributeError naming the attr, and hasattr
+    answers False. Never RecursionError -- hasattr/copy/pickle all rely on that error path being ordinary."""
+    fresh = QueryResult.__new__(QueryResult)
+
+    with pytest.raises(AttributeError, match="position"):
+        _ = fresh.position
+    assert hasattr(fresh, "foo") is False
+
+
+@pytest.mark.parametrize("op", [copy.copy, copy.deepcopy, lambda qr: pickle.loads(pickle.dumps(qr))],
+                         ids=["copy", "deepcopy", "pickle"])
+def test_qr_survives_copy_and_pickle(op):
+    """copy/deepcopy/pickle each build the target with __new__ and then probe it, so a recursing error path kills
+    them outright. Pins that the result comes out intact. This is the user-facing symptom, not a promise about
+    snapshot semantics -- a copied QueryResult still goes stale on the next structural change (task 27)."""
+    qr = _query([_pos_pool([[1.0, 2.0]])], "position")
+
+    out = op(qr)
+
+    assert isinstance(out, QueryResult)
+    assert len(out) == 1
+    assert out.position.numpy().tolist() == [[1.0, 2.0]]
+
+
+# --- _data restates Pool's live-rows rule by hand ------------------------------------------------------------------
+# __init__ builds its views with `p.data[f][0:len(p)]`, not `getattr(p, f)` -- the same view, one dict hop cheaper on
+# the query-build path (measured: 0.88 vs 0.94 us per 3-field build). The price is that Pool's storage rule -- data[f]
+# is CAPACITY-sized, the live rows are the [0:size] prefix (pool.py:65-67) -- is now stated in two files. This test is
+# the enforcement: if Pool's layout changes and the inline slice doesn't follow, it fails here instead of silently
+# handing systems wrong-length views. It reads qr._data on purpose: the private construction IS what's under test.
+
+def test_qr_data_views_match_pool_accessor():
+    """Every view in `_data` must equal `getattr(pool, field)` -- Pool's own accessor -- in shape, memory and values.
+    Both pools are set up so a sloppy slice shows: `big` grew past INITIAL_CAPACITY (so capacity != size, and a
+    [0:capacity] slice would over-report) and then lost an entity (so there is a stale row just past the live prefix,
+    which a [0:capacity] slice would expose as a real entity). Values catch a wrong offset, shares_memory catches a
+    copy (writes would stop reaching the pool)."""
+    a = _pv_pool([([1.0, 1.0], [0.1, 0.1])])
+    big = _pv_pool([([float(i), 0.0], [0.0, float(i)]) for i in range(Pool.INITIAL_CAPACITY + 5)])   # forces a realloc
+    big.remove_entity(0)                                        # size < capacity: a stale row sits past the live rows
+    assert big.capacity > big.size                              # premise: the capacity tail exists
+    qr = _query([a, big], "position", "velocity")
+
+    for f in qr.fields:
+        for pool, part in zip(qr.pool_list, qr._data[f]):
+            live = getattr(pool, f)                             # Pool's own rule: data[f][0:size]
+            assert part.shape == live.shape, (f, part.shape, live.shape)   # live rows only, no capacity tail
+            assert np.shares_memory(part, live), f                # a view into the pool, not a copy
+            assert part.tolist() == live.tolist(), f              # same rows, so the offset is right too
+
+    tail_before = big.data["position"][len(big)].copy()          # first stale row past the live prefix
+    qr.position = 9.0                                            # scatter into every LIVE row of both pools
+    assert (a.position == 9.0).all() and (big.position == 9.0).all()
+    assert big.data["position"][len(big)].tolist() == tail_before.tolist()   # the tail is not ours to write
 
 
 def test_repr_renders_and_reports_entity_count():

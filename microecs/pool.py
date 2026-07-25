@@ -2,17 +2,22 @@
 import numpy as np
 from .utils import Shape, logger
 
+# Note: if Pool gets new fields, add them here! Otherwise the user code may overwrite them.
+_POOL_INTERNAL_ATTRS = {"size", "capacity", "fields", "shapes", "dtypes", "data", "fields_set"}
+
 class Pool:
     """
     Pool is a dynamic array of entities data given a list of fields, shapes and dtypes (from traits).
     Pool has no concept of entity ids.
     """
     INITIAL_CAPACITY = 100
-    RESERVED_NAMES = {"size", "capacity", "fields", "shapes", "dtypes", "data", "fields_set"}
 
     def __init__(self, fields: list[str], shapes: list[Shape], dtypes: list[np.dtype]):
-        assert len(fields) == len(shapes) == len(dtypes), (len(fields), len(shapes), len(dtypes))
-        assert not ((fields_set := set(fields)) & Pool.RESERVED_NAMES), f"One of {fields=} in {Pool.RESERVED_NAMES}"
+        if not len(fields) == len(shapes) == len(dtypes):
+            raise ValueError(f"Lens not match: {len(fields)} - {len(shapes)} - {len(dtypes)}")
+        if (fields_set := set(fields)) & POOL_RESERVED_NAMES:
+            raise ValueError(f"One of {fields=} in {POOL_RESERVED_NAMES}")
+
         self.fields = fields
         self.shapes = shapes
         self.dtypes = dtypes
@@ -41,7 +46,8 @@ class Pool:
 
     def remove_entity(self, entity_index: int):
         """removes an entity given an index (NOT ID) inside this pool"""
-        assert entity_index < self.size, f"OOB: {entity_index=}, {self.size=}"
+        if not 0 <= entity_index < self.size:
+            raise IndexError(f"OOB: {entity_index=}, {self.size=}")
         for _field in self.fields:
             self.data[_field][entity_index] = self.data[_field][self.size - 1]
         self.size -= 1
@@ -74,3 +80,5 @@ class Pool:
 
     def __len__(self):
         return self.size
+
+POOL_RESERVED_NAMES = _POOL_INTERNAL_ATTRS | {n for n in vars(Pool) if not n.startswith("__")}

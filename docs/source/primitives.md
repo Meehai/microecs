@@ -23,13 +23,31 @@ One frame holds two different timings. Know which is which:
   they take effect at the next `world.update()`. This is what
   keeps queries stable within a tick — pools don't move under a running system.
 - **Field writes are eager.** A write through an `Entity` (`e.position = ...`, `e.position += ...`,
-  `e.position[:] = ...`) and the vectorized `qr.field[:] = ...` path both write straight into
+  `e.position[:] = ...`) and the vectorized `qr.field = ...` path both write straight into
   the pool buffer and are visible immediately — no `update()` needed.
 
 So inside one tick: a freshly spawned entity is **not** visible until `update()`, but a field write on an
 already-committed entity **is** visible at once. Rule of thumb: **structure is deferred, data is live.**
 If a field write must be ordered against a spawn/despawn, do the structural change, call `update()`, then
 write.
+
+## `raise` vs `assert`: who made the mistake?
+
+`python -O` deletes every `assert`. So the two are not interchangeable, and which one a check uses says who is
+being blamed:
+
+- **`raise` — bad input or bad state from outside the library.** A component definition, a ctor argument, a
+  field value, an index. These are the library's contract with its caller, so they must reject under `-O` too:
+  `World(extra_metadata=...)`, `Pool(fields=..., shapes=..., dtypes=...)`, `pool.remove_entity(i)`, every check
+  in `_validate_component(s)` and in `CommandBuffer.append`.
+- **`assert` — our own bug.** Internal bookkeeping that user input cannot reach because it was already
+  validated at the call: `_pool_ids` length vs pool size, `entity_ids` count vs pool sizes, per-part shapes in
+  `QRField`. Free under `-O`, which is why the hot ones (`Pool.add_entity`, per field per spawn) stay asserts.
+
+An assert on a user-reachable path is a **bug**, not a style choice — in production the guard is simply absent
+and the bad value flows on until something unrelated breaks. `test/unit/test_assert_raise_policy.py` pins both
+halves: a `-O` subprocess per public rejection, and an allow-list of every remaining assert (so a new one has to
+be argued for).
 
 ## How much are `Pool` and `QueryResult` numpy-like and corner cases
 
@@ -40,9 +58,10 @@ That covers elementwise math and ufuncs (e.g. `np.where`, `np.linalg.norm(..., a
 
 Edge cases worth knowing:
 
-- **Not a full ndarray — these raise, never lie.** Entity-axis indexing of any kind
-  (`qr.f[i]`, `qr.f[:]`, `qr.f[2:4]`, `qr.f[mask]`, fancy), partial entity writes, and ndarray
-  methods/attrs (`.sum()`, `.mean()`, `.dtype`, `.ndim`, `.T`). Need a single entity? Use
+- **Not a full ndarray — these raise, never lie.** Entity-axis *selection* of any kind
+  (`qr.f[i]`, `qr.f[2:4]`, `qr.f[::2]`, `qr.f[mask]`, fancy), partial entity writes, and ndarray
+  methods/attrs (`.sum()`, `.mean()`, `.dtype`, `.ndim`, `.T`). Keeping every entity is fine, so
+  `qr.f[:]` and `qr.f[...]` read the whole field. Need a single entity? Use
   `world.get_entity(qr.entity_ids[i])`. Need a real array? Materialize first with `qr.f.numpy()`.
 - **Axis-0 ops are per-pool, not global (footgun).** `np.sort` / `np.cumsum` / `np.sum` over
   `axis=0` run within each pool and reset at pool boundaries — they do **not** see all entities
@@ -51,9 +70,18 @@ Edge cases worth knowing:
   longer matches the pool's row count.
 - **Operands must come from the same query.** Alignment is per-pool, not by flat index, so don't
   mix a `Field` from one `world.query(...)` into an op on another.
-- **Reserved field names.** A field is read back as `qr.<field>` and `entity.<field>`, so it may not
-  collide with an attribute or method of `QueryResult` or `Entity` — `World(...)` rejects such a
-  component at construction instead of silently shadowing it. The reserved set (source of truth:
-  `QUERY_RESULT_INTERNAL_ATTRS` in `query_result.py`, `ENTITY_INTERNAL_ATTRS` in `entity.py`):
-  - from `QueryResult`: `pool_list`, `entity_ids`, `fields`, `_data`, `_len`, `_field_shapes`, `_field_dtypes`
-  - from `Entity`: `entity_id`, `get_components`, `get_fields`, `to_dict`, `_eid_to_pool_ix`, `_pool_to_components`
+- **Reserved field names.** A field is read back as `qr.<field>`, `entity.<field>` and `pool.<field>`,
+  all three via `__getattr__` — which Python only calls *after* normal lookup fails. So a field named
+  like any member of those classes is shadowed by that member and unreachable. `World(...)` rejects
+  such a component at construction (a `raise`, so `python -O` keeps it) instead of silently shadowing
+  it. Each class publishes its own reserved set — instance attrs plus its class dict, derived at
+  import — and `World._check_components` unions the three:
+  - `QUERY_RESULT_RESERVED_NAMES` (`query_result.py`): `pool_list`, `entity_ids`, `fields`, `_data`,
+    `_cache`, `_field_shapes`, `_field_dtypes`
+  - `ENTITY_RESERVED_NAMES` (`entity.py`): `entity_id`, `_eid_to_pool_ix`, `_pool_to_components`,
+    `_world_command_buffer`, plus every public method (`get_components`, `to_dict`, …)
+  - `POOL_RESERVED_NAMES` (`pool.py`): `size`, `capacity`, `fields`, `shapes`, `dtypes`, `data`,
+    `fields_set`, plus every public method (`add_entity`, `pop_entity`, …) and `INITIAL_CAPACITY`
+
+  Adding an instance attr to one of those classes means adding it to that file's private
+  `_*_INTERNAL_ATTRS` — methods are picked up from the class dict automatically, attrs cannot be.

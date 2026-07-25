@@ -41,7 +41,7 @@ def step(st):
         w.get_entity(ids[t]).add_component(Buff, amount=_s(float(t)))  # [Pos] -> [Pos,Buff]
     w.update()
     qp = w.query(Pos)
-    qp.position[:] = qp.position + qp.velocity * DT32
+    qp.position = qp.position + qp.velocity * DT32
 
 
 def collect(st):

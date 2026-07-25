@@ -37,12 +37,12 @@ def build(n):
 
 def step(w):
     qv = w.query(Pos, Acc)
-    qv.velocity[:] = qv.velocity + qv.acceleration * DT32
+    qv.velocity = qv.velocity + qv.acceleration * DT32
     qp = w.query(Pos)
-    qp.position[:] = qp.position + qp.velocity * DT32
+    qp.position = qp.position + qp.velocity * DT32
     q = w.query(Pos)
     flip = np.abs(q.position.numpy()) > BOUND          # (N,2) across pools -> chunked by Field
-    q.velocity[:] = np.where(flip, -q.velocity, q.velocity)
+    q.velocity = np.where(flip, -q.velocity, q.velocity)
 
 
 def collect(w):

@@ -184,15 +184,19 @@ def test_sort_axis0_diverges_when_pools_interleave():
     0,                                 # qr.f[i]  -- a single entity (task 16: now forbidden too)
     4,                                 # qr.f[i]  -- a single entity spanning into the second pool
     -1,                                # qr.f[-1] -- a negative single entity
-    slice(None),                       # qr.f[:]  -- whole-array read
     slice(2, 4),                       # qr.f[2:4] -- entity range
+    slice(None, None, 2),              # qr.f[::2] -- looks whole, but strides past entities
     np.array([1, 0, 1, 0, 1], bool),   # qr.f[mask]
     [0, 2, 4],                         # qr.f[[...]] fancy
 ])
 def test_entity_axis_read_indexing_raises(indexer):
-    """The entity axis is off-limits: ANY index on it -- a bare int (task 16), a slice, a mask, fancy -- crosses
-    pools, so it raises TypeError instead of returning a partial view. Per-entity access is
-    `world.get_entity(qr.entity_ids[i])`; iteration is `zip(qr.f, ...)`."""
+    """SELECTING on the entity axis is off-limits: a bare int (task 16), a sub-range, a stride, a mask or fancy all
+    cross pools, so they raise TypeError instead of returning a partial view. Per-entity access is
+    `world.get_entity(qr.entity_ids[i])`; iteration is `zip(qr.f, ...)`.
+
+    Deliberately NOT here: `[:]` and `[...]` KEEP every entity, so they read the whole field (task 33). This list
+    used to include `slice(None)` -- that was the pre-task-33 asymmetry written down as if intended, when in fact
+    `qr.f[:] = v` worked while `qr.f[:]` and `qr.f[:] += 1` raised. `[::2]` guards the near-miss."""
     _, qr = _multipool_velocity()
     with pytest.raises(TypeError):
         qr.velocity[indexer]

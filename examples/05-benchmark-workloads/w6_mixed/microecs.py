@@ -48,9 +48,9 @@ def _ai_tick(q):
     respawn   = dead & (new_timer <= 0)
     new_state = np.where(respawn, 0, new_state)
     new_hp    = np.where(respawn, np.float32(100.0), new_hp)
-    q.hp[:]    = new_hp.astype(np.float32)
-    q.state[:] = new_state.astype(np.int32)
-    q.timer[:] = new_timer.astype(np.float32)
+    q.hp    = new_hp.astype(np.float32)
+    q.state = new_state.astype(np.int32)
+    q.timer = new_timer.astype(np.float32)
 
 
 def build(n):
@@ -89,9 +89,9 @@ def step(st):
     w = st["w"]
     f = st["fc"][0]; st["fc"][0] += 1
     qv = w.query(Pos, Acc)
-    qv.velocity[:] = qv.velocity + qv.acceleration * DT32
+    qv.velocity = qv.velocity + qv.acceleration * DT32
     qp = w.query(Pos)
-    qp.position[:] = qp.position + qp.velocity * DT32
+    qp.position = qp.position + qp.velocity * DT32
     _ai_tick(w.query(Health))
     for col, rows in zip(st["hp_cols"], st["rows"][f]):   # per-pool columnar scatter (O(k))
         col[rows, 0] -= DMG32

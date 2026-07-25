@@ -97,7 +97,7 @@ def _key(positions):
 def micro_ecs_vectorized(n=N):
     qr = _world(n).query(HasPos, HasVel)
     def step():
-        qr.position[:] = qr.position + qr.velocity * DT          # Field spans both pools; loop hidden
+        qr.position = qr.position + qr.velocity * DT          # Field spans both pools; loop hidden
     return _bench(step), _key(qr.position.numpy())
 
 def micro_ecs_pool_vectorized(n=N):
