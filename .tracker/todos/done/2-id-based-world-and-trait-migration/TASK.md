@@ -39,7 +39,7 @@ Index handles don't survive mutation.
 
 `World`'s own docstring already promises *"Entities are id-based … assigned a unique
 id"* — but the code never implements it. The migration pattern from
-[task 1](../1-bounce-impulse-accumulator/TASK.md) / the world tests
+[task 1](../../open/1-bounce-impulse-accumulator/TASK.md) / the world tests
 (pop from pool A → add a trait → re-add to pool B) is currently done by reaching into
 `pool.pop_entity(index)` directly. Make ids real, then the operation becomes a clean
 `World` method that doesn't leak pool/index details.
@@ -123,5 +123,5 @@ valid across every add/remove.
   `test/test_world.py::test_pop_then_migrate_entity_to_a_richer_archetype`.
 - `ecs/world.py` (`add_entity`, `_get_entity_pool`, `_make_key`), `ecs/pool.py`
   (`remove_entity`, `pop_entity`, swap-remove).
-- Unblocks cleaner entity lifecycle for [task 1](../1-bounce-impulse-accumulator/TASK.md)
+- Unblocks cleaner entity lifecycle for [task 1](../../open/1-bounce-impulse-accumulator/TASK.md)
   (spawning/despawning balls without index juggling).

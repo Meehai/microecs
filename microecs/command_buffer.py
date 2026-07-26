@@ -14,7 +14,6 @@ class CommandType(StrEnum):
     REMOVE_ENTITY    = "remove_entity"
     ADD_COMPONENT    = "add_component"
     REMOVE_COMPONENT = "remove_component"
-    SET_DATA         = "set_data"
 
 @dataclass
 class Command:
@@ -96,15 +95,6 @@ class CommandBuffer:
             state = self._get_components_state(component, existing_components=components, entity_id=entity_id)
             if state == -1:
                 raise ValueError(f"Component: {component} either removed twice or doesn't exist (id: {entity_id})")
-
-        elif command.command_type == CommandType.SET_DATA:
-            component = command.args["component"]
-            data = {k: v for k, v in command.args.items() if k != "component"}
-            world._validate_component(component, strict=False, check_extra=True, **data)
-            components = self._get_entity_components(entity_id)
-            state = self._get_components_state(component, existing_components=components, entity_id=entity_id)
-            if state == -1:
-                raise ValueError(f"Component: {component} not found. Either removed or never existed (id: {entity_id})")
 
         self.data.append(command)
 

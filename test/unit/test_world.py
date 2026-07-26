@@ -1681,16 +1681,19 @@ def test_field_to_component_is_keyed_by_field_name():
 
 
 def test_field_to_component_resolves_the_name_entity_set_data_passes():
-    """The map is the resolution set_data does: a field name reaches the component that owns it."""
+    """The map is the resolution set_data does: a field name reaches the component that owns it -- which is how
+    one call can span several components and still validate each field against the right schema (#42: the write
+    itself is eager, so the proof is the value in the pool, no longer a SET_DATA command carrying the type)."""
     world = World([HasPosition, HasVelocity])
     eid = world.add_entity((HasPosition, HasVelocity),
                            position=np.array([1, 2], "float32"), velocity=np.array([3, 4], "float32"))
     world.update()
 
+    assert world.field_to_component["velocity"] is HasVelocity
     world.get_entity(eid).set_data(velocity=np.array([9, 8], "float32"))
 
-    (cmd,) = world._command_buffer.data
-    assert cmd.args["component"] is world.field_to_component["velocity"] is HasVelocity
+    np.testing.assert_array_equal(world.get_entity(eid).velocity, [9, 8])
+    assert len(world._command_buffer) == 0
 
 
 def test_world_accepts_the_same_component_field_names_in_separate_worlds():

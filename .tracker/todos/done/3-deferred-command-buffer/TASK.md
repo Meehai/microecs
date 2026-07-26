@@ -184,5 +184,5 @@ Integration (`test/integration/test_i_world.py`, fake 2-tick loop):
 - Builds on [task 02](../../done/2-id-based-world-and-trait-migration/TASK.md): stable
   eager ids are what make a deferred `remove_entity(eid)` / follow-up commands resolve
   correctly at commit time even after siblings moved.
-- Unblocks [task 1](../1-bounce-impulse-accumulator/TASK.md): spawning/despawning
+- Unblocks [task 1](../../open/1-bounce-impulse-accumulator/TASK.md): spawning/despawning
   balls from inside the physics systems without corrupting SoA iteration.

@@ -19,6 +19,10 @@ Decide what ideas are worth borrowing.
 **Confidence**: stars/dates are June 2026 point-in-time snapshots (drift). Author-claimed benchmarks are flagged
 `[claim]`. Primary sources (GitHub API, PyPI JSON, docs, papers) in Sources.
 
+**See also**: [plan 2 — app-level audit & mutation timing](2-app-level-audit-and-mutation-timing.md) answers
+Part 1's "efficient / good / nice?" from the *inside* instead of the benchmark side: a throwaway game built on
+the library, 15 findings, and the one structural call (eager vs deferred **data** writes).
+
 ---
 
 ## TL;DR (grug verdict)

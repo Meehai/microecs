@@ -87,15 +87,15 @@ class World:
         del self.live_entities[entity_id]
 
     def get_entity(self, entity_id: EntityId) -> Entity:
-        """Gets the entity reference given an entity id. Used for 'object-like' ops. Lazy; call world.update()"""
+        """Gets the entity reference given an entity id. Used for 'object-like' ops. Structural updates
+        (add/remove_component) are lazy, so you need to call world.update(). Data updates (set_data) are immediate."""
         if entity_id not in self.live_entities:
             raise ValueError(f"Entity id: {entity_id} not in the world")
 
         if self.live_entities[entity_id] is None:
             # only instantiate on first request, so the object is not created for no reason at add_entity time.
             self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components,
-                                                   world_command_buffer=self._command_buffer,
-                                                   world_field_to_component=self.field_to_component)
+                                                   world_command_buffer=self._command_buffer)
 
         return self.live_entities[entity_id]
 
@@ -145,8 +145,6 @@ class World:
                 self._do_add_component(command.entity_id, component=component, **command.args)
             elif command.command_type == CommandType.REMOVE_COMPONENT:
                 self._do_remove_component(command.entity_id, component=command.args)
-            elif command.command_type == CommandType.SET_DATA:
-                self._do_set_data(command.entity_id, data={k: v for k, v in command.args.items() if k != "component"})
             else: # CommandType.REMOVE_COMPONENT
                 raise NotImplementedError(command)
 
@@ -197,11 +195,6 @@ class World:
             entity_data.pop(_field)
         new_components = [c for c in components if c != component]
         self._add_to_pool(entity_id, new_components, **entity_data)
-
-    def _do_set_data(self, entity_id: EntityId, data: dict[str, np.ndarray]):
-        pool, pool_ix = self._eid_to_pool_ix[entity_id]
-        for k, v in data.items():
-            pool.data[k][pool_ix] = v
 
     # other low-level methods
 

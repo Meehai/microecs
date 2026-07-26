@@ -3,7 +3,7 @@
 microecs is five small primitives: `Component`, `Entity`, `Pool`, `QueryResult`, `World`.
 
 - `Component` is a simple python dataclass holding only data. All entries must be numpy arrays with metadata fields: shape and dtype. We support 4 dtypes only: `int32`, `float32`, `bool` and `object`. Python strings (and any other non-numeric data) go in `dtype=object` — numpy's fixed-width strings truncate in a pre-allocated pool, so they are not supported. A component with no fields is a valid **tag** for querying (e.g. `class Frozen(Component): pass`).
-- `Entity` is an `OOP-like` view inside the arrays of components. The data is column-major, so this approach is the slowest (row-major), but is sometimes needed when iterating through all the objects of some type (e.g. rendering or serialization). Its per-entity API (`add_component`, `remove_component`, `set_data`, `to_dict`, single-field read) is covered in [Systems & Per-Entity Iteration](systems.md). Reads are direct; **all writes go through `set_data` and are buffered**.
+- `Entity` is an `OOP-like` view inside the arrays of components. The data is column-major, so this approach is the slowest (row-major), but is sometimes needed when iterating through all the objects of some type (e.g. rendering or serialization). Its per-entity API (`add_component`, `remove_component`, `set_data`, `to_dict`, single-field read/write) is covered in [Systems & Per-Entity Iteration](systems.md). Reads and data writes both go straight to the pool row; only **structural** changes (add/remove a component) are buffered.
 - `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Uses `Components` metadata to construct contiguous arrays for all entities of the same type. All fields of all entities of the same archetype are stored in column-major numpy arrays.
 - `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's interface. For all intents and purposes it should feel like a `(N, ...)` view over all selected entities. To get a proper numpy array out of one field, use `qr.<field>.numpy()` (there is no `qr.numpy()`). To iterate over each entity in a query result (e.g. rendering), use `for eid, position in zip(qr.entity_ids, qr.position): ...`.
 - `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other. A `World` can also require extra metadata keys on every field via `World(extra_metadata=["serializable"])`, to enforce component-level behavior such as field serialization.
@@ -11,48 +11,79 @@ microecs is five small primitives: `Component`, `Entity`, `Pool`, `QueryResult`,
 ## Few relevant concepts
 
 - `Pool` operates on array indices, while `World` operates on entity IDs (also integers). This allows seamless movement between pools while the high-level systems still working as intended.
-- Every mutation reached through an `Entity` is lazy. Entity lifecycle lives on `World` (`add_entity`, `remove_entity`); component changes and field writes live on the entity itself (`world.get_entity(eid).add_component(...)`, `.remove_component(...)`, `.set_data(...)`). All of them go into a command buffer that is only executed when calling `world.update()`. The one eager path is the batch one: `qr.field = ...` writes into the pool immediately. See [Mutation timing](#mutation-timing-the-entity-api-is-buffered-the-queryresult-api-is-eager).
+- Structural change is lazy, data is not. Entity lifecycle lives on `World` (`add_entity`, `remove_entity`) and component changes on the entity itself (`world.get_entity(eid).add_component(...)`, `.remove_component(...)`) — those go into a command buffer that is only executed when calling `world.update()`, because they move rows between pools. Writing a field (`e.field = ...`, `e.set_data(...)`, `qr.field = ...`) moves nothing, so it lands in the pool immediately. See [Mutation timing](#mutation-timing-structural-changes-are-buffered-data-writes-are-eager).
 - `Systems` are a convention, they are not part of this library. They can be defined at application level and act as hooks or callbacks. The `World` object doesn't need to know more than entities and components. See [Systems & Per-Entity Iteration](systems.md).
 
-## Mutation timing: the `Entity` API is buffered, the `QueryResult` API is eager
+## Mutation timing: structural changes are buffered, data writes are eager
 
-One frame holds two different timings, and **the API you reach for decides which one you get**:
+One frame holds two different timings, and **what the write does decides which one you get** — not which
+object you reached for:
 
 | you write | timing | visible |
 |---|---|---|
 | `world.add_entity(...)` / `world.remove_entity(eid)` | **buffered** | after `world.update()` |
 | `e.add_component(...)` / `e.remove_component(...)` | **buffered** | after `world.update()` |
-| `e.set_data(position=...)` | **buffered** | after `world.update()` |
-| `qr.position = ...` / `qr.position[:] = ...` | **eager** | immediately |
+| `e.field = x` / `e.field[:] = x` / `e.field += x` / `e.set_data(field=x)` | **eager** | immediately |
+| `qr.field = ...` / `qr.field[:] = ...` | **eager** | immediately |
 
-Rule of thumb: **everything you do through an `Entity` is staged; everything you do through a
-`QueryResult` lands now.** The `Entity` object is a per-entity *command handle*; the `QueryResult` is a
-live view onto the pool arrays.
+Rule of thumb: **moving a row between pools is staged; changing a number inside a row lands now.**
+
+That line is where it is for one reason: moving a row invalidates iteration in flight, so a query cannot
+stay stable within a tick unless structural change is deferred. `pool.data[f][ix] = v` moves nothing and
+invalidates nothing, so there is nothing to defer — and deferring it used to cost real things (see
+[what changed](#history-set_data-used-to-be-buffered)).
 
 Consequences worth internalising:
 
-- **`e.field = x` is not a thing.** It raises, pointing you at `set_data`. Neither is `e.field[:] = x` —
-  an `Entity` read hands back a **read-only** view precisely so a write can't sneak past the buffer.
-  One write path, one timing:
+- **One write rule for both APIs, and it is numpy's.** `e.field = x` accepts exactly what
+  `qr.field = x` accepts: the value is converted to the field's dtype and broadcast into the field's
+  shape. Lists, tuples and scalars are fine; a `float64` array is cast down; anything that does not fit
+  raises *before* the row is touched.
 
   ```python
   e = world.get_entity(eid)
-  e.set_data(position=np.float32([1, 0]), velocity=np.float32([0, 0]))   # staged, one transaction
-  world.update()                                                          # now it is in the pool
+  e.position = np.float32([1, 0])   # exact
+  e.position = [1, 0]               # list -> converted
+  e.velocity = 0.0                  # scalar -> fills the row, like `qr.velocity = 0.0`
+  e.position[0] = 5.0               # element
+  e.position += np.float32([1, 1])  # read-modify-write, in place
+  e.label = {"hp": 7}               # dtype=object field: the python object itself
   ```
 
-- **Entity writes are buffered but Entity reads are not — you cannot read your own write.** Inside one
-  tick, `e.set_data(position=p)` then `e.position` gives you the **old** value. That is not a bug, it is
-  what "staged" means: the pool has not changed yet. If a later step in the same tick needs the new
-  value, either keep it in a local or call `world.update()` first.
+  `add_entity` / `add_component` are **stricter**: they still demand an exact `np.ndarray` of the right
+  dtype and shape, because that call *declares* the row rather than updating one.
 
-- **`set_data` is validated eagerly, applied lazily.** Bad dtype/shape, an unknown component, a component
-  you already removed this tick — all raise at the `set_data` call, not at `update()`. A multi-component
-  `set_data` is a transaction: if any part is rejected, none of it is staged.
+- **You can read your own write, and read-modify-write composes.** Two independent contributions to one
+  field in the same tick both count:
 
-- **Staged data is held by reference, not snapshotted.** `add_entity(position=arr)` and
-  `set_data(position=arr)` remember *your array*, and `update()` reads whatever it holds at that moment.
-  So the idiomatic numpy scratch-buffer loop is **wrong** here:
+  ```python
+  def damage(e, amount):
+      e.health = e.health - np.float32(amount)   # or: e.health -= np.float32(amount)
+
+  damage(e, 3); damage(e, 4)      # health drops by 7, not by 4
+  ```
+
+- **`set_data` is the transaction, not the only write path.** Reach for it when several fields (across any
+  number of components) must land together: it validates every field first, then writes, so a rejected
+  call writes **nothing**. A single-field `set_data(a=v)` is exactly `e.a = v`.
+
+  ```python
+  e.set_data(position=np.float32([1, 0]), velocity=np.float32([0, 0]))   # both, or neither
+  ```
+
+- **A write goes where the row is *now*.** It never consults the command buffer, which has three visible
+  edges: a spawn not yet committed has no row, so writing it raises the same `AttributeError` a read does
+  (spawn data belongs in `add_entity`'s kwargs); a field whose component is only *pending* has no column
+  yet, so writing it raises until `update()`; and a field whose component is pending *removal* still has
+  its column, so the write lands and then goes away with the component.
+
+- **Do not hold a row view across `update()`.** `e.field` is a live view into pool memory, so a view
+  stashed across an `update()` writes into whatever row now sits at that index — the entity may have
+  migrated or been swap-removed. Same rule a `QueryResult` already has. Re-read after `update()`.
+
+- **Data staged by `add_entity` is held by reference, not snapshotted.** `add_entity(position=arr)`
+  remembers *your array*, and `update()` reads whatever it holds at that moment. So the idiomatic numpy
+  scratch-buffer loop is **wrong** here:
 
   ```python
   scratch = np.zeros(2, "float32")
@@ -62,14 +93,22 @@ Consequences worth internalising:
   world.update()                                           # every entity commits the LAST value
   ```
 
-  Pass a fresh array per call (`np.float32([i, i])`), or `scratch.copy()`.
+  Pass a fresh array per call (`np.float32([i, i])`), or `scratch.copy()`. Data *writes* have no such
+  trap — they copy into the row at the call.
 
-- **Order within a tick is preserved.** The buffer replays in call order at `update()`, so
-  `set_data(b=…)` then `remove_component(B)` does the write and then drops the component — harmless.
-  The reverse order is rejected at staging time.
+- **Structural order within a tick is preserved.** The buffer replays in call order at `update()`, so
+  `add_component(B)` then `remove_component(B)` nets out correctly. Data writes are not in that buffer at
+  all: they have already happened by the time `update()` runs.
 
-The reason structural changes are buffered at all: it keeps queries stable *within* a tick. Pools do not
-move under a running system.
+### History: `set_data` used to be buffered
+
+Until v0.4.x the line was drawn at *which object you hold* — everything through an `Entity` was staged
+(`e.field = x` raised, and a read handed back a read-only view), while `qr.field = ...` was eager. Half of
+that was paid for and none of it collected: `update()` is deliberately not atomic and staged values are
+references, not copies, so deferral bought no snapshot semantics — while it cost read-modify-write
+(`damage(3); damage(4)` left only the last one), cost the ability to read your own write, and put an
+`isinstance` + `setflags(write=False)` on every single field read. Data writes are eager now, and
+`set_data` kept only the part that was worth keeping: the multi-field transaction.
 
 ## `raise` vs `assert`: who made the mistake?
 
@@ -158,15 +197,16 @@ Edge cases worth knowing:
 > | expression | 1 matching pool | ≥2 matching pools |
 > |---|---|---|
 > | `qr.f[0]`, `qr.f[::2]`, `qr.f[mask]` | works | `TypeError` |
-> | `qr.f[0] = x` (single-entity write) | **works, eager, unbuffered** | `TypeError` |
+> | `qr.f[0] = x` (single-entity write) | works | `TypeError` |
 > | `qr.f.sum()`, `qr.f.dtype` | works | `AttributeError` |
 > | `np.sort(qr.f, axis=0)` | correct | silently sorted **per pool** |
 > | `np.concatenate([qr.f, qr.f])` | correct | `RecursionError` |
 >
 > Two things follow. First, a call site that works today starts raising the moment an unrelated spawn
 > elsewhere creates a second archetype — so **write to the contract, not to what happens to run**.
-> Second, `qr.f[0] = x` at one pool is a per-entity write that bypasses the command buffer entirely,
-> which contradicts the buffered-`Entity` rule above; use `world.get_entity(eid).set_data(...)`.
+> Second, `qr.f[0] = x` indexes the entity axis, which is exactly what has no meaning across pools — the
+> timing is fine (a data write is eager either way), the *addressing* is not. For one entity go by id:
+> `world.get_entity(eid).f = x`.
 - **Reserved field names.** A field is read back as `qr.<field>`, `entity.<field>` and `pool.<field>`,
   all three via `__getattr__` — which Python only calls *after* normal lookup fails. So a field named
   like any member of those classes is shadowed by that member and unreachable. `World(...)` rejects
@@ -176,7 +216,8 @@ Edge cases worth knowing:
   - `QUERY_RESULT_RESERVED_NAMES` (`query_result.py`): `pool_list`, `entity_ids`, `fields`, `_data`,
     `_cache`, `_field_shapes`, `_field_dtypes`
   - `ENTITY_RESERVED_NAMES` (`entity.py`): `entity_id`, `_eid_to_pool_ix`, `_pool_to_components`,
-    `_world_command_buffer`, plus every public method (`get_components`, `to_dict`, …)
+    `_world_command_buffer`, plus every method, private ones included (`get_components`, `to_dict`,
+    `_locate`, …)
   - `POOL_RESERVED_NAMES` (`pool.py`): `size`, `capacity`, `fields`, `shapes`, `dtypes`, `data`,
     `fields_set`, plus every public method (`add_entity`, `pop_entity`, …) and `INITIAL_CAPACITY`
 

@@ -226,169 +226,32 @@ def test_buffer_rejects_missing_required_field():
 
 
 # ==================================================================================================================
-# SET_DATA — the verb behind entity.set_data (microecs #25, renamed in #29). Same gate as ADD/REMOVE: append a
-# raw Command, assert accept/reject + len(buf), apply via update(). The command is still scoped to ONE component;
-# #29 only changed the ENTITY-level signature (field kwargs, component resolved from the field name), not this.
+# The buffer holds STRUCTURE only — microecs #42 deleted the SET_DATA verb
+# A data write moves no row and invalidates no query, so it is eager now (`pool.data[f][ix] = v` at the call; the
+# spec lives in test_entity.py / test_entity_set_data.py). What is left is exactly the four verbs that RELOCATE a
+# row, which is what deferral was ever for. Pinned from this side because a leftover SET_DATA branch in append or
+# update() would be dead code that still validates, still scans the buffer and still clears the query cache.
 # ==================================================================================================================
 
-class HasPair(Component):    # two fields -> multi-field SET_DATA atomicity
-    x: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
-    y: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+def test_buffer_verbs_are_the_four_structural_ones():
+    """SET_DATA is gone: the buffer's whole alphabet is spawn / despawn / widen / narrow -- each one moves a row."""
+    assert set(CommandType) == {CommandType.ADD_ENTITY, CommandType.REMOVE_ENTITY,
+                                CommandType.ADD_COMPONENT, CommandType.REMOVE_COMPONENT}
+    assert not hasattr(CommandType, "SET_DATA")
 
 
-def _set_cmd(entity_id, component, **data):
-    """The SET_DATA command entity.set_data queues (#25/#29): the component + the field data to write.
-    args shape {"component": <type>, <field>: value, ...} — flat, exactly like ADD_COMPONENT, so both verbs
-    project their field data the same way (`{k: v for k, v in args.items() if k != "component"}`)."""
-    return Command(CommandType.SET_DATA, entity_id, args={"component": component, **data})
-
-
-# SET_DATA is the 5th verb: entity.set_data queues one per component, validated at append, applied at update().
-# Schema (dtype/shape) is validated at append; VALUES are not (NaN/Inf pass — finiteness is robosim #167).
-# Standalone functions, no shared state. The buffer path is implemented (#25) so these run live.
-
-
-def test_set_data_stages_and_applies():
+def test_data_write_appends_no_command():
+    """The same proof from the buffer's side: both write idioms leave the staging area empty, so a data-only tick
+    has nothing to commit and update() keeps the query cache (#36 fix 2, moot by construction)."""
     world = World([HasPosition])
     eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.update()
 
-    buf = world._command_buffer
-    buf.append(_set_cmd(eid, HasPosition, position=np.array([9.0, 8.0], "float32")))
-    assert len(buf) == 1                                                          # staged (deferred)
-    np.testing.assert_array_equal(world.get_entity(eid).position, [1.0, 2.0])     # not applied yet
-    world.update()
-    np.testing.assert_array_equal(world.get_entity(eid).position, [9.0, 8.0])     # applied
+    world.get_entity(eid).position = np.array([9.0, 8.0], "float32")
+    world.get_entity(eid).set_data(position=np.array([7.0, 6.0], "float32"))
 
-
-def test_set_data_after_pending_add_accepted():
-    """add(V) then set(V) in one tick: the set sees V in the PROJECTED set (pending add) and is accepted."""
-    world = World([HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([0.0, 0.0], "float32")))    # V pending
-    buf.append(_set_cmd(eid, HasVelocity, velocity=np.array([5.0, 6.0], "float32")))    # accepted
-    assert len(buf) == 2
-    world.update()
-    np.testing.assert_array_equal(world.get_entity(eid).velocity, [5.0, 6.0])
-
-
-def test_set_data_after_pending_remove_rejected():
-    """remove(V) then set(V): the projected set excludes the pending-removed V -> refused at append."""
-    world = World([HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition, HasVelocity),
-                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    buf.append(_remove_cmd(eid, HasVelocity))                                     # V leaving
-    with pytest.raises(ValueError):
-        buf.append(_set_cmd(eid, HasVelocity, velocity=np.array([5.0, 6.0], "float32")))
-    assert len(buf) == 1                                                          # only the remove staged
-
-
-def test_set_data_absent_component_rejected():
-    """set on a component the entity does not have (no pending add) -> refused at append, nothing staged."""
-    world = World([HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    with pytest.raises(ValueError):
-        buf.append(_set_cmd(eid, HasVelocity, velocity=np.array([5.0, 6.0], "float32")))
-    assert len(buf) == 0
-
-
-def test_set_data_bad_field_name_rejected():
-    world = World([HasVelocity])
-    eid = world.add_entity((HasVelocity,), velocity=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    with pytest.raises((ValueError, KeyError)):
-        buf.append(_set_cmd(eid, HasVelocity, bogus=np.array([1.0, 2.0], "float32")))
-    assert len(buf) == 0
-
-
-def test_set_data_field_of_other_component_rejected():
-    """a valid field of a DIFFERENT component the entity has -> refused; `component` scopes the legal fields."""
-    world = World([HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition, HasVelocity),
-                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    with pytest.raises((ValueError, KeyError)):
-        buf.append(_set_cmd(eid, HasPosition, velocity=np.array([5.0, 6.0], "float32")))  # velocity is V's
-    assert len(buf) == 0
-
-
-def test_set_data_wrong_shape_rejected():
-    world = World([HasVelocity])
-    eid = world.add_entity((HasVelocity,), velocity=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    with pytest.raises((ValueError, TypeError)):
-        buf.append(_set_cmd(eid, HasVelocity, velocity=np.array([1.0, 2.0, 3.0], "float32")))  # (3,) != (2,)
-    assert len(buf) == 0
-
-
-def test_set_data_wrong_dtype_rejected():
-    """v2 change: a float64 value where the field is float32 is refused at append (v1 silently truncated)."""
-    world = World([HasVelocity])
-    eid = world.add_entity((HasVelocity,), velocity=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    with pytest.raises((ValueError, TypeError)):
-        buf.append(_set_cmd(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float64")))
-    assert len(buf) == 0
-
-
-def test_set_data_atomic_one_bad_field_stages_nothing():
-    """multi-field set with one bad field -> the WHOLE command is refused; nothing staged, nothing applied."""
-    world = World([HasPair])
-    eid = world.add_entity((HasPair,), x=np.array([1.0, 2.0], "float32"), y=np.array([3.0, 4.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    with pytest.raises((ValueError, TypeError)):
-        buf.append(_set_cmd(eid, HasPair, x=np.array([9.0, 8.0], "float32"),
-                            y=np.array([1.0, 2.0, 3.0], "float32")))               # y wrong shape
-    assert len(buf) == 0
-    world.update()
-    np.testing.assert_array_equal(world.get_entity(eid).x, [1.0, 2.0])             # nothing applied
-
-
-def test_set_data_nonfinite_accepted():
-    """Schema not values: NaN/Inf into a dtype+shape-matching float field is accepted (finiteness is #167)."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    buf.append(_set_cmd(eid, HasPosition, position=np.array([np.nan, np.inf], "float32")))
-    assert len(buf) == 1
-    world.update()
-    np.testing.assert_array_equal(world.get_entity(eid).position, np.array([np.nan, np.inf], "float32"))
-
-
-def test_set_data_partial_multifield_accepted():
-    """Setting only SOME fields of a multi-field component must be accepted; the untouched field keeps its value.
-    Currently rejected: append runs _validate_components([HasPair], x=..), which demands the required field y too."""
-    world = World([HasPair])
-    eid = world.add_entity((HasPair,), x=np.array([1.0, 2.0], "float32"), y=np.array([3.0, 4.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    buf.append(_set_cmd(eid, HasPair, x=np.array([9.0, 8.0], "float32")))          # only x; y omitted
-    assert len(buf) == 1
-    world.update()
-    np.testing.assert_array_equal(world.get_entity(eid).x, [9.0, 8.0])             # x updated
-    np.testing.assert_array_equal(world.get_entity(eid).y, [3.0, 4.0])             # y untouched
+    assert len(world._command_buffer) == 0
+    np.testing.assert_array_equal(world.get_entity(eid).position, [7.0, 6.0])
 
 
 # ==================================================================================================================
