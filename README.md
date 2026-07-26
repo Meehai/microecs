@@ -1,6 +1,7 @@
 # MicroECS
 
-Minimal (~850 LoC) Entity Component System in python and numpy. Examples also use raylib for rendering.
+Minimal (~550 LoC, `cloc microecs/`) Entity Component System in python and numpy. Examples also use raylib
+for rendering.
 
 Usage:
 
@@ -15,7 +16,9 @@ python -m pytest test/                            # run the unit & integration t
 python examples/01-hello-world.py                 # run the basic hello world example (others in that dir)
 ```
 
-Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/)
+Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/) — built by
+[`docs/build_docs.sh`](docs/build_docs.sh) (pdoc; no sphinx/config). Build locally with
+`bash docs/build_docs.sh` and open the printed `file://` link.
 
 ## Simple example
 

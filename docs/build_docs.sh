@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# .build_docs.sh -- autogenerate the docs site with pdoc: themed (One Dark), self-contained, no
-# sphinx/config files. Ported from robosim's docs/build_docs.sh. microecs's shape:
+# docs/build_docs.sh -- autogenerate the docs site with pdoc: themed (One Dark), self-contained, no
+# sphinx/config files. Same script as robosim's docs/build_docs.sh (kept in sync). microecs's shape:
 #   * ONE API surface is documented: microecs/ (the ECS library, a real package). Any module that
 #     fails to import is dropped (printed at the end), so a missing optional dep never breaks the build.
 #   * The hand-written prose under docs/source/*.md is kept ON DISK AS-IS and rendered ALONGSIDE the
@@ -8,13 +8,14 @@
 #     so prose and generated API share one themed sidebar. README.md is the home page (guide.html).
 #   * index.html redirects to guide.html. resources/ images referenced by the prose are copied in.
 #
-#   ./.build_docs.sh            # build into ./public, then print a file:// link
-#   ./.build_docs.sh public     # build into ./public  (GitLab Pages serves this dir in CI)
+#   bash docs/build_docs.sh            # build into ./public, then print a file:// link
+#   bash docs/build_docs.sh public     # build into ./public  (GitLab Pages serves this dir in CI)
 set -euo pipefail
-cd "$(dirname "$0")"                    # repo root (this script lives at the microecs root)
+cd "$(dirname "$0")/.."                 # repo root (this script lives in docs/)
 OUT="${1:-public}"
 
-# microecs/ is imported from the repo root.
+# microecs/ is imported from the repo root. (${PYTHONPATH:-} is preserved AFTER so this checkout
+# still wins over a stale site-packages copy.)
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 # one pure-python build dependency; auto-install so a fresh checkout just works
@@ -400,14 +401,15 @@ nav.pdoc code { font-family: inherit; background: none; color: inherit; padding:
 }
 .pdoc .docstring thead th { background: var(--accent); font-weight: 600; }
 .pdoc .docstring tbody tr:hover { background: rgba(255, 255, 255, 0.06); }
-/* Collapsible sidebar trees (Modules + the Examples group under Pages). Nodes that have
+/* Collapsible sidebar trees (Modules + the grouped nodes under Pages). Nodes that have
    children are <details><summary>label</summary><ul>kids</ul></details>: collapsed by default, so
    only the top level (microecs) shows; opening a node reveals its children, to any depth.
    The path to the CURRENT page is emitted <details open>, so you always see where you are. Both
    trees carry class="nav-tree". */
 nav.pdoc > div > ul.nav-tree { margin-left: 0; }               /* cancel pdoc's negative root margin */
 /* the disclosure row: hide the browser's default triangle, draw our own ▸ that rotates to ▾ on open */
-nav.pdoc .nav-tree summary { list-style: none; cursor: pointer; }
+nav.pdoc .nav-tree summary { list-style: none; cursor: pointer; padding: .2rem 0; }  /* match the
+  .2rem vertical rhythm of leaf link rows (nav.pdoc li a) so collapsible group rows aren't cramped */
 nav.pdoc .nav-tree summary::-webkit-details-marker { display: none; }
 nav.pdoc .nav-tree summary::before {
   content: "\25B8"; display: inline-block; width: 1rem; color: var(--silver); transition: transform 100ms;
@@ -417,12 +419,33 @@ nav.pdoc .nav-tree details[open] > summary::before { transform: rotate(90deg); }
 nav.pdoc .nav-tree summary a, nav.pdoc .nav-tree summary .tree-label { display: inline; padding-left: 0; }
 /* leaf rows have no marker -- pad them by the marker width so their text aligns with expandable siblings */
 nav.pdoc .nav-tree li > a { padding-left: 1rem; }
-/* namespace labels (Examples) are plain text, not links -- match the link color */
+/* namespace labels (Examples & Tutorials) are plain text, not links -- match the link color */
 nav.pdoc .tree-label { color: var(--purple); }
 /* indentation + rails: each nested <ul> indents once and draws a faint vertical rail spanning its
    children; hovering a node lights its subtree's rail (and its ancestors') so the subtree stands out */
 nav.pdoc .nav-tree ul { padding-left: 0.6rem; border-left: 1px solid rgba(255, 255, 255, 0.18); }
 nav.pdoc .nav-tree details:hover > ul { border-left-color: var(--lightblue); }
+/* indent the "Current Page" ToC one tab under its heading, matching the Pages/Modules trees (the H1
+   title is now in the heading, so its sub-sections would otherwise sit flush against the left edge) */
+nav.pdoc > div > ul.page-toc { margin-left: 0; }
+nav.pdoc .page-toc li a { padding-left: 1rem; }
+/* Expandable prose code blocks: a long fenced example starts clamped to a few lines with a fade-out and
+   a "Show more" toggle, so a page isn't one wall of code. Short blocks stay fully open (the JS removes
+   the clamp when a block doesn't actually overflow). Scoped to .docstring, so the API "View Source"
+   dropdowns keep their own separate toggle. */
+.pdoc .docstring .pdoc-code.collapsible { position: relative; }
+.pdoc .docstring .pdoc-code.collapsible.collapsed { max-height: 12em; overflow: hidden; }
+.pdoc .docstring .pdoc-code.collapsible.collapsed::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3.5em; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(35, 38, 39, 0), var(--code));
+}
+.pdoc .docstring .code-toggle {
+  display: block; width: fit-content; margin: 0.5rem 1em 1.25rem; padding: 0.25rem 0.7rem; cursor: pointer;
+  position: relative; z-index: 1;   /* sit above the position:relative code block, never behind it */
+  font: inherit; color: var(--lightblue); background: var(--code);
+  border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 4px;
+}
+.pdoc .docstring .code-toggle:hover { color: #fff; border-color: var(--lightblue); }
 CUSTOM_CSS
 
 cat > "$TMPL/syntax-highlighting.css" <<'SYNTAX_CSS'
@@ -855,8 +878,8 @@ span.linenos {
 }
 SYNTAX_CSS
 
-# sidebar: the hand-written prose under a "Pages" heading (friendly titles, fixed order via
-# the doc_nav global), then the generated API under "Modules" as a nested package tree. The Home link
+# sidebar: the hand-written prose under a "Pages" heading (friendly titles, fixed order + nesting via
+# the doc_nav_tree global), then the generated API under "Modules" as a nested package tree. The Home link
 # points at guide.html (the README home page built below). The guide.* synthetic package is never
 # shown verbatim; prose pages render their own markdown H1, so we drop pdoc's modulename heading +
 # View-Source buttons for them, keeping those only for the real API modules.
@@ -865,33 +888,39 @@ cat > "$TMPL/module.html.jinja2" <<'JINJA'
 {% block module_list_link %}
     <a class="home-button" href="{{ "../" * module.modulename.count(".") }}guide.html">Home</a>
 {% endblock %}
-{# rename pdoc's default "Contents" (this page's own table of contents) to "Current Page" #}
+{# pdoc's default "Contents" (this page's own table of contents), reshaped: the heading names the
+   current page ("Current Page: <friendly title>", white), and the list below drops the redundant
+   top-level page-title entry so the sub-sections show directly under it (promote_subtoc). #}
 {% block nav_index %}
     {% set index = module.docstring | to_markdown | to_html | attr("toc_html") %}
     {% if index %}
-        <h2>Current Page</h2>
-        {{ index | safe }}
+        <h2>Current Page: {{ page_titles.get(module.modulename, module.modulename) }}</h2>
+        {{ index | promote_subtoc | safe }}
     {% endif %}
 {% endblock %}
 {% block nav_submodules %}
-    {% if doc_nav %}
+    {% if doc_nav_tree %}
     <h2>Pages</h2>
+    {# Pages sidebar: Home, then the fixed-order doc_nav_tree. A node with children renders as a
+       collapsible <details> (like the Modules tree); its summary is a link when the node is itself a
+       page or a plain label when it is only a group header (Examples & Tutorials). The path to the
+       current page is emitted <details open> so you always see where you are. Nested subpages get
+       the tree's rail + indent. #}
     <ul class="nav-tree">
         <li>{{ ("guide", "") | link(text="Home") }}</li>
-        {% for name, title in doc_nav %}
-            <li>{{ (name, "") | link(text=title) }}</li>
+        {% for node in doc_nav_tree recursive %}
+        <li>
+        {%- if node.children %}
+            <details{% if module.modulename in node.mods %} open{% endif %}><summary>
+                {%- if node.mod %}{{ (node.mod, "") | link(text=node.title) }}{% else %}<span class="tree-label">{{ node.title }}</span>{% endif -%}
+            </summary><ul>{{ loop(node.children) }}</ul></details>
+        {%- elif node.mod -%}
+            {{ (node.mod, "") | link(text=node.title) }}
+        {%- else -%}
+            <span class="tree-label">{{ node.title }}</span>
+        {%- endif %}
+        </li>
         {% endfor %}
-        {# examples render as a collapsible "Examples" directory (numbered "1.", "2.", ... -- no
-           "Example N:" prefix). Opens automatically when the current page is one of the examples. #}
-        {% if examples_nav %}
-        <li><details{% if module.modulename in examples_mods %} open{% endif %}><summary><span class="tree-label">Examples</span></summary>
-            <ul>
-                {% for name, title in examples_nav %}
-                    <li>{{ (name, "") | link(text=title) }}</li>
-                {% endfor %}
-            </ul>
-        </details></li>
-        {% endif %}
     </ul>
     {% endif %}
     <h2>Modules</h2>
@@ -907,7 +936,9 @@ cat > "$TMPL/module.html.jinja2" <<'JINJA'
         <li>
         {%- if kids %}
             <details{% if here %} open{% endif %}><summary>
-                {%- if name in api_pages %}{{ (name, "") | link(text=leaf) }}{% else %}<span class="tree-label">{{ leaf }}</span>{% endif -%}
+                {#- a package with children links only if its landing page has content; an empty __init__
+                    (microecs's) is a toggle-only label, so clicking it just drops down its submodules #}
+                {%- if name in api_pages and name not in api_empty %}{{ (name, "") | link(text=leaf) }}{% else %}<span class="tree-label">{{ leaf }}</span>{% endif -%}
             </summary><ul>{{ loop(kids) }}</ul></details>
         {%- elif name in api_pages -%}
             {{ (name, "") | link(text=leaf) }}
@@ -940,6 +971,45 @@ cat > "$TMPL/module.html.jinja2" <<'JINJA'
             {{ view_source_code(module) }}
         {% endif %}
     </section>
+{% endblock %}
+{# expandable prose code blocks: clamp long fenced examples and add a Show more/less toggle, so a page
+   isn't a wall of code. Runs after the content is rendered; scoped to .docstring (prose only). #}
+{% block content %}
+    {{ super() }}
+    <script>
+    (function () {
+        function ready(fn) {
+            if (document.readyState !== "loading") { fn(); }
+            else { document.addEventListener("DOMContentLoaded", fn); }
+        }
+        ready(function () {
+            var blocks = document.querySelectorAll(".pdoc .docstring .pdoc-code.codehilite");
+            Array.prototype.forEach.call(blocks, function (block) {
+                block.classList.add("collapsible", "collapsed");
+                var pre = block.querySelector("pre");
+                var lh = pre ? parseFloat(getComputedStyle(pre).lineHeight) : 0;
+                if (!lh) { lh = 20; }
+                /* only worth a toggle if the clamp actually hides a few lines; a block that spills over
+                   by just a line or two would expand to "the same info", so leave it fully open */
+                if (block.scrollHeight - block.clientHeight <= lh * 3) {
+                    block.classList.remove("collapsible", "collapsed");
+                    return;
+                }
+                var btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "code-toggle";
+                btn.textContent = "Show more ▾";
+                btn.setAttribute("aria-expanded", "false");
+                btn.addEventListener("click", function () {
+                    var collapsed = block.classList.toggle("collapsed");
+                    btn.textContent = collapsed ? "Show more ▾" : "Show less ▴";
+                    btn.setAttribute("aria-expanded", String(!collapsed));
+                });
+                block.insertAdjacentElement("afterend", btn);
+            });
+        });
+    })();
+    </script>
 {% endblock %}
 JINJA
 
@@ -983,20 +1053,28 @@ if "microecs" in sys.modules:
 # 2) Prose pages: docs/source/<stem>.md, fixed sidebar order with friendly titles. Each is copied
 #    into the docstring of a synthetic "guide.<stem>" module so pdoc renders it as a themed page in
 #    the same sidebar as the API. README.md becomes the guide package docstring = home page.
-# Two sidebar groups: flat top-level DOC_PAGES, and EXAMPLE_PAGES (rendered under a collapsible
-# "Examples" directory, titled "1.", "2.", ...). Both still render as guide.<stem> pages; only their
-# sidebar grouping and titles differ.
-DOC_PAGES = [
-    ("primitives", "Primitives"),
-    ("systems",    "Systems & Per-Entity Iteration"),
-    ("benchmarks", "Benchmarks"),
+# DOC_NAV is the single source of truth for the "Pages" sidebar: fixed order + nesting. Each node is
+# (stem, title, children); stem=None marks a group header that is only a label (not itself a page). A
+# node with children renders as a collapsible <details> (like Examples & Tutorials). Home (README) is
+# prepended by the template, not here.
+DOC_NAV = [
+    ("primitives", "Primitives", []),
+    ("systems",    "Systems & Per-Entity Iteration", []),
+    ("benchmarks", "Benchmarks", []),
+    (None, "Examples & Tutorials", [
+        ("example-1-hello-world",             "1. Hello World (raylib)", []),
+        ("example-2-moving-colliding-balls",  "2. Moving & Colliding Balls", []),
+        ("example-3-serialization",           "3. Serialization (save & load)", []),
+    ]),
 ]
-EXAMPLE_PAGES = [
-    ("example-1-hello-world", "1. Hello World (raylib)"),
-    ("example-2-moving-colliding-balls", "2. Moving & Colliding Balls"),
-    ("example-3-serialization", "3. Serialization (save & load)"),
-]
-MD_PAGES = DOC_PAGES + EXAMPLE_PAGES
+def _flatten_nav(nodes):
+    out = []
+    for stem, title, kids in nodes:
+        if stem is not None:
+            out.append((stem, title))
+        out.extend(_flatten_nav(kids))
+    return out
+MD_PAGES = _flatten_nav(DOC_NAV)        # every prose page (leaves + group-header pages), any nesting
 md_files = [(root / "docs/source" / f"{stem}.md", stem, title) for stem, title in MD_PAGES]
 stem2mod = {stem: stem.replace("-", "_") for stem, _ in MD_PAGES}
 
@@ -1056,13 +1134,50 @@ for path, stem, _title in md_files:
     guide_mods.append(f"guide.{stem2mod[stem]}")
 sys.path.insert(0, str(guidedir))
 
-# 3) render everything into one themed site. doc_nav drives the flat "Pages" list;
-#    examples_nav fills the collapsible "Examples" group; examples_mods lets the template auto-open
-#    that group when the current page is an example.
+# 3) render everything into one themed site. doc_nav_tree drives the "Pages" sidebar: a fixed-order
+#    tree the template walks recursively. Each node carries its module (a link, or None for a plain
+#    group label), its children, and `mods` = every page module in its subtree -- so the template can
+#    emit <details open> for whichever group contains the current page.
 pdoc.render.configure(template_directory=tmpl)
-pdoc.render.env.globals["doc_nav"] = [(f"guide.{stem2mod[stem]}", title) for stem, title in DOC_PAGES]
-pdoc.render.env.globals["examples_nav"] = [(f"guide.{stem2mod[stem]}", title) for stem, title in EXAMPLE_PAGES]
-pdoc.render.env.globals["examples_mods"] = {f"guide.{stem2mod[stem]}" for stem, _title in EXAMPLE_PAGES}
+def _nav_tree(nodes):
+    tree = []
+    for stem, title, kids in nodes:
+        mod = f"guide.{stem2mod[stem]}" if stem is not None else None
+        children = _nav_tree(kids)
+        mods = ([mod] if mod else []) + [m for c in children for m in c["mods"]]
+        tree.append({"mod": mod, "title": title, "children": children, "mods": mods})
+    return tree
+pdoc.render.env.globals["doc_nav_tree"] = _nav_tree(DOC_NAV)
+
+# "Current Page: <title>" heading -- the guide home is "Home", each prose page uses its Pages title.
+# API module pages have no ToC, so they never hit this map (they'd fall back to the dotted modulename).
+page_titles = {"guide": "Home"}
+for stem, title in MD_PAGES:
+    page_titles[f"guide.{stem2mod[stem]}"] = title
+pdoc.render.env.globals["page_titles"] = page_titles
+
+import xml.etree.ElementTree as ET
+def promote_subtoc(toc_html):
+    """markdown2 nests a page's single H1 as one top-level <li> that wraps a <ul> of its sub-sections.
+    Return just that inner <ul> so the sidebar lists the sub-sections directly -- the page title is
+    already shown in the 'Current Page: <title>' heading. Fallback: return the ToC unchanged if it is
+    not that single-H1 shape (defensive; every prose page currently is)."""
+    toc_html = (toc_html or "").strip()
+    if not toc_html:
+        return toc_html
+    try:
+        ul = ET.fromstring(toc_html)          # toc_html is a single well-formed <ul>...</ul>
+    except ET.ParseError:
+        return toc_html
+    lis = list(ul)
+    if ul.tag != "ul" or len(lis) != 1:
+        return toc_html
+    sub = lis[0].find("ul")
+    if sub is None:
+        return toc_html
+    sub.set("class", "page-toc")              # so the CSS can indent it like the Pages/Modules trees
+    return ET.tostring(sub, encoding="unicode")
+pdoc.render.env.filters["promote_subtoc"] = promote_subtoc
 
 # API sidebar as a package tree (not a flat list): every rendered module, plus its ancestor packages,
 # wired parent -> children so the template can nest them recursively.
@@ -1078,6 +1193,19 @@ for n in sorted(nodes):
 pdoc.render.env.globals["api_roots"] = sorted(n for n in nodes if "." not in n)
 pdoc.render.env.globals["api_children"] = api_children
 pdoc.render.env.globals["api_pages"] = set(api_modules)
+
+# packages whose landing page renders no members (microecs's bare `"""init file"""` __init__, whose
+# __all__ we blanked above) are shown as a plain toggle-only label in the Modules tree, not a link to a
+# pointless empty page. Leaf modules always keep their link.
+import pdoc.doc
+api_empty = set()
+for m in api_modules:
+    try:
+        if not pdoc.doc.Module.from_name(m).members:
+            api_empty.add(m)
+    except Exception:
+        pass
+pdoc.render.env.globals["api_empty"] = api_empty
 
 pdoc.pdoc(*api_modules, *guide_mods, output_directory=out)
 

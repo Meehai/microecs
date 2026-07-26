@@ -27,7 +27,7 @@ pages:                                # GitLab Pages: themed pdoc site (README h
     - pip install -r requirements.txt
     - export PYTHONPATH="$PYTHONPATH:."
   script:
-    - ./.build_docs.sh public         # must output to public/ for Pages to serve it
+    - bash docs/build_docs.sh public  # must output to public/ for Pages to serve it
   artifacts:
     paths:
       - public
