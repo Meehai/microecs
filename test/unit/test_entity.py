@@ -545,6 +545,68 @@ def test_entity_zero_dim_field_accumulates_but_cannot_be_sliced():
 # Dev's call, 2026-07-26: a write raises exactly like a read, rather than patching the staged ADD_ENTITY command.
 # The rule stays "a write goes where the row is" -- with no row, there is nowhere to go.
 
+# Every public entry point that needs a row must fail the SAME way (plan 2 finding 1; landed untracked as the
+# `_locate` follow-up to #42 -- do not read the old "#43" here, that number is a different task now). Four used
+# to index `_eid_to_pool_ix` directly and raised a bare `KeyError: <id>` -- a number with no context, and
+# reachable without any stale handle, because `add_entity` publishes the id in `world.live_entities` (a public
+# dict) before the row exists. Routing `get_components` / `get_fields` through `_locate` fixed all four
+# (`has_component` and `to_dict` call through them). Note the nesting that creates: `_locate`'s error message
+# calls `get_components()`, which calls `_locate()` -- safe ONLY because `names=[]` can never fail the field
+# check. If that message ever grows a call that can fail, this becomes infinite recursion.
+
+_NEEDS_A_ROW = {
+    "read":           lambda e: e.position,
+    "write":          lambda e: setattr(e, "position", np.array([9.0, 8.0], "float32")),
+    "set_data":       lambda e: e.set_data(position=np.array([9.0, 8.0], "float32")),
+    "get_components": lambda e: e.get_components(),
+    "get_fields":     lambda e: e.get_fields(),
+    "has_component":  lambda e: e.has_component(HasPosition),
+    "to_dict":        lambda e: e.to_dict(),
+}
+
+
+def _uncommitted_spawn():
+    """A handle to an entity that is a live id with no row yet: add_entity, no update()."""
+    world = World([HasPosition])
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    return world.get_entity(eid), eid
+
+
+def _committed_despawn():
+    """A handle kept across a COMMITTED remove_entity: the id is gone from live_entities and has no row."""
+    world = World([HasPosition])
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+    e = world.get_entity(eid)
+    world.remove_entity(eid)
+    world.update()
+    return e, eid
+
+
+@pytest.mark.parametrize("state", ["uncommitted spawn", "committed despawn"])
+@pytest.mark.parametrize("entry", list(_NEEDS_A_ROW))
+def test_entity_without_a_row_raises_attributeerror_everywhere(entry, state):
+    """No row ⇒ `AttributeError` naming the entity, from every entry point and in both states that lack a row.
+
+    `AttributeError` and not `KeyError` for two reasons: it is the protocol Python expects from attribute
+    access (`hasattr`, `copy`, `pickle` all probe with it), and a bare `KeyError: 0` tells the caller nothing
+    about which object refused or why."""
+    e, eid = (_uncommitted_spawn if state == "uncommitted spawn" else _committed_despawn)()
+
+    with pytest.raises(AttributeError) as exc:
+        _NEEDS_A_ROW[entry](e)
+
+    assert str(eid) in str(exc.value)          # names the entity, so the message is actionable
+
+
+# The two states get the SAME message, on purpose (plan 2 finding 4, closed 2026-07-26). The proposal was to
+# branch on `live_entities` and say "not committed yet" vs "removed"; the dev's call was one sentence that is
+# true either way, with the `update()` advice made conditional. The old message asserted "not committed yet"
+# as fact, which is a lie to a despawned handle -- that is what got fixed. Which of the two states you are in
+# is something the caller already knows, so there is no behaviour left here to test beyond the parametrized
+# case above; the rest is wording, and a test that pins wording is a test that breaks on a reword.
+
+
 def test_entity_field_read_before_update_raises_attributeerror():
     """A field read on a not-yet-committed spawn raises AttributeError (not a raw KeyError on the id)."""
     world = World([HasPosition])

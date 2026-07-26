@@ -38,12 +38,12 @@ class Entity:
 
     def get_components(self) -> list[ComponentType]:
         """get the components of this entity. Note: they may change, so call this every time, don't store it"""
-        pool, _ = self._eid_to_pool_ix[self.entity_id]
+        pool, _ = self._locate(names=[])
         return self._pool_to_components[pool]
 
     def get_fields(self) -> set[str]:
         """gets the fields of this entity. Note: they may change, so call this every time, don't store it."""
-        pool, _ = self._eid_to_pool_ix[self.entity_id]
+        pool, _ = self._locate(names=[])
         return pool.fields_set
 
     def set_data(self, **data):
@@ -73,7 +73,7 @@ class Entity:
         try:
             pool, index = self._eid_to_pool_ix[self.entity_id]
         except KeyError:
-            raise AttributeError(f"Entity {self.entity_id} not committed yet. Call `world.update()`")
+            raise AttributeError(f"Entity {self.entity_id} not in world. Call `world.update()` if it was just added.")
 
         if not (flds := pool.fields_set).issuperset(names):
             raise AttributeError(f"Not all of {list(names)} are fields (entity id: {self.entity_id}). "

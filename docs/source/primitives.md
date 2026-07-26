@@ -100,6 +100,16 @@ Consequences worth internalising:
   `add_component(B)` then `remove_component(B)` nets out correctly. Data writes are not in that buffer at
   all: they have already happened by the time `update()` runs.
 
+- **A repeat despawn is a no-op within the tick; a malformed spawn is never.** `remove_entity(eid)` on an
+  id something already killed **since the last `update()`** returns silently and stages nothing. A kill
+  decided by three systems at once (damage, a timer, out of bounds) is a normal event, not a programming
+  error, so you do not need a kill set to deduplicate it. One `update()` later the same call **raises**: the
+  tick is over, system order is no longer arbitrary, and an id you are still holding is a stale reference,
+  not a race. An id the world never handed out raises for the same reason — with no id arithmetic, "never
+  spawned" and "died three ticks ago" are one answer. The spawn side is the opposite in every case:
+  `add_entity([Pos, Pos])` raises, because a duplicated component would build a pool with a duplicated
+  field.
+
 ### History: `set_data` used to be buffered
 
 Until v0.4.x the line was drawn at *which object you hold* — everything through an `Entity` was staged

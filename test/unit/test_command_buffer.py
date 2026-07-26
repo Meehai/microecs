@@ -301,6 +301,20 @@ def test_buffer_alone_fully_validates_a_raw_add_entity(bad_data, reason):
     assert len(world.pools) == 0                                 # nothing materialized
 
 
+def test_buffer_alone_rejects_duplicate_components():
+    """Same gate, structural half (task 43 subtask 1): a duplicated component builds a pool with a duplicated
+    field, so append must refuse it too -- not only world.add_entity's pre-pass, which subtask 1 wants deleted."""
+    world = World([HasPosition, HasVelocity])
+    _register_id(world, 0)
+
+    with pytest.raises(ValueError, match="Duplicate components"):
+        world._command_buffer.append(_spawn_cmd(0, [HasPosition, HasPosition],
+                                                position=np.array([1.0, 2.0], "float32")))
+    assert len(world._command_buffer) == 0
+    world.update()
+    assert len(world.pools) == 0
+
+
 def test_buffer_alone_fills_defaults_into_a_staged_add_entity():
     """append fills omitted defaulted fields into command.args, so a staged ADD_ENTITY carries a COMPLETE arg set
     and update() never computes defaults. (world.add_entity also pre-fills them -- the redundancy of subtask 1.)"""

@@ -32,6 +32,7 @@ import pytest
 
 import microecs
 from microecs import World, Component
+from microecs.command_buffer import CommandType
 from microecs.query_result import QueryResult, QUERY_RESULT_RESERVED_NAMES
 from microecs.entity import ENTITY_RESERVED_NAMES
 from microecs.pool import POOL_RESERVED_NAMES
@@ -658,15 +659,119 @@ def test_rejected_add_entity_leaves_no_live_entity_and_nothing_staged():
     assert len(world.pools) == 0                            # and nothing materialized
 
 
-def test_remove_entity_twice_fails_on_second_call():
-    """Removing the same id twice in a tick: the second call targets an already-removed entity -> reject eagerly."""
+# --- task 43 subtask 2 (landed): remove_entity is idempotent WITHIN A TICK ------------------------------------------
+# A kill is decided by several systems in one tick (damage, TTL, out-of-bounds), so an already-dead id is a NO-OP
+# REQUEST, not a programming error -- it used to raise, and every app wrote the same kill-set helper to avoid it.
+# "No-op" means staging NOTHING: two REMOVE_ENTITY commands for one id would blow up at commit on
+# _eid_to_pool_ix.pop (world.py:169), so the guard sits in World.remove_entity, BEFORE the append -- the buffer
+# can only raise or stage, it has no way to say "do nothing".
+#
+# The no-op stops at the tick boundary, and that boundary is the POINT. Within a tick, system order is arbitrary,
+# so two systems killing the same entity is a race, not a bug. Across an update() the order is explicit, so a dead
+# id you are still holding is a STALE REFERENCE, and swallowing it would hide the bug. The library answers "was it
+# killed this tick?" from `CommandBuffer.removed_this_tick`, which clears with the buffer -- no id arithmetic, so
+# an id never spawned and an id long dead are the same answer: raise.
+
+
+def test_remove_entity_twice_is_a_noop():
+    """Two systems kill the same entity in one tick: the second remove returns silently and stages nothing."""
     world = World(components=[HasPosition])
     eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
     world.update()
 
-    world.remove_entity(eid)                                   # eid now logically gone (pending despawn)
+    world.remove_entity(eid)
+    world.remove_entity(eid)                                   # must not raise
+    assert len(world._command_buffer) == 1                     # and must not stage a second despawn
+
+    world.update()                                             # a doubled command would KeyError here
+    assert eid not in world.live_entities and eid not in world._eid_to_pool_ix
+    assert len(world.pools) == 0
+
+
+def test_remove_entity_after_the_despawn_committed_raises():
+    """The boundary. One tick later the same call is no longer a race -- the id is a stale reference, and the
+    caller has to hear about it. This is the half that separates "two systems agreed" from "you kept a dead id"."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    world.remove_entity(eid)
+    world.update()                                             # despawn committed; the tick is over
+
     with pytest.raises(ValueError):
-        world.remove_entity(eid)                               # 2nd call must fail at the call site
+        world.remove_entity(eid)
+    assert len(world._command_buffer) == 0                     # the refusal staged nothing
+
+
+def test_removed_this_tick_is_dropped_by_update():
+    """The mechanism behind the boundary, pinned directly: the set lives and dies with the buffer. If it ever
+    outlived an update(), every stale remove would silently become a no-op -- and nothing else would notice."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    world.remove_entity(eid)
+    assert world._command_buffer.removed_this_tick == {eid}
+    world.update()
+    assert world._command_buffer.removed_this_tick == set()
+
+
+def test_removed_this_tick_agrees_with_the_commands_it_summarizes():
+    """It is derived state, maintained by hand in two places (append + clear). Pin it against its own source, so
+    a REMOVE_ENTITY that stops updating the set is caught here rather than as a mystery no-op."""
+    world = World(components=[HasPosition])
+    ids = [world.add_entity(components=(HasPosition,), position=np.array([float(i), 1.0], "float32"))
+           for i in range(3)]
+    world.update()
+
+    world.remove_entity(ids[0])
+    world.remove_entity(ids[2])
+    staged = {cmd.entity_id for cmd in world._command_buffer if cmd.command_type == CommandType.REMOVE_ENTITY}
+    assert world._command_buffer.removed_this_tick == staged == {ids[0], ids[2]}
+
+
+@pytest.mark.parametrize("bad_id", [999, -1, -5])
+def test_remove_entity_of_an_id_the_world_never_handed_out_raises(bad_id):
+    """Never-spawned and long-dead are the SAME answer now: not live, no kill staged this tick -> raise. Negative
+    ids are covered by the same rule rather than by a separate bounds check, which is why the rule is one line."""
+    world = World(components=[HasPosition])                    # fresh: _last_id == -1
+    with pytest.raises(ValueError):
+        world.remove_entity(bad_id)
+
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+    world.remove_entity(eid)                                   # a real kill staged alongside must not confuse it
+    with pytest.raises(ValueError):
+        world.remove_entity(bad_id)
+    assert len(world._command_buffer) == 1                     # the refusal staged nothing of its own
+
+
+def test_remove_entity_accepts_the_numpy_ids_a_query_hands_out():
+    """qr.entity_ids is int64. The no-op is a set lookup, so it must not care which integer type it is given --
+    otherwise `kill_all(world, qr.entity_ids[mask])` raises on the duplicate kill it is supposed to absorb."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+
+    world.remove_entity(world.query(HasPosition).entity_ids[0])   # np.int64
+    world.remove_entity(eid)                                      # python int, same entity -> still a no-op
+    assert len(world._command_buffer) == 1
+    world.update()
+    assert len(world.pools) == 0
+
+
+def test_remove_entity_of_an_uncommitted_spawn_is_removed_once_and_then_a_noop():
+    """The no-op must not eat a LEGAL despawn: killing an entity spawned this tick is add-then-remove in one
+    buffer, and only the repeat is dropped."""
+    world = World(components=[HasPosition])
+    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
+
+    world.remove_entity(eid)                                   # never committed -> ADD + REMOVE staged together
+    world.remove_entity(eid)                                   # the repeat is the no-op
+    assert len(world._command_buffer) == 2
+
+    world.update()
+    assert len(world.pools) == 0 and len(world.live_entities) == 0
 
 
 def test_add_component_after_remove_entity_fails():
@@ -1570,6 +1675,54 @@ def test_add_entity_wrong_shape_crashes_eagerly():
         world.add_entity((HasRadius,), radius=np.zeros((2,), "float32"))  # wrong shape must crash here
 
 
+# --- task 43 subtask 1 (landed): duplicate components at spawn ------------------------------------------------------
+# _validate_components de-duped into a set for its checks, then _get_entity_pool iterated the LIST -- so a dup
+# built pool.fields == ['position', 'position']: every add/remove/realloc did that column twice, forever, and
+# to_dict() reported the malformed component list back out. The archetype key is a bitmask, so the FIRST caller's
+# argument list decided the pool's shape: later well-formed spawns of the same archetype landed in the bad pool.
+# Closed by one `len(cs) != len(components)` raise (world.py:232), beside the empty/unknown checks.
+
+
+def test_add_entity_rejects_duplicate_components():
+    """`add_entity([Pos, Pos, Vel])` is a malformed archetype -- rejected at the call, like the empty one."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    with pytest.raises(ValueError, match="Duplicate components"):
+        world.add_entity((HasPosition, HasPosition, HasVelocity),
+                         position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+
+
+def test_rejected_duplicate_component_spawn_leaves_nothing_behind():
+    """The refusal must be complete: no id burnt, no dangling live_entities handle, nothing staged or built."""
+    world = World(components=[HasPosition, HasVelocity])
+
+    with pytest.raises(ValueError):
+        world.add_entity((HasPosition, HasPosition), position=np.array([1.0, 2.0], "float32"))
+
+    assert list(world.live_entities) == []
+    assert len(world._command_buffer) == 0
+    world.update()
+    assert len(world.pools) == 0
+
+    # and the clean spawn that follows gets id 0 and a single-column pool
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+    assert eid == 0
+    assert world._eid_to_pool_ix[eid][0].fields == ["position"]
+
+
+def test_query_with_a_repeated_component_is_harmless():
+    """Control for the two above: a dup in a QUERY is de-duped by the bitmask key, and must stay legal -- the new
+    spawn-side raise must not leak into the read side."""
+    world = World(components=[HasPosition, HasVelocity])
+    world.add_entity((HasPosition, HasVelocity),
+                     position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    world.update()
+
+    assert len(world.query(HasPosition, HasPosition).entity_ids) == 1
+    np.testing.assert_array_equal(world.query(HasPosition, HasPosition).position.numpy(), [[1.0, 2.0]])
+
+
 # --- default metadata (task 171): omitted fields fall back to the component's declared default ---
 
 def test_add_entity_fills_default_when_field_omitted():
@@ -1700,3 +1853,74 @@ def test_world_accepts_the_same_component_field_names_in_separate_worlds():
     """The uniqueness rule is per-World, not global: the same component can be reused in another world."""
     World([HasPosition, HasVelocity])
     World([HasPosition, HasBox])                                        # no leakage between worlds
+
+
+# --- task 41: a failed update() must not brick the world ------------------------------------------------------------
+# update() is deliberately NOT atomic (#22), which is a choice about *partial application* -- not a licence to leave
+# the buffer unusable. Today a mid-loop failure leaves it intact, with `args["components"]` already popped off the
+# command that was being applied, so EVERY later update() raises `KeyError: 'components'`. The world is bricked, and
+# the error names a dict key rather than the cause. An app that logs-and-continues (any server loop) spins on it.
+#
+# The trigger below is public API, not a monkeypatch: #39's aliasing. add_entity holds YOUR array by reference, so a
+# resize after staging slips a shape past the validation that already approved it. #39 (snapshot staged writes) is
+# what removes the trigger; task 41 is what stops the failure from being permanent -- both are wanted.
+# Note the failure is the same under `python -O`: the tripped guard is an assert, but numpy's broadcast raises
+# anyway, hence the (AssertionError, ValueError) pair.
+
+def _stage_a_spawn_that_will_fail_at_commit(world):
+    """Stage two spawns where the FIRST one's array is resized behind the buffer's back. Returns nothing: the
+    point is the world's state afterwards."""
+    arr = np.zeros(2, "float32")
+    world.add_entity((HasPosition,), position=arr)                  # accepted: shape (2,) at the call
+    world.add_entity((HasVelocity,), velocity=np.zeros(2, "float32"))   # an innocent command behind it
+    arr.resize(3, refcheck=False)                                   # public numpy; the staged row is now (3,)
+
+
+def test_failed_update_propagates_the_original_error():
+    """Control for the three xfails below: whatever the fix does, it must not swallow the failure. Green today."""
+    world = World(components=[HasPosition, HasVelocity])
+    _stage_a_spawn_that_will_fail_at_commit(world)
+
+    with pytest.raises((AssertionError, ValueError)):
+        world.update()
+
+
+@pytest.mark.xfail(strict=True, reason="task 41: the buffer survives a failed update(), commands and all")
+def test_failed_update_leaves_an_empty_buffer():
+    """A buffer that outlives its own failed commit is a buffer whose commands may apply twice."""
+    world = World(components=[HasPosition, HasVelocity])
+    _stage_a_spawn_that_will_fail_at_commit(world)
+
+    with pytest.raises((AssertionError, ValueError)):
+        world.update()
+    assert len(world._command_buffer) == 0
+
+
+@pytest.mark.xfail(strict=True, reason="task 41: the popped `components` key bricks every later update()")
+def test_update_after_a_failed_update_is_a_clean_noop():
+    """The headline. One bad frame must cost one frame -- not the world. Today the second update() raises
+    `KeyError: 'components'`, and so does the third, and every one after it."""
+    world = World(components=[HasPosition, HasVelocity])
+    _stage_a_spawn_that_will_fail_at_commit(world)
+
+    with pytest.raises((AssertionError, ValueError)):
+        world.update()
+
+    world.update()                                                  # must not raise, and must do nothing
+    world.update()
+    assert len(world._command_buffer) == 0
+
+
+@pytest.mark.xfail(strict=True, reason="task 41: _cache is only dropped after the loop, so a partial apply keeps it")
+def test_failed_update_drops_the_query_cache():
+    """A partial apply moved rows, so every cached QueryResult is suspect -- whether or not the loop finished."""
+    world = World(components=[HasPosition, HasVelocity])
+    world.add_entity((HasPosition,), position=np.array([1.0, 1.0], "float32"))
+    world.update()
+    world.query(HasPosition)                                        # populate the cache
+    assert len(world._cache) == 1
+
+    _stage_a_spawn_that_will_fail_at_commit(world)
+    with pytest.raises((AssertionError, ValueError)):
+        world.update()
+    assert len(world._cache) == 0

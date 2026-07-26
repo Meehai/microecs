@@ -66,7 +66,7 @@ class World:
 
         # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer = CommandBuffer(self)
-        self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # include+exclude key
+        self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # tuple[include, exclude] key (see query())
         logger.debug(f"Created scene with components: {self.component_names}")
 
     # public api
@@ -82,7 +82,13 @@ class World:
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):
-        """Removes an entity based on its unique entity id. Lazy; call update()"""
+        """Removes an entity based on its unique entity id. The same entity can be safely removed multiple times in the
+        same tick (e.g. by different systems). Raises if the eid is not (anymore) in the world. Lazy; call update()"""
+        if entity_id not in self.live_entities:
+            # NOTE: the only reason this may happen is if we called remove_entity >=2 times before world.update()
+            if entity_id not in self._command_buffer.removed_this_tick:
+                raise ValueError(f"Entity: {entity_id} is not in the world (stale). Either wrong id or removed earlier")
+            return
         self._command_buffer.append(Command(CommandType.REMOVE_ENTITY, entity_id))
         del self.live_entities[entity_id]
 
@@ -149,8 +155,8 @@ class World:
                 raise NotImplementedError(command)
 
         if len(self._command_buffer) > 0:
-            self._command_buffer.clear()
             self._cache.clear()
+        self._command_buffer.clear() # .clear() here also clears the buffer.removed_this_tick set.
 
     # private stuff
 
@@ -229,6 +235,9 @@ class World:
             raise ValueError(f"Entity has no components: {self.component_names}")
         if diff := cs - self.component_types:
             raise ValueError(f"Unknown components: {diff}")
+        if len(cs) != len(components):
+            raise ValueError(f"Duplicate components: {components}")
+
         expected = set()
         for component in components:
             expected.update(self.component_to_field_names[component]) # updated here for error message.

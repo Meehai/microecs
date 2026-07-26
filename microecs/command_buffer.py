@@ -28,10 +28,12 @@ class CommandBuffer:
     def __init__(self, world: "World"): # noqa
         self.data: list[Command] = []
         self.world = world
+        self.removed_this_tick: set[EntityId] = set()
 
     def clear(self):
         """Clears the buffer"""
         self.data.clear()
+        self.removed_this_tick.clear()
 
     def _get_entity_components(self, entity_id: EntityId) -> list[ComponentType]: # noqa
         # This is the case for uncommited entities
@@ -73,6 +75,10 @@ class CommandBuffer:
             fk = {k: v for k, v in command.args.items() if k != "components"}
             world._validate_components(command.args["components"], **fk)
             command.args.update(world._defaults_for(command.args["components"], **fk))
+
+        elif command.command_type == CommandType.REMOVE_ENTITY:
+            # needed so we can fast check in world.remove_enitity if this is a no-op (same tick) or error (stale eid).
+            self.removed_this_tick.add(command.entity_id)
 
         elif command.command_type == CommandType.ADD_COMPONENT:
             component = command.args["component"]
