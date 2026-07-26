@@ -38,6 +38,35 @@ with any future code that walks per-entity handles in a hot loop. The four recip
 whoever profiles next. **Reopen if** a profile puts the physics tick at the top — or if fix 3's superlinear cost
 starts to bite (that one is a scaling hazard, not a fixed tax).
 
+## Re-measured 2026-07-26 (post-`#42`) — two of the four fixes are moot, two new numbers stand
+
+`#42` reverted `#29`'s design (eager `e.field = v` is back; the row view is no longer frozen), so **fix 1's
+mechanism is gone** — `__getattr__` no longer runs `isinstance` + `setflags` — and **fix 4 shipped**
+(`entity.py:54-57` is the single-field fast path). What is left, measured on `975097c`
+(`test/manual/bench-compare/paths.py`, N=20k, ns/op):
+
+| op | ns | note |
+|---|--:|---|
+| `pool.data[f][ix]` | 110 | the raw numpy floor |
+| `world.get_entity(eid)` | 74 | dict lookup; `Entity` cached per id |
+| `ent._locate(['position'])` | 144 | the shared guard `#42` introduced |
+| `ent.position` (read) | 320 | vs 227 pre-`#29`, 491 under `#29` — **between the two** |
+| `ent.position = v` (write) | 471 | |
+| `ent.set_data(position=v)` | 610 | |
+| `e.position = e.position + e.velocity*dt` | 2018 | one "entity tick" |
+
+Two live items, both cheap, neither worth reopening this task on its own:
+
+1. **`_locate` single-name fast path.** ~89 of its 144 ns is `pool.fields_set.issuperset([name])`; a plain
+   `name in pool.fields_set` is **40 ns** (measured). `__getattr__`/`__setattr__` pass exactly one name, so a
+   membership test with the existing error message on the miss branch is ~15% off every entity read/write.
+2. **`set_data(f=v)` is now slower than `e.f = v`** (610 vs 471) for the identical effect — it pays for the kwargs
+   dict. The docs already prefer the attribute for one field; the ~30% figure is now stated there
+   (`docs/source/primitives.md`, `benchmarks.md`) so nobody has to guess.
+
+Still accepted, same reasoning as above: both are single-digit-percent on a path the docs tell you to keep out of
+hot loops. Recorded here so the next profiler starts from measurements, not from the `#29`-era table.
+
 ## The four fixes, all verified feasible
 
 ### 1. Freeze the pool COLUMN once, not the row on every read (the big read win)

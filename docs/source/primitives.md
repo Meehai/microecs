@@ -65,7 +65,9 @@ Consequences worth internalising:
 
 - **`set_data` is the transaction, not the only write path.** Reach for it when several fields (across any
   number of components) must land together: it validates every field first, then writes, so a rejected
-  call writes **nothing**. A single-field `set_data(a=v)` is exactly `e.a = v`.
+  call writes **nothing**. A single-field `set_data(a=v)` does exactly what `e.a = v` does — for ~30% more
+  (610 vs 471 ns, [Benchmarks](benchmarks.md#what-one-entity-operation-costs)), since it goes through kwargs.
+  With one field, prefer the attribute.
 
   ```python
   e.set_data(position=np.float32([1, 0]), velocity=np.float32([0, 0]))   # both, or neither

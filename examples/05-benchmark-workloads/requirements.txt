@@ -6,7 +6,7 @@ numpy>=2.2.0
 esper>=3.7          # benmoran56/esper  -- pure-python, the most popular Python ECS
 snecs>=1.2.2        # slavfox/snecs     -- pure-python sparse-set, type-hinted
 ecs-pattern>=1.4.0  # ikvk/ecs-pattern  -- pure-python, dataclass/entity-inheritance
-xecs>=0.9.0         # tweng/xecs         -- Rust-backed struct-of-arrays (the vectorized rival)
+xecs>=0.9.0         # lukasturcani/xecs -- Rust-backed struct-of-arrays (the vectorized rival)
 
 # --- native-core ECS with python bindings (the "big guns") -------------------------------------
 # entt: PyEnTT (ominkk/PyEnTT), nanobind bindings over skypjack/EnTT, the C++ sparse-set ECS.
