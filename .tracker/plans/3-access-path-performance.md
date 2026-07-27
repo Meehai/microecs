@@ -34,6 +34,9 @@ a time. Nothing to optimize there; see Part 3.
   check shipped anyway, but it is worth 1.0–1.1× (a fixed ~1 µs/call), not 2.3×.
 - **Two pools at low N is the one real columnar gap**: at N=1000, `QRField` runs 2.3–6× the floor. #26
   fixed this for one pool (`_QRArray`) and left multi-pool.
+- **The single biggest win was not the step at all, it was the query.** #47 made `entity_ids` lazy: a cold
+  query is now O(pools), flat ~4 µs at every N, against ~2 ms at N=100k before. All the step-level items on
+  this plan together are worth less than that one.
 - **Row access went ~40× → 29×** — [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md)
   **shipped 2026-07-27**, on forecast. **~19× is the floor** — not 16×. `zip` is faster than *any* indexed
   access before microecs does anything: numpy's array iterator is 718 ns/row, `col[i]` is 885 ns/row. The
@@ -219,11 +222,11 @@ All six are filed. Items 1, 2 and 5 are one finding at three sites, so they are 
 | 1 | ~~Identity short-circuit in `QueryResult.__setattr__`~~ **DONE 2026-07-27, reduced** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | premise withdrawn — numpy already short-circuits `a[:] = a`. Shipped for the fixed ~1 µs/call it does save: **1.0–1.1×**, not 2.3× |
 | 2 | ~~Docs: the in-place idiom is the floor idiom~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | S | both | still real at **1.3–1.5×** (not ~2×) and still free — refile if wanted |
 | 3 | ~~Inline the Entity accessors~~ **DONE 2026-07-27** | [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) | S | row | 40× → **29×**, as forecast; also fixed the copy/pickle recursion |
-| 4 | Lazy `entity_ids` (plan 2, Part 3.1) | [#47](../todos/open/47-lazy-entity-ids/TASK.md) | S | columnar | not the step, the *query*: 98% of a cold query at N=10k, which is 12× the system consuming it |
+| 4 | ~~Lazy `entity_ids` (plan 2, Part 3.1)~~ **DONE 2026-07-27** | [#47](../todos/done/47-lazy-entity-ids/TASK.md) | S | columnar | the plan's biggest win: a cold query went O(entities) → O(pools), **~9× at N=1k, ~53× at 10k, ~490× at 100k**, flat in N |
 | 5 | ~~Better `Pool.__setattr__` message~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | `pool.py:78` keeps recommending the 2-temporary spelling |
 | 6 | `QRField` low-N fixed cost (Part 1.3) | [#48](../todos/open/48-qrfield-low-n-fixed-cost/TASK.md) | M | columnar | the last real gap: 2.3–6× the floor at N=1000 with ≥2 pools. Biggest and least certain |
 
-#45 and #46 are done (#46 reduced to item 1; items 2 and 5 dropped). #47 is next. #48 is P3 and explicitly **not ready** — it waits
+#45, #46 and #47 are done (#46 reduced to item 1; items 2 and 5 dropped). #48 is P3 and explicitly **not ready** — it waits
 on the others being re-measured, and on [#37](../todos/open/37-qrarray-qrfield-one-contract/TASK.md)
 choosing a shape, which decides whether it is optional or mandatory.
 
