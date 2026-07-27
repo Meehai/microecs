@@ -33,7 +33,7 @@ import pytest
 import microecs
 from microecs import World, Component
 from microecs.command_buffer import CommandType
-from microecs.query_result import QueryResult, QUERY_RESULT_RESERVED_NAMES
+from microecs.query_result import QUERY_RESULT_RESERVED_NAMES
 from microecs.entity import ENTITY_RESERVED_NAMES
 from microecs.pool import POOL_RESERVED_NAMES
 
@@ -1537,7 +1537,11 @@ def test_no_stale_views_across_realloc():
     np.testing.assert_array_equal(pool.position[100], [1000.0, 1000.0])   # the 101st entity -> +1
 
 
-_QUERYRESULT_RESERVED = sorted(vars(QueryResult([], {}, {}, np.array([], "int64"))))
+# Derived from the library's own constant, like _ENTITY_RESERVED below -- NOT from vars(<a throwaway instance>).
+# An instance dict only sees attrs __init__ assigns, so the moment an attr becomes a property (as `entity_ids` did
+# when it went lazy) it silently drops out of the parametrize and stops being covered here. The constant is built
+# from _QR_INTERNAL_ATTRS | vars(QueryResult) -- the class dict -- so it keeps up.
+_QUERYRESULT_RESERVED = sorted(QUERY_RESULT_RESERVED_NAMES)
 @pytest.mark.parametrize("reserved", _QUERYRESULT_RESERVED)
 def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserved):
     """A component whose field is named like a QueryResult attribute must be rejected at world creation, rather

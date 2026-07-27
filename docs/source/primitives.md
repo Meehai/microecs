@@ -5,7 +5,7 @@ microecs is five small primitives: `Component`, `Entity`, `Pool`, `QueryResult`,
 - `Component` is a simple python dataclass holding only data. All entries must be numpy arrays with metadata fields: shape and dtype. We support 4 dtypes only: `int32`, `float32`, `bool` and `object`. Python strings (and any other non-numeric data) go in `dtype=object` — numpy's fixed-width strings truncate in a pre-allocated pool, so they are not supported. A component with no fields is a valid **tag** for querying (e.g. `class Frozen(Component): pass`).
 - `Entity` is an `OOP-like` view inside the arrays of components. The data is column-major, so this approach is the slowest (row-major), but is sometimes needed when iterating through all the objects of some type (e.g. rendering or serialization). Its per-entity API (`add_component`, `remove_component`, `set_data`, `to_dict`, single-field read/write) is covered in [Systems & Per-Entity Iteration](systems.md). Reads and data writes both go straight to the pool row; only **structural** changes (add/remove a component) are buffered.
 - `Pool` is a simple 'archetype' dynamic array, holding entities of the same type (same set of components). Uses `Components` metadata to construct contiguous arrays for all entities of the same type. All fields of all entities of the same archetype are stored in column-major numpy arrays.
-- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's interface. For all intents and purposes it should feel like a `(N, ...)` view over all selected entities. To get a proper numpy array out of one field, use `qr.<field>.numpy()` (there is no `qr.numpy()`). To iterate over each entity in a query result (e.g. rendering), use `for eid, position in zip(qr.entity_ids, qr.position): ...`.
+- `QueryResult` is a list of pools that match some query on all the entities of the `World`. It acts as a contiguous numpy-like container that implements numpy's interface. For all intents and purposes it should feel like a `(N, ...)` view over all selected entities. To get a proper numpy array out of one field, use `qr.<field>.numpy()` (there is no `qr.numpy()`). To iterate over each entity in a query result (e.g. rendering), use `for eid, position in zip(qr.entity_ids, qr.position): ...`. Note that **`qr.entity_ids` is built lazily on first read** and costs O(entities) — a query that never asks for it stays O(pools), which is ~4 µs at any N against ~2 ms at N=100k. `len(qr)` does not touch it. Don't zip the ids in if you only need the fields.
 - `World` is a manager of `Pools` and has an overview of all the entities in the scene. It also manages the migration of entities from one pool to the other. A `World` can also require extra metadata keys on every field via `World(extra_metadata=["serializable"])`, to enforce component-level behavior such as field serialization.
 
 ## Few relevant concepts
@@ -65,9 +65,9 @@ Consequences worth internalising:
 
 - **`set_data` is the transaction, not the only write path.** Reach for it when several fields (across any
   number of components) must land together: it validates every field first, then writes, so a rejected
-  call writes **nothing**. A single-field `set_data(a=v)` does exactly what `e.a = v` does — for ~30% more
-  (610 vs 471 ns, [Benchmarks](benchmarks.md#what-one-entity-operation-costs)), since it goes through kwargs.
-  With one field, prefer the attribute.
+  call writes **nothing**. A single-field `set_data(a=v)` does exactly what `e.a = v` does — for ~2× the cost
+  (505 vs 247 ns, [Benchmarks](benchmarks.md#what-one-entity-operation-costs)), since it goes through kwargs
+  and the multi-name field check. With one field, prefer the attribute.
 
   ```python
   e.set_data(position=np.float32([1, 0]), velocity=np.float32([0, 0]))   # both, or neither
@@ -132,8 +132,9 @@ being blamed:
   `World(extra_metadata=...)`, `Pool(fields=..., shapes=..., dtypes=...)`, `pool.remove_entity(i)`, every check
   in `_validate_component(s)` and in `CommandBuffer.append`.
 - **`assert` — our own bug.** Internal bookkeeping that user input cannot reach because it was already
-  validated at the call: `_pool_ids` length vs pool size, `entity_ids` count vs pool sizes.
-  Free under `-O`, which is why the hot ones (`Pool.add_entity`, per field per spawn) stay asserts.
+  validated at the call: `_pool_ids` length vs pool size. Free under `-O`, which is why the hot ones
+  (`Pool.add_entity`, per field per spawn) stay asserts. (The `entity_ids`-count-vs-pool-sizes assert used to
+  sit in `QueryResult.__init__`; it went away when the column became lazy and has not been reinstated.)
 
 An assert on a user-reachable path is a **bug**, not a style choice — in production the guard is simply absent
 and the bad value flows on until something unrelated breaks.
@@ -225,8 +226,9 @@ Edge cases worth knowing:
   such a component at construction (a `raise`, so `python -O` keeps it) instead of silently shadowing
   it. Each class publishes its own reserved set — instance attrs plus its class dict, derived at
   import — and `World._check_components` unions the three:
-  - `QUERY_RESULT_RESERVED_NAMES` (`query_result.py`): `pool_list`, `entity_ids`, `fields`, `_data`,
-    `_cache`, `_field_shapes`, `_field_dtypes`
+  - `QUERY_RESULT_RESERVED_NAMES` (`query_result.py`): `pool_list`, `fields`, `_data`, `_cache`,
+    `_field_shapes`, `_field_dtypes`, `_entity_ids`, `_len`, `_pool_ids`, plus `entity_ids` — which is a
+    *property*, so it comes from the class dict rather than from an instance's attrs
   - `ENTITY_RESERVED_NAMES` (`entity.py`): `entity_id`, `_eid_to_pool_ix`, `_pool_to_components`,
     `_world_command_buffer`, plus every method, private ones included (`get_components`, `to_dict`,
     `_locate`, …)

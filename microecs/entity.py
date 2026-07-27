@@ -102,16 +102,30 @@ class Entity:
         return res
 
     def __getattr__(self, name: str) -> np.ndarray:
-        pool, pool_index = self._locate(names=[name])
-        return pool.data[name][pool_index]
+        try: # note: try/catch is cheaper than self._locate(name=[names])
+            pool, index = self._eid_to_pool_ix[self.entity_id]
+            return pool.data[name][index]
+        except KeyError:
+            if self.entity_id not in self._eid_to_pool_ix:
+                raise AttributeError(f"Entity {self.entity_id} not in world. Perhaps call `world.update()`.")
+            raise AttributeError(f"Entity {self.entity_id} may not have field: {name} (fields: {self.get_fields()})")
 
     def __setattr__(self, name: str, value: np.ndarray):
         if name in _ENTITY_INTERNAL_ATTRS:
             super().__setattr__(name, value)
             return
 
-        pool, pool_index = self._locate(names=[name])
-        pool.data[name][pool_index] = value
+        try: # note: try/catch is cheaper than self._locate(name=[names])
+            pool, index = self._eid_to_pool_ix[self.entity_id]
+            pool.data[name][index] = value
+        except KeyError:
+            if self.entity_id not in self._eid_to_pool_ix:
+                raise AttributeError(f"Entity {self.entity_id} not in world. Perhaps call `world.update()`.")
+            raise AttributeError(f"Entity {self.entity_id} may not have field: {name} (fields: {self.get_fields()})")
+
+    def __reduce__(self):
+        raise TypeError("Entity is a live view into the world's pools; it cannot be copied or pickled. "
+                        "Use entity.to_dict(), or serialize the world.")
 
     def __repr__(self):
         return f"EID-{self.entity_id}"

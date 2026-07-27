@@ -24,12 +24,12 @@ class World:
             raise TypeError(type(self.extra_metadata))
         self._check_components(components)
 
-        # pools management
+        # Pools management
         self.pools: dict[PoolKey, Pool] = {}
         self.pool_to_components: dict[Pool, list[ComponentType]] = {}
-        self.field_to_component: dict[str, ComponentType] = {}
 
-        # components management
+        # Components management
+        self.field_to_component: dict[str, ComponentType] = {}
         self.component_names = [x.__name__ for x in components]
         self.component_types = set(components)
         self.component_name_to_type = {x.__name__: x for x in components}
@@ -56,17 +56,19 @@ class World:
                     if (sh := field_default.shape) != field_shape:
                         raise ValueError(f"'{c.__name__}/{f.name}'. Expected shape: {field_shape}. Got: {sh}")
 
-        # entities management
+        # Entities management
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
         self._pool_ids: dict[Pool, list[EntityId]] = {}
         self._last_id: EntityId = -1
-        # a dictionary of all live entities in 'eager' mode (before update()). The actual entity is created at request
+        # A dictionary of all live entities in 'eager' mode (before update()). The actual entity is created at request
         # in get_entity, so we don't pay for the Entity object unless it's explicitly requested by the user.
         self.live_entities: dict[EntityId, Entity | None] = {}
 
-        # command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
+        # Command buffer management. {add/remove}_{entity/component} are lazy. Taken into account after update().
         self._command_buffer = CommandBuffer(self)
-        self._cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {} # tuple[include, exclude] key (see query())
+
+        # QueryResult cache (key:tuple[include, exclude] - see query()). Useful so we re-use qrs between world.updates.
+        self._qr_cache: dict[tuple[PoolKey, PoolKey], QueryResult] = {}
         logger.debug(f"Created scene with components: {self.component_names}")
 
     # public api
@@ -95,15 +97,17 @@ class World:
     def get_entity(self, entity_id: EntityId) -> Entity:
         """Gets the entity reference given an entity id. Used for 'object-like' ops. Structural updates
         (add/remove_component) are lazy, so you need to call world.update(). Data updates (set_data) are immediate."""
-        if entity_id not in self.live_entities:
+        try:
+            entity = self.live_entities[entity_id]
+        except KeyError:
             raise ValueError(f"Entity id: {entity_id} not in the world")
 
-        if self.live_entities[entity_id] is None:
-            # only instantiate on first request, so the object is not created for no reason at add_entity time.
-            self.live_entities[entity_id] = Entity(entity_id, self._eid_to_pool_ix, self.pool_to_components,
-                                                   world_command_buffer=self._command_buffer)
+        if entity is None: # this can happen if it was just added by add_entity() but not materialized yet
+            self.live_entities[entity_id] = entity = Entity(
+                entity_id, eid_to_pool_ix=self._eid_to_pool_ix, pool_to_components=self.pool_to_components,
+                world_command_buffer=self._command_buffer)
 
-        return self.live_entities[entity_id]
+        return entity
 
     def query(self, *include: ComponentType, exclude: list[ComponentType] | None = None) -> QueryResult:
         """
@@ -115,8 +119,8 @@ class World:
         # Note: we can cache the queries. The only time it can get invalidated (via public API) is at update().
         include_key = self._make_key(include)
         exclude_key = self._make_key(exclude or [])
-        if (key := (include_key, exclude_key)) in self._cache:
-            return self._cache[key]
+        if (key := (include_key, exclude_key)) in self._qr_cache:
+            return self._qr_cache[key]
 
         # archetype_key = (1 0 0 1 1) &
         #           key = (1 0 0 0 1)
@@ -133,10 +137,8 @@ class World:
         field_names = sum([self.component_to_field_names[c] for c in include], [])
         field_shapes = dict(zip(field_names, sum([self.component_to_shapes[c] for c in include], [])))
         field_dtypes = dict(zip(field_names, sum([self.component_to_dtypes[c] for c in include], [])))
-        entity_ids = np.array(sum((self._pool_ids[p] for p in res), []), dtype="int64")
-
-        self._cache[key] = QueryResult(res, field_shapes=field_shapes, field_dtypes=field_dtypes, entity_ids=entity_ids)
-        return self._cache[key]
+        self._qr_cache[key] = QueryResult(res, field_shapes, field_dtypes, pool_ids=self._pool_ids)
+        return self._qr_cache[key]
 
     def update(self):
         """commits the underlying pool changes from the systems between two updates. Should be called in main loop."""
@@ -155,7 +157,7 @@ class World:
                 raise NotImplementedError(command)
 
         if len(self._command_buffer) > 0:
-            self._cache.clear()
+            self._qr_cache.clear()
         self._command_buffer.clear() # .clear() here also clears the buffer.removed_this_tick set.
 
     # private stuff

@@ -29,7 +29,9 @@ Issues these pin:
                           cannot even be constructed once __setattr__ starts routing field writes.
 """
 from dataclasses import field
+import copy
 import json
+import pickle
 import numpy as np
 import pytest
 
@@ -874,3 +876,51 @@ def test_to_dict_reflects_the_write_immediately():
     e.position = np.array([7.0, 8.0], "float32")
 
     assert e.to_dict()["data"]["position"] == [7.0, 8.0]
+
+
+# --- copy / pickle: an Entity is a handle, not a value (#45 C3) ----------------------------------------------------
+# An Entity means "row ix of pool p RIGHT NOW". Its internals are a world-owned dict and the world's command buffer,
+# so a shallow copy aliases the whole world and a deep copy clones it -- neither is what "a copy of this entity"
+# should mean. to_dict() is. So both are refused, via __reduce__ ON THE CLASS.
+#
+# It has to be a class-level dunder, and the two failure modes it replaces are why:
+#   * copy/deepcopy went into INFINITE RECURSION. copy._reconstruct builds the instance with cls.__new__(cls) -- no
+#     __init__, so no _eid_to_pool_ix on it. Probing a missing internal hits __getattr__, which reads
+#     self._eid_to_pool_ix, also missing -> __getattr__ again, forever. Pool and QueryResult each dodge this with a
+#     self.__dict__.get(...) guard inside their own dunders; Entity cannot afford one (+45 ns on EVERY field touch,
+#     #45), and __reduce__ costs nothing because a field touch never looks that name up.
+#   * pickle.dumps SUCCEEDED (py3.12: object.__getstate__ just hands over the instance dict, nothing probes a
+#     missing attr) -- quietly serializing _eid_to_pool_ix, i.e. every pool in the world, into "one entity". The
+#     silent version is the worse bug of the two; TypeError is the fix for both.
+# Regression note: the guard is only real if it is a method OF Entity. Nested one level too deep inside __setattr__
+# it is a throwaway local -- copy still recursed, and every write paid to build the function object. Hence a
+# behaviour assertion here rather than a hasattr() check.
+
+@pytest.mark.parametrize("op", [copy.copy, copy.deepcopy, pickle.dumps], ids=["copy", "deepcopy", "pickle"])
+def test_entity_cannot_be_copied_or_pickled(op):
+    """copy / deepcopy / pickle raise TypeError -- not RecursionError, and not a silent clone of the whole world."""
+    world, eid = _world_with_one()
+    e = world.get_entity(eid)
+
+    with pytest.raises(TypeError, match="cannot be copied or pickled"):
+        op(e)
+
+
+def test_entity_deepcopy_refusal_propagates_out_of_a_container():
+    """The refusal is not something a caller can route around by nesting the handle in a list/dict."""
+    world, eid = _world_with_one()
+
+    with pytest.raises(TypeError, match="cannot be copied or pickled"):
+        copy.deepcopy({"entities": [world.get_entity(eid)]})
+
+
+def test_entity_stays_usable_after_a_refused_copy():
+    """__reduce__ raising must not leave the view damaged -- reads and eager writes still work on the same handle."""
+    world, eid = _world_with_one()
+    e = world.get_entity(eid)
+    with pytest.raises(TypeError):
+        copy.copy(e)
+
+    e.position = np.array([7.0, 8.0], "float32")     # the handle is untouched: it is still row ix of its pool
+
+    np.testing.assert_array_equal(_row(world, eid, "position"), [7.0, 8.0])

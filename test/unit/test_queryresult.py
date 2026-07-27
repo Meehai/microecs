@@ -92,10 +92,18 @@ _FIELD_DTYPES = {"position": "float32", "velocity": "float32", "radius": "float3
 
 def _query(pools: list[Pool], *fields: str, entity_ids: list[int] = None) -> QueryResult:
     """A QueryResult over `pools` for the named fields, carrying their (test-fixed) shapes and dtypes. `entity_ids`
-    default to 0..N-1 in pool-by-pool row order (World hands out the real ids; here any pool-aligned ids do)."""
-    n = sum(len(p) for p in pools)
-    ids = np.arange(n, dtype="int64") if entity_ids is None else np.array(entity_ids, dtype="int64")
-    return QueryResult(pools, {f: _FIELD_SHAPES[f] for f in fields}, {f: _FIELD_DTYPES[f] for f in fields}, ids)
+    default to 0..N-1 in pool-by-pool row order (World hands out the real ids; here any pool-aligned ids do).
+
+    QueryResult no longer takes a prebuilt id array: `entity_ids` is a lazy property over a {pool: [ids]} map (#47),
+    because materialising it was 98% of a cold query. So the helper slices the flat list into per-pool chunks and
+    callers keep passing a flat one -- the pool-by-pool ordering the map implies is the same ordering they assert on.
+    """
+    ids = list(range(sum(len(p) for p in pools))) if entity_ids is None else list(entity_ids)
+    pool_ids, off = {}, 0
+    for p in pools:
+        pool_ids[p], off = ids[off:off + len(p)], off + len(p)
+    return QueryResult(pools, {f: _FIELD_SHAPES[f] for f in fields}, {f: _FIELD_DTYPES[f] for f in fields},
+                       pool_ids=pool_ids)
 
 
 def test_len_sums_entities_across_pools():
@@ -830,3 +838,69 @@ def test_repr_renders_and_reports_entity_count():
 
     assert "QueryResult" in text
     assert "5" in text                          # total entities across the two pools
+
+
+# --- the identity short-circuit in QueryResult.__setattr__ (#46) ---------------------------------------------------
+# `qr.f += x` hands __setattr__ the very object it is about to write into, so the write is skipped. The risk is a
+# SILENTLY dropped write, not an exception -- so pin both sides: it fires where it should, and not where it must not.
+# Both surfaces: 1 pool yields an _QRArray, 2+ a QRField, with different __setitem__.
+
+@pytest.mark.parametrize("n_pools", [1, 2])
+def test_setattr_inplace_add_still_lands_in_the_pools(n_pools):
+    """`qr.f += x` -- the case the short-circuit fires on. The ufunc already wrote, so the data must still be right."""
+    pools = [_pv_pool([([1.0, 2.0], [10.0, 20.0]), ([3.0, 4.0], [30.0, 40.0])]) for _ in range(n_pools)]
+    qr = _query(pools, "position", "velocity")
+
+    qr.position += qr.velocity
+
+    assert [r.tolist() for p in pools for r in p.position] == [[11.0, 22.0], [33.0, 44.0]] * n_pools
+
+
+@pytest.mark.parametrize("n_pools", [1, 2])
+def test_setattr_from_another_field_still_copies(n_pools):
+    """A different field is a different cached object -- the write must NOT be skipped, or it vanishes silently."""
+    pools = [_pv_pool([([1.0, 2.0], [10.0, 20.0]), ([3.0, 4.0], [30.0, 40.0])]) for _ in range(n_pools)]
+    qr = _query(pools, "position", "velocity")
+
+    qr.position = qr.velocity
+
+    assert [r.tolist() for p in pools for r in p.position] == [[10.0, 20.0], [30.0, 40.0]] * n_pools
+
+
+# --- entity_ids is lazy (#47) --------------------------------------------------------------------------------------
+# Materialising the id column is O(entities) -- 98% of a cold query at N=10k -- and the query cache is dropped on any
+# tick with a structural change, so it was being rebuilt forever for systems that never read it. It is a property now.
+# The laziness is the feature, so it is pinned: anything that quietly touches `entity_ids` puts the cost straight back.
+
+@pytest.mark.parametrize("n_pools", [1, 2])
+def test_entity_ids_is_not_built_until_it_is_read(n_pools):
+    """Reading fields and asking for len() must not materialise the id column -- that is the whole point of #47."""
+    qr = _query([_pool_with(3) for _ in range(n_pools)], "position")
+
+    qr.position
+    assert len(qr) == 3 * n_pools                     # len() counts pools, it does not count ids
+
+    assert qr._entity_ids is None
+
+
+@pytest.mark.parametrize("n_pools", [1, 2])
+def test_entity_ids_is_built_once_and_cached(n_pools):
+    """Two reads return the same array object -- the concat+convert happens on the first touch only."""
+    qr = _query([_pool_with(3) for _ in range(n_pools)], "position")
+
+    first = qr.entity_ids
+
+    assert qr.entity_ids is first
+    assert first.tolist() == list(range(3 * n_pools))
+
+
+@pytest.mark.parametrize("n_pools, expected", [(0, 0), (1, 3), (2, 6)])
+def test_len_and_repr_and_ids_agree_including_the_empty_query(n_pools, expected):
+    """len(), repr() and entity_ids must stay consistent now that they are computed from different sources --
+    len() sums pool sizes, entity_ids concatenates the id map. An empty query (no pool matched) is the edge case."""
+    qr = _query([_pool_with(3) for _ in range(n_pools)], "position")
+
+    assert len(qr) == expected
+    assert len(qr.entity_ids) == expected
+    assert qr.entity_ids.dtype == np.int64                     # stays int64 even when empty
+    assert str(expected) in repr(qr)                           # repr must render and report the count

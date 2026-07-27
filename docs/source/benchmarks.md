@@ -14,43 +14,68 @@ We run the same physics step `pos += vel*dt` over N=100k entities split across 2
 | `oop-numpy` — objects holding `(2,)` numpy arrays | 719 | 13× slower |
 | `micro-ecs-zip-rows` — `for p, v in zip(qr.pos, qr.vel)` | 838 | 16× slower |
 | `micro-ecs-pool-loop` — `for pool: for i: pool.f[i]` | 1023 | 19× slower |
-| `micro-ecs-get-entity` — `world.get_entity(eid)` per entity | 2163 | 40× slower |
+| `micro-ecs-get-entity` — `world.get_entity(eid)` per entity | 1560 | 29× slower |
 
 Three things to take from it:
 
 1. **Vectorized wins big.** Batched ops (`Field` or per-pool) run at ~1 ns/entity — **40–64×
    faster** than the *fastest* OOP loop. A data-parallel branch stays in that regime: w2 bounce below
    (`np.where` wall reflection) runs at 4.0 ns/entity against 179 for the fastest per-entity library.
-2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **16–40× slower**
+2. **Per-entity loops are a cliff, not a tie.** Every per-entity microecs path is **16–29× slower**
    than idiomatic float-based OOP — because microecs is numpy-backed, so a per-entity step pays
    numpy's tiny-array overhead (`oop-numpy` shows the same ~13× tax). One unavoidable per-entity
    pass (~840 ns/entity) costs ~600× a vectorized op (~1.3 ns) and will dominate the frame.
-3. **If you must loop, loop right.** `zip`-rows (16×) < pool-loop (19×) < `get_entity` (40×).
+3. **If you must loop, loop right.** `zip`-rows (16×) < pool-loop (19×) < `get_entity` (29×).
    For random single-entity access use `world.get_entity(qr.entity_ids[i])` — there's no `qr.f[i]`
    shortcut (the entity axis is off-limits on a query; it raises).
+   **~19× is the floor for any id-addressed access, not 16×** — `zip` uses numpy's array iterator
+   (718 ns/row) while any indexed access pays `col[i]` getitem (885 ns/row) before microecs does
+   anything at all. `pool-loop` already sits on that floor; `get_entity` is now ~1.5× off it.
 
 ### What one entity operation costs
 
 The `Entity` handle is the OOP-shaped escape hatch, and the table above prices the whole loop. Per
-single operation (N=20k, ns, this machine):
+single operation (N=20k, ns, this machine; median of 3 interleaved runs of
+`test/manual/get-entity-perf/per_operation.py`):
 
-| operation | ns | what it is |
-|---|--:|---|
-| `pool.data['position'][ix]` | 110 | the raw numpy floor — no ECS at all |
-| `world.get_entity(eid)` | 74 | a dict lookup; the `Entity` object is cached per id |
-| `ent.position` (read) | 320 | locate the pool + check the field exists + index |
-| `ent.position = v` (write) | 471 | same, then write the row |
-| `ent.set_data(position=v)` | 610 | the kwargs form of the same write |
-| `ent.set_data(position=v, velocity=v)` | 1433 | two fields, with the shape/dtype pre-checks |
-| `e.position = e.position + e.velocity*dt` | 2018 | read + read + write = one "entity tick" |
+| operation | ns | ×floor | what it is |
+|---|--:|--:|---|
+| `pool.data['position'][ix]` | 89 | 1.0 | the raw numpy floor — no ECS at all |
+| `world.get_entity(eid)` | 39 | 0.4 | a dict lookup; the `Entity` object is cached per id |
+| `ent.position` (read) | 172 | 1.9 | resolve `(pool, row)` by id, then index the column |
+| `ent.position = v` (write) | 247 | 2.8 | same, then write the row |
+| `ent.set_data(position=v)` | 505 | 5.7 | the kwargs form of the same write |
+| `ent.set_data(position=v, velocity=v)` | 1486 | 16.7 | two fields, with the shape/dtype pre-checks |
+| `e.position = e.position + e.velocity*dt` | 1521 | 17.1 | read + read + write = one "entity tick" |
 
-Read it as **~0.3–0.5 µs per field touch**. That is fine for tens of entities (a UAV, a player, a
-handful of pickups) and a disaster for thousands — 2 µs × 10k entities is a 20 ms frame. Same rule as
+Read it as **~0.2–0.25 µs per field touch** — i.e. **~2× the raw numpy floor**, which is about as
+close as a python-level handle gets. That is fine for tens of entities (a UAV, a player, a handful of
+pickups) and still a problem for thousands: 1.5 µs × 10k entities is a 15 ms frame. Same rule as
 above: address *one* entity by id with `Entity`, address *many* with a query.
+
+`set_data(f=v)` remains **~2× the cost of `e.f = v`** for the same effect — it pays a kwargs dict plus
+the multi-name `issuperset` check. Use it when you genuinely set several fields at once.
 
 **Rule of thumb:** keep systems vectorized and push branches into `np.where` / `np.clip`. If a
 workload is *irreducibly* per-entity (data-dependent control flow), plain python objects beat
 microecs ~15× — use them there. microecs is the right tool for **vectorizable** simulation.
+
+### What a query costs
+
+Everything above prices the *step*. Building the `QueryResult` is a separate cost, and it is flat in N —
+a query is O(pools), not O(entities). Cold means the cache was dropped, which happens on any tick that had a
+structural change (spawn, despawn, add/remove component); a warm query is a dict hit.
+
+| N | cold query | `+ len(qr)` | `+ qr.entity_ids` |
+|---|--:|--:|--:|
+| 1 000 | 4.2 µs | 4.7 µs | 28.5 µs |
+| 10 000 | 4.1 µs | 4.8 µs | 219.6 µs |
+| 100 000 | 3.6 µs | 4.4 µs | **2133 µs** |
+
+**`qr.entity_ids` is the one part that scales with N**, so it is built lazily on first read. Ask for it and you
+pay for it — at N=100k that is ~500× the rest of the query put together. A system that iterates fields
+(`qr.position += qr.velocity * dt`) never touches it; one that goes by id (`world.get_entity(qr.entity_ids[i])`)
+pays it every tick the cache was dropped. `len(qr)` counts pools and does not materialize it.
 
 ## Benchmark 2: microecs vs other Python ECS libraries
 
@@ -237,8 +262,10 @@ Five things to take from the three experiments:
    again). ~2 µs per spawn, 16% of a churn pair, is redundant. That is microecs' largest available win
    and it is bookkeeping, not architecture.
 4. **Batch random access; capability gaps decide churn/migration.** `get_entity(id).f` in a hot loop
-   is a ~2900 ns/hit trap — up to **483× slower** than a batched `col[rows] -= …` scatter (6 ns/hit),
-   which is what the benchmark uses. And xecs can't despawn *or* migrate; ecs-pattern can't migrate —
+   is a ~3000 ns/hit trap — up to **503× slower** than a batched `col[rows] -= …` scatter (6 ns/hit),
+   which is what the benchmark uses. Making the accessor itself ~1.8× cheaper did **not** move this:
+   at scale the cost is cache-missing random reads into the column, not API overhead. It is the access
+   *pattern* that is the trap. And xecs can't despawn *or* migrate; ecs-pattern can't migrate —
    for spawn/die churn and buff-on/off migration the qualifying set is microecs/entt/flecs/esper/snecs.
    If your update loop *isn't* vectorizable and stays small, a per-entity python ECS is simpler and
    faster — see the microbenchmark above.

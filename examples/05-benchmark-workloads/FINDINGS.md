@@ -206,12 +206,17 @@ pool array with no per-op object at all. **The pure-Python lib beats the Rust li
 has no FFI boundary.**
 
 **P3 — `get_entity` in a hot loop is the trap; batched scatter is the fix → CONFIRMED
-(`probes/microecs_random.py`).**
-| N | get_entity ns/hit | batched-scatter ns/hit | speedup |
-|---|--:|--:|--:|
-| 1k | 3291 | 162 | 20× |
-| 20k | 2615 | 13 | 206× |
-| 100k | 2913 | 6 | **483×** |
+(`probes/microecs_random.py`).** Re-measured after `#45`, medians of 3 runs (the pre-`#45` column is
+the original measurement):
+| N | get_entity ns/hit (pre-`#45`) | get_entity ns/hit | batched-scatter ns/hit | speedup |
+|---|--:|--:|--:|--:|
+| 1k | 3291 | 2055 | 154 | 13× |
+| 20k | 2615 | 2407 | 11 | 216× |
+| 100k | 2913 | 3050 | 6 | **503×** |
+
+**`#45` did not move this, and that is the point.** Making the accessor ~1.8× cheaper bought ~1.2 µs at
+N=1k and **nothing at N=100k** — at scale this workload is dominated by cache-missing random reads into
+the pool column, not by accessor overhead. The trap is the access *pattern*, not the API. Batch it.
 
 Unchanged in character by `#42`/`#43`. Batching needs a static set / a row-map rebuilt after `update()`
 (pop-swap reorders rows).
@@ -234,22 +239,32 @@ redundant half is **2.0 µs = 34% of `add_entity`, 20% of a full spawn, 16% of a
 for free, and w5 churn is microecs' worst workload at every N. The pop-swap the plan used to blame is
 2.2 µs, **17%** of the pair.
 
-**P5 (new) — the `Entity` path today, post-`#42`** (`test/manual/bench-compare/paths.py`, N=20k, ns/op):
-| op | ns |
-|---|--:|
-| `pool.data['position'][ix]` (raw numpy floor, read) | 110 |
-| `w.get_entity(eid)` (dict lookup, Entity is cached) | 74 |
-| `ent._locate(['position'])` (the shared guard) | 144 |
-| `ent.position` (read = `_locate` + index) | 320 |
-| `ent.position = v` (write, eager again since `#42`) | 471 |
-| `ent.set_data(position=v)` (1-field "fast path") | 610 |
-| `ent.set_data(position=v, velocity=v)` (2-field) | 1433 |
-| composite `e.position = e.position + e.velocity*dt` | 2018 |
+**P5 — the `Entity` path, post-`#45`** (`test/manual/get-entity-perf/per_operation.py`, N=20k, ns/op,
+median of 3 interleaved runs). The `pre-#45` column is P5's original measurement; compare **×floor**,
+not absolutes — the harness changed (interleaved, min-of-30, no list building) and it reads ~20% lower
+across every row, including rows whose code never changed:
 
-Two notes for the docs: (a) `_locate` spends ~89 ns of its 144 on `fields_set.issuperset([name])` —
-a plain `name in fields_set` is 40 ns, so a single-name fast path is worth ~15% of every entity read;
-(b) `set_data(f=v)` is now **slower** than `e.f = v` (610 vs 471) for the same effect, so the "use
-`set_data`" advice from the `#29` era no longer matches the cost.
+| op | pre-`#45` | ns | ×floor |
+|---|--:|--:|--:|
+| `pool.data['position'][ix]` (raw numpy floor, read) | 110 | 89 | 1.0 |
+| `w.get_entity(eid)` (dict lookup, Entity is cached) | 74 | 39 | 0.4 |
+| `ent._locate(['position'])` (**no longer on the read/write path**) | 144 | 140 | 1.6 |
+| `ent.position` (read) | 320 | 172 | 1.9 |
+| `ent.position = v` (write) | 471 | 247 | 2.8 |
+| `ent.set_data(position=v)` (1-field "fast path") | 610 | 505 | 5.7 |
+| `ent.set_data(position=v, velocity=v)` (2-field) | 1433 | 1486 | 16.7 |
+| composite `e.position = e.position + e.velocity*dt` | 2018 | 1521 | 17.1 |
+
+What changed and what did not:
+
+- **(a) resolved.** `_locate`'s `fields_set.issuperset([name])` is gone from the accessors — `#45` inlined
+  the `(pool, row)` lookup into `__getattr__`/`__setattr__` and let the `pool.data[name]` dict lookup *be*
+  the field check. Read went 2.9× → **1.9× the raw floor**, write 4.3× → **2.8×**. `_locate` itself is
+  unchanged and still serves `set_data`, `get_fields`, `get_components` — where the multi-name
+  `issuperset` is the right tool.
+- **(b) still true, and now worse in relative terms.** `set_data(f=v)` costs **~2× `e.f = v`** (505 vs 247)
+  for the same effect, because only the attribute path got cheaper. The "use `set_data`" advice from the
+  `#29` era still does not match the cost for the single-field case.
 
 ## What changed since the previous run (2026-07-15 / 07-25) — and the lesson
 
@@ -292,7 +307,8 @@ in this benchmark**:
    100k and ~2.1× at 1M.
 3. **microecs wins broadly at N≥5k** (columnar from 5k, ai from 5k, random access and the mixed frame
    by 20k). At N=200 it still loses on fixed per-op cost, by ~1.4× on columnar.
-4. Random access: batch it (`col[rows]`), never `get_entity` in a hot loop (up to 483× trap).
+4. Random access: batch it (`col[rows]`), never `get_entity` in a hot loop (up to 503× trap — and a
+   cheaper accessor does not fix it; the access pattern is the cost).
 5. **Churn is a validation problem, not a layout problem** (P4): 32% of a churn pair is validation,
    half of it redundant. Fixing that is microecs' single largest available win.
 6. Capability gaps still decide churn/migration: xecs can't despawn OR migrate; ecs-pattern can't
