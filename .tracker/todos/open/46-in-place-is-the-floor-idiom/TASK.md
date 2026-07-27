@@ -56,6 +56,6 @@ tweak: the four "must still copy" assignments above plus `qr.f = qr.f`, run agai
 ## Relates
 
 - Plan 3 items 1, 2, 5 — this task is all three; they are one finding.
-- [#45](../45-entity-accessor-cost-and-recursion/TASK.md) — item 3's entity-side twin.
+- [#45](../../done/45-entity-accessor-cost-and-recursion/TASK.md) — item 3's entity-side twin.
 - [#37](../37-qrarray-qrfield-one-contract/TASK.md) — item 1 touches `__setattr__`, which is on the
   `_QRArray`/`QRField` boundary. Do item 1 first (it is one line and helps both branches).

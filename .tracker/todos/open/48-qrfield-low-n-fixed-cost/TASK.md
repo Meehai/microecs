@@ -3,7 +3,7 @@
 **Created**: 2026-07-27
 **Priority**: 3
 
-**Not ready to start.** Do plan 3 items 1–5 ([#45](../45-entity-accessor-cost-and-recursion/TASK.md),
+**Not ready to start.** Do plan 3 items 1–5 ([#45](../../done/45-entity-accessor-cost-and-recursion/TASK.md),
 [#46](../46-in-place-is-the-floor-idiom/TASK.md), [#47](../47-lazy-entity-ids/TASK.md)) first and
 re-measure — #46 alone removes a full column copy from this path. Filed now so it has an id, not because
 it is next.

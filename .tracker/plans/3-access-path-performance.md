@@ -3,8 +3,10 @@
 **Created**: 2026-07-26
 **Type**: Perf plan
 **Measured on**: `3c229ae` (v0.8.2), numpy 2.2.6, Python 3.12, Intel Ultra 7 165H.
-**Evidence**: `test/manual/get-entity-perf/{ladder,per_touch,recursion_fix,columnar_gap}.py`.
-`test/manual/` is gitignored, so every number is inlined here. The plan is the artifact.
+Part 2 re-measured post-#45 on 2026-07-27.
+**Evidence**: `test/manual/get-entity-perf/{ladder,per_touch,recursion_fix,columnar_gap,task45_review,`
+`per_operation,ratio_stability}.py`. `test/manual/` is gitignored, so every number is inlined here — the plan
+is the artifact. The Part 2 ratios are also pinned in CI by `test/integration/test_i_entity_level_regression.py`.
 
 ## The objective, stated
 
@@ -22,7 +24,7 @@ a time. Nothing to optimize there; see Part 3.
 
 ## TL;DR (grug verdict)
 
-**Target 1 is already met. Target 2 has a 1.4× win sitting on the floor, and a hard limit at ~19×.**
+**Target 1 is already met. Target 2's 1.4× win has been taken (#45); the hard limit at ~19× remains.**
 
 - **Columnar is AT the numpy floor** — 1.0–1.1× for N≥10k, verified by an interleaved A/B (the
   non-interleaved runs showed sub-1.0 ratios; that was thermal drift, not a lead over numpy).
@@ -31,9 +33,11 @@ a time. Nothing to optimize there; see Part 3.
   first. This is the highest value/effort item on the plan.
 - **Two pools at low N is the one real columnar gap**: at N=1000, `QRField` runs 2.3–6× the floor. #26
   fixed this for one pool (`_QRArray`) and left multi-pool.
-- **Row access can go ~40× → ~29×** ([#45](../todos/open/45-entity-accessor-cost-and-recursion/TASK.md)),
-  and **~19× is the floor** — not 16×. `zip` is faster than *any* indexed access before microecs does
-  anything: numpy's array iterator is 718 ns/row, `col[i]` is 885 ns/row.
+- **Row access went ~40× → 29×** — [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md)
+  **shipped 2026-07-27**, on forecast. **~19× is the floor** — not 16×. `zip` is faster than *any* indexed
+  access before microecs does anything: numpy's array iterator is 718 ns/row, `col[i]` is 885 ns/row. The
+  remaining 29× → 19× is three dunder dispatches and three id→row lookups per tick; the cache that would
+  remove two of them was prototyped and rejected on measurement (see #45).
 
 ---
 
@@ -127,7 +131,7 @@ probably yes, but it is the largest item here and the least certain.
 
 ---
 
-## Part 2 — Row access: 1.4× available, then a wall at ~19×
+## Part 2 — Row access: the 1.4× has been taken (#45), and the wall at ~19× remains
 
 ### Why the target is not 16×
 
@@ -147,17 +151,18 @@ why it sits at 19×, and why **19× is the floor for any id-addressed path**, me
 ### What is available
 
 Per field touch, and end-to-end for `ent.position += ent.velocity*dt` at N=100k
-(full ladder in [#45](../todos/open/45-entity-accessor-cost-and-recursion/TASK.md)):
+(full ladder in [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md)):
 
 | | read | write | entity tick | ×zip | docs scale |
 |---|--:|--:|--:|--:|--:|
-| today | 305 | 392 | 1929 | 2.53 | ~40× |
-| inline the accessors (#45) | **164** | **248** | **1409** | 1.85 | **~29×** |
-| … and the caller avoids `+=` | 164 | — | 1156 | 1.52 | 24× |
+| before #45 | 305 | 392 | 1929 | 2.53 | ~40× |
+| inline the accessors (#45) — **SHIPPED 2026-07-27** | **159** | **267** | **1560** | **1.86** | **29×** |
+| … and the caller avoids `+=` | 159 | — | 1156 | 1.52 | 24× |
 | floor (indexed row access) | ~95 | — | 925 | 1.21 | ~19× |
 
-Roughly **half of every field touch is bookkeeping**: a python call into `_locate`, a one-element list, and
-a `set.issuperset` checking a field the next line looks up in `pool.data` anyway. #45 deletes it.
+Roughly **half of every field touch was bookkeeping**: a python call into `_locate`, a one-element list, and
+a `set.issuperset` checking a field the next line looks up in `pool.data` anyway. #45 deleted it, and landed
+within noise of the forecast (predicted 1.85× / −27%, measured 1.86× / −26%).
 
 The residual 29× → 19× is three `__getattr__`/`__setattr__` dispatches and three id→row dict lookups per
 tick. A version-stamped `(pool.data, index)` cache was prototyped to remove two of the three lookups and
@@ -207,12 +212,12 @@ All six are filed. Items 1, 2 and 5 are one finding at three sites, so they are 
 |---|---|---|---|---|---|
 | 1 | Identity short-circuit in `QueryResult.__setattr__` (Part 1.1) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | kills a full column self-copy on `qr.f += x`; **2.3× at 2 pools / N=100k**. Verified sound |
 | 2 | Docs: the in-place idiom is the floor idiom (Part 1.2, Part 2) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | S | both | ~2× on the columnar path and 250 ns/tick on the entity path, for zero library change |
-| 3 | Inline the Entity accessors | [#45](../todos/open/45-entity-accessor-cost-and-recursion/TASK.md) | S | row | 40× → **29×**; also fixes the copy/pickle `RecursionError` |
+| 3 | ~~Inline the Entity accessors~~ **DONE 2026-07-27** | [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) | S | row | 40× → **29×**, as forecast; also fixed the copy/pickle recursion |
 | 4 | Lazy `entity_ids` (plan 2, Part 3.1) | [#47](../todos/open/47-lazy-entity-ids/TASK.md) | S | columnar | not the step, the *query*: 98% of a cold query at N=10k, which is 12× the system consuming it |
 | 5 | Better `Pool.__setattr__` message (Part 1.2) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | it currently recommends the 2-temporary spelling |
 | 6 | `QRField` low-N fixed cost (Part 1.3) | [#48](../todos/open/48-qrfield-low-n-fixed-cost/TASK.md) | M | columnar | the last real gap: 2.3–6× the floor at N=1000 with ≥2 pools. Biggest and least certain |
 
-#45, #46 and #47 are independent; do them in any order. #48 is P3 and explicitly **not ready** — it waits
+#45 is done. #46 and #47 are independent; do them in any order. #48 is P3 and explicitly **not ready** — it waits
 on the others being re-measured, and on [#37](../todos/open/37-qrarray-qrfield-one-contract/TASK.md)
 choosing a shape, which decides whether it is optional or mandatory.
 
@@ -225,8 +230,13 @@ comment annoying enough.
 ## Validation
 
 - **Every item re-measures with the probe that found it**, and the ratio is the number that matters
-  (absolutes drift ±20%): `columnar_gap.py` interleaved for items 1/2/6, `ladder.py` + `per_touch.py` for
-  item 3, plan 2's finding-13 breakdown for item 4.
+  (absolutes drift ±20%): `columnar_gap.py` interleaved for items 1/2/6, `task45_review.py` + `per_operation.py` for
+  item 3 (done), plan 2's finding-13 breakdown for item 4.
+- **The row-access ratios are now pinned by a test**, not just re-measured by hand:
+  `test/integration/test_i_entity_level_regression.py` asserts `get_entity ≤ 34× oop-scalar` and `≤ 2.15× zip`,
+  with `zip`/`pool-loop` as controls that make it *skip* rather than fail on a noisy machine. Items 1/2 should
+  get the columnar equivalent when they land — #45's two review defects were both invisible to the correctness
+  suite, and that is the general case for this plan's work, not a one-off.
 - **Item 1 needs a correctness test, not a perf test**: the four "must still copy" assignments from Part
   1.1's table, run against both a 1-pool and a 2-pool world, plus `qr.f += x` actually landing. That test
   is the soundness argument, so it must exist before the line ships.
@@ -236,7 +246,9 @@ comment annoying enough.
 
 ## Relates
 
-- [#45](../todos/open/45-entity-accessor-cost-and-recursion/TASK.md) — item 3, filed.
+- [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) — item 3, **done 2026-07-27**. Its
+  postmortem also records what did NOT improve: `get_entity` random access at N=100k is unchanged, because
+  there the cost is cache misses, not the accessor.
 - [#36](../todos/done/36-optimize-entity-read-write-path/TASK.md) — closed "cost accepted"; its live item 1
   is superseded by #45, its live item 2 (`set_data` slower than `e.f = v`) is still open and still true.
 - [#26](../todos/done/26-low-n-field-overhead/TASK.md) — solved item 6 for one pool; item 6 is its
