@@ -28,9 +28,10 @@ a time. Nothing to optimize there; see Part 3.
 
 - **Columnar is AT the numpy floor** — 1.0–1.1× for N≥10k, verified by an interleaved A/B (the
   non-interleaved runs showed sub-1.0 ratios; that was thermal drift, not a lead over numpy).
-- **But the idioms we document are 2× off it**, because they allocate temporaries and copy, and because
-  `qr.f += x` pays a **full column self-copy** in `__setattr__`. One line fixes the second; docs fix the
-  first. This is the highest value/effort item on the plan.
+- **The idioms we document are 1.3–1.5× off it**, because they allocate temporaries. Docs fix that, for free.
+  ~~`qr.f += x` pays a full column self-copy~~ — **withdrawn, see #46**: numpy already short-circuits
+  `a[:] = a` (0.4 µs vs 19.6 µs for a real 800 KB copy), so that copy never existed. The one-line identity
+  check shipped anyway, but it is worth 1.0–1.1× (a fixed ~1 µs/call), not 2.3×.
 - **Two pools at low N is the one real columnar gap**: at N=1000, `QRField` runs 2.3–6× the floor. #26
   fixed this for one pool (`_QRArray`) and left multi-pool.
 - **Row access went ~40× → 29×** — [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md)
@@ -82,10 +83,15 @@ say so in the docs and stop looking.
 
 ### The two things that are NOT at the floor
 
-**1. `qr.f += x` copies the whole column onto itself.** `QueryResult.__setattr__` ends in
-`getattr(self, name)[:] = value` (`query_result.py:61`). For `+=`, the in-place ufunc has *already*
-written into the pool — the value being assigned back **is** the column. Cost: 2-pool N=100k, 1.07 vs
-0.47 ns/entity = **2.3×**; 1-pool N=1M, 1.11 vs 0.89.
+**1. ~~`qr.f += x` copies the whole column onto itself.~~ WRONG — withdrawn 2026-07-27 (#46).**
+The value assigned back really *is* the column, but **numpy already short-circuits self-assignment**:
+800 KB, `a[:] = a` 0.4 µs vs `a[:] = b` 19.6 µs. There was no copy to delete. The 2.3× (1.07 vs 0.47) was
+**non-interleaved noise** from the same run whose own caveat sits three paragraphs above. Interleaved on one
+world in one process: 0.56 vs 0.55 = **1.03×**.
+
+The identity check shipped regardless (`query_result.py:61-65`) — it skips the *python* dispatch into
+`__setitem__`, a fixed ~1 µs per call: 1.08–1.11× at N≤1000, 1.00–1.02× at N≥100k. A low-N nibble, same
+territory as #48. Original reasoning kept below, because the soundness argument is still the reason it is safe:
 
 Fix — one line, and it is **sound**, which is the interesting part:
 
@@ -210,14 +216,14 @@ All six are filed. Items 1, 2 and 5 are one finding at three sites, so they are 
 
 | order | work | task | size | axis | payoff |
 |---|---|---|---|---|---|
-| 1 | Identity short-circuit in `QueryResult.__setattr__` (Part 1.1) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | kills a full column self-copy on `qr.f += x`; **2.3× at 2 pools / N=100k**. Verified sound |
-| 2 | Docs: the in-place idiom is the floor idiom (Part 1.2, Part 2) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | S | both | ~2× on the columnar path and 250 ns/tick on the entity path, for zero library change |
+| 1 | ~~Identity short-circuit in `QueryResult.__setattr__`~~ **DONE 2026-07-27, reduced** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | premise withdrawn — numpy already short-circuits `a[:] = a`. Shipped for the fixed ~1 µs/call it does save: **1.0–1.1×**, not 2.3× |
+| 2 | ~~Docs: the in-place idiom is the floor idiom~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | S | both | still real at **1.3–1.5×** (not ~2×) and still free — refile if wanted |
 | 3 | ~~Inline the Entity accessors~~ **DONE 2026-07-27** | [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) | S | row | 40× → **29×**, as forecast; also fixed the copy/pickle recursion |
 | 4 | Lazy `entity_ids` (plan 2, Part 3.1) | [#47](../todos/open/47-lazy-entity-ids/TASK.md) | S | columnar | not the step, the *query*: 98% of a cold query at N=10k, which is 12× the system consuming it |
-| 5 | Better `Pool.__setattr__` message (Part 1.2) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | it currently recommends the 2-temporary spelling |
+| 5 | ~~Better `Pool.__setattr__` message~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | `pool.py:78` keeps recommending the 2-temporary spelling |
 | 6 | `QRField` low-N fixed cost (Part 1.3) | [#48](../todos/open/48-qrfield-low-n-fixed-cost/TASK.md) | M | columnar | the last real gap: 2.3–6× the floor at N=1000 with ≥2 pools. Biggest and least certain |
 
-#45 is done. #46 and #47 are independent; do them in any order. #48 is P3 and explicitly **not ready** — it waits
+#45 and #46 are done (#46 reduced to item 1; items 2 and 5 dropped). #47 is next. #48 is P3 and explicitly **not ready** — it waits
 on the others being re-measured, and on [#37](../todos/open/37-qrarray-qrfield-one-contract/TASK.md)
 choosing a shape, which decides whether it is optional or mandatory.
 
@@ -229,6 +235,10 @@ comment annoying enough.
 
 ## Validation
 
+- **Every perf claim gets an interleaved A/B before it becomes a task.** #45 and #46 both shipped against
+  forecasts built on non-interleaved runs: #45 landed on its number (2.48 → 1.86 vs a predicted 1.85), #46's
+  headline evaporated entirely (a "2.3× self-copy" that numpy had already optimised away). Same measurement
+  method, opposite outcomes — so non-interleaved absolutes are not evidence, in either direction.
 - **Every item re-measures with the probe that found it**, and the ratio is the number that matters
   (absolutes drift ±20%): `columnar_gap.py` interleaved for items 1/2/6, `task45_review.py` + `per_operation.py` for
   item 3 (done), plan 2's finding-13 breakdown for item 4.
@@ -246,6 +256,8 @@ comment annoying enough.
 
 ## Relates
 
+- [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) — items 1/2/5, **closed 2026-07-27**: item 1
+  shipped reduced, items 2 and 5 dropped. Its verdict corrects this plan's Part 1.1.
 - [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) — item 3, **done 2026-07-27**. Its
   postmortem also records what did NOT improve: `get_entity` random access at N=100k is unchanged, because
   there the cost is cache misses, not the accessor.
