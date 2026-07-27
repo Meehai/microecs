@@ -201,17 +201,26 @@ three loops are equally regrettable.
 
 Ranked by value ÷ effort. Sizes: XS = one line, S = under an hour, M = a session.
 
-| order | work | size | axis | payoff |
-|---|---|---|---|---|
-| 1 | **Identity short-circuit in `QueryResult.__setattr__`** (Part 1.1) | XS | columnar | kills a full column self-copy on `qr.f += x`; **2.3× at 2 pools / N=100k**. Verified sound |
-| 2 | **Docs: the in-place idiom is the floor idiom** (Part 1.2, Part 2) | S | both | ~2× on the columnar path and 250 ns/tick on the entity path, for zero library change |
-| 3 | **[#45](../todos/open/45-entity-accessor-cost-and-recursion/TASK.md) — inline the Entity accessors** | S | row | 40× → **29×**; also fixes the copy/pickle `RecursionError` |
-| 4 | **Lazy `entity_ids`** (plan 2, Part 3.1) | S | columnar | not the step, the *query*: 98% of a cold query at N=10k, which is 12× the system consuming it |
-| 5 | **Better `Pool.__setattr__` message** (Part 1.2) | XS | columnar | it currently recommends the 2-temporary spelling |
-| 6 | **`QRField` low-N fixed cost** (Part 1.3) | M | columnar | the last real gap: 2.3–6× the floor at N=1000 with ≥2 pools. Biggest and least certain |
+All six are filed. Items 1, 2 and 5 are one finding at three sites, so they are one task (#46).
 
-Items 1–3 and 5 are independent; do them in any order. Item 4 is plan 2's, listed here because it belongs
-on the same axis. Item 6 should wait until 1–5 are in and re-measured.
+| order | work | task | size | axis | payoff |
+|---|---|---|---|---|---|
+| 1 | Identity short-circuit in `QueryResult.__setattr__` (Part 1.1) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | kills a full column self-copy on `qr.f += x`; **2.3× at 2 pools / N=100k**. Verified sound |
+| 2 | Docs: the in-place idiom is the floor idiom (Part 1.2, Part 2) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | S | both | ~2× on the columnar path and 250 ns/tick on the entity path, for zero library change |
+| 3 | Inline the Entity accessors | [#45](../todos/open/45-entity-accessor-cost-and-recursion/TASK.md) | S | row | 40× → **29×**; also fixes the copy/pickle `RecursionError` |
+| 4 | Lazy `entity_ids` (plan 2, Part 3.1) | [#47](../todos/open/47-lazy-entity-ids/TASK.md) | S | columnar | not the step, the *query*: 98% of a cold query at N=10k, which is 12× the system consuming it |
+| 5 | Better `Pool.__setattr__` message (Part 1.2) | [#46](../todos/open/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | it currently recommends the 2-temporary spelling |
+| 6 | `QRField` low-N fixed cost (Part 1.3) | [#48](../todos/open/48-qrfield-low-n-fixed-cost/TASK.md) | M | columnar | the last real gap: 2.3–6× the floor at N=1000 with ≥2 pools. Biggest and least certain |
+
+#45, #46 and #47 are independent; do them in any order. #48 is P3 and explicitly **not ready** — it waits
+on the others being re-measured, and on [#37](../todos/open/37-qrarray-qrfield-one-contract/TASK.md)
+choosing a shape, which decides whether it is optional or mandatory.
+
+**Not filed, dev's call**: `__slots__` on `Entity` (#45's non-goal). Worth 13 ns, so not a perf item — but
+it would let `ENTITY_RESERVED_NAMES` be derived from `vars()` instead of the hand-maintained
+`_ENTITY_INTERNAL_ATTRS` set with its *"if Entity gets new fields, add them here!"* comment (verified: slot
+descriptors do appear in `vars()`). That is a maintainability argument and belongs to whoever finds that
+comment annoying enough.
 
 ## Validation
 
