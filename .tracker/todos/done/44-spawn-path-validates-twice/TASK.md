@@ -1,7 +1,56 @@
 # The spawn path validates every entity twice — 20% of a spawn, on the workload we lose
 
 **Created**: 2026-07-26
+**Closed**: 2026-07-27
 **Priority**: 2
+
+## Outcome — shape 2 (world owns it), and it beat the estimate 3×
+
+Landed in `3ba0e76`. `World.add_entity` keeps its pass; `CommandBuffer.append` does nothing for ADD_ENTITY
+beyond the liveness check every verb gets. Shape 2 over shape 1 because `world.py:82` is the **sole**
+construction site of an ADD_ENTITY command in the library — the "implicit contract between two files" the
+task warned about is really a single producer feeding a single consumer, which is just ownership. (The
+component verbs are unchanged: `Entity.add_component`/`remove_component` validate nothing, so `append`
+stays their gate. It is a per-verb answer, not a global one.)
+
+**Measured** (`test/manual/churn/task44_ab.py`, N=3000, min-of-7, both arms interleaved in one process, so
+machine drift hits both equally — a 3-component archetype):
+
+| workload | 2x (before) | 1x (after) | speedup |
+|---|--:|--:|--:|
+| `add_entity` only | 10474 ns | 5310 ns | **1.97×** |
+| full spawn (`+ update()`) | 16576 ns | 11081 ns | **1.50×** |
+| churn pair (spawn + despawn) | 19873 ns | 14666 ns | **1.36×** |
+
+**w5 churn against the field** (`./run_benchmark.sh 200 1000 5000`; ratio = competitor ns ÷ microecs ns,
+so >1 means microecs wins). Baseline is `test/manual/bench-compare/results_20260726_clean.json`; the
+competitors' own absolutes barely moved between the two runs (EnTT 245.8→234.0 ns/e at N=200), which is
+what makes the comparison safe:
+
+| vs | N=200 | N=1,000 | N=5,000 |
+|---|---|---|---|
+| ecs_pattern | 0.078 → 0.098 | 0.216 → 0.319 | 0.363 → 0.502 |
+| EnTT | 0.160 → 0.195 | 0.498 → 0.717 | 0.829 → **1.19** |
+| snecs | 0.160 → 0.196 | 0.496 → 0.726 | 0.862 → **1.30** |
+| esper | 0.267 → 0.316 | 0.927 → 1.34 | 1.64 → 2.41 |
+| flecs | 0.387 → 0.437 | 1.379 → 1.92 | 2.13 → 3.33 |
+
++25% at N=200, +45% at 1k, +40–57% at 5k — against the 10–16% predicted below. **microecs now beats EnTT
+and snecs on w5 at N=5,000**, two cells it used to lose. N=200 is still 10× behind ecs_pattern: the fixed
+per-spawn cost dominates there, which is [#49](../../open/49-churn-headroom-beyond-44/TASK.md)'s territory.
+
+Tests: `test_world.py::test_spawn_validates_exactly_once` /
+`test_spawn_computes_defaults_exactly_once` / `test_rejected_spawn_validates_exactly_once_too` are the
+counter-based regression guard, and they catch a duplicate re-appearing on *either* side. The five
+rejection cases and the duplicate-components case moved from `test_command_buffer.py` to `test_world.py`
+(the layer that now raises them); `test_buffer_stages_a_spawn_verbatim` and
+`test_buffer_rejects_a_spawn_for_an_unregistered_id` are what remains of the buffer's own contract.
+Suite: 483 passed, 8 xfailed.
+
+Follow-ups this settles in **#23**: subtask 1 is done (resolved toward the world, not the buffer);
+subtask 2 is **moot** — `add_entity` validates before it mutates, so a rejected spawn cannot burn an id;
+subtask 3 (default-filling asymmetry) is still open but its "one story" is now *the producer fills
+defaults*, not *append fills defaults*.
 
 ## Why
 

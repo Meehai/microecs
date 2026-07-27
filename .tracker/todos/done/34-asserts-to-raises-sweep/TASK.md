@@ -66,3 +66,12 @@ Suite: 331 passed, 1 xfailed.
 
 ## Follow-up
 - Task 23 — construction-time unique-field-name guard (would make `world.py:180` unreachable).
+
+## Amendment (2026-07-27, microecs #49): one of the "keep as assert" calls flipped
+
+`Pool.add_entity`'s per-field dtype/shape checks were kept as asserts by this task's sweep. **#49 turned them
+into a single `raise ValueError`.** Reason: the sweep's rationale for keeping them was "hot path, and free
+under `-O`" — but #49 measured them at ~1.9 µs/spawn (21%), almost all of it `np.issubdtype`, so they were
+never cheap, and nobody runs `-O`. Swapping `issubdtype` for `==` made the check cheap enough to afford
+unconditionally, and a raise is what the raise-over-assert principle wants for data crossing a module
+boundary. The sweep's other decisions stand.

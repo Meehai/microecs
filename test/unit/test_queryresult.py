@@ -22,7 +22,7 @@ def _pool_with(n: int) -> Pool:
     """A standalone pool of n entities, each with a (2,) float32 `position` starting at [0, 0]."""
     pool = Pool(fields=["position"], shapes=[(2,)], dtypes=["float32"])
     for _ in range(n):
-        pool.add_entity(position=np.zeros(2, "float32"))
+        pool.add_entity({"position": np.zeros(2, "float32")})
     return pool
 
 
@@ -30,7 +30,7 @@ def _moving_pool(n: int, velocity: list[float]) -> Pool:
     """n entities at the origin, each carrying the SAME `velocity` (a (2,) vector)."""
     pool = Pool(fields=["position", "velocity"], shapes=[(2,), (2,)], dtypes=["float32", "float32"])
     for _ in range(n):
-        pool.add_entity(position=np.zeros(2, "float32"), velocity=np.array(velocity, "float32"))
+        pool.add_entity({"position": np.zeros(2, "float32"), "velocity": np.array(velocity, "float32")})
     return pool
 
 
@@ -38,7 +38,7 @@ def _drawable_pool(rows: list[tuple[list[float], float]]) -> Pool:
     """A pool of (position, radius) entities with explicit per-entity values."""
     pool = Pool(fields=["position", "radius"], shapes=[(2,), (1,)], dtypes=["float32", "float32"])
     for xy, r in rows:
-        pool.add_entity(position=np.array(xy, "float32"), radius=np.array([r], "float32"))
+        pool.add_entity({"position": np.array(xy, "float32"), "radius": np.array([r], "float32")})
     return pool
 
 
@@ -46,7 +46,7 @@ def _pv_pool(rows: list[tuple[list[float], list[float]]]) -> Pool:
     """A pool of (position, velocity) entities with explicit per-entity values."""
     pool = Pool(fields=["position", "velocity"], shapes=[(2,), (2,)], dtypes=["float32", "float32"])
     for xy, v in rows:
-        pool.add_entity(position=np.array(xy, "float32"), velocity=np.array(v, "float32"))
+        pool.add_entity({"position": np.array(xy, "float32"), "velocity": np.array(v, "float32")})
     return pool
 
 
@@ -55,8 +55,8 @@ def _ball_pool(rows: list[tuple[list[float], float]]) -> Pool:
     pool = Pool(fields=["position", "radius", "color"], shapes=[(2,), (1,), (4,)],
                 dtypes=["float32", "float32", "int32"])
     for xy, r in rows:
-        pool.add_entity(position=np.array(xy, "float32"), radius=np.array([r], "float32"),
-                        color=np.zeros(4, "int32"))
+        pool.add_entity({"position": np.array(xy, "float32"), "radius": np.array([r], "float32"),
+                        "color": np.zeros(4, "int32")})
     return pool
 
 
@@ -64,7 +64,7 @@ def _pos_pool(rows: list[list[float]]) -> Pool:
     """A pool of entities carrying only an explicit (2,) `position` (no other fields)."""
     pool = Pool(fields=["position"], shapes=[(2,)], dtypes=["float32"])
     for xy in rows:
-        pool.add_entity(position=np.array(xy, "float32"))
+        pool.add_entity({"position": np.array(xy, "float32")})
     return pool
 
 
@@ -72,7 +72,7 @@ def _pose_pool(rows: list[tuple[np.ndarray, float]]) -> Pool:
     """A pool of (pose, active) entities: pose is a (4, 4) transform matrix, active a (1,) on/off flag."""
     pool = Pool(fields=["pose", "active"], shapes=[(4, 4), (1,)], dtypes=["float32", "float32"])
     for mat, act in rows:
-        pool.add_entity(pose=np.array(mat, "float32"), active=np.array([act], "float32"))
+        pool.add_entity({"pose": np.array(mat, "float32"), "active": np.array([act], "float32")})
     return pool
 
 

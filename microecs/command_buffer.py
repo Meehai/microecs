@@ -46,23 +46,23 @@ class CommandBuffer:
         pool, _ = self.world._eid_to_pool_ix[entity_id]
         return self.world.pool_to_components[pool]
 
-    def _get_components_state(self, component: ComponentType, existing_components: list[ComponentType],
-                              entity_id: EntityId) -> int:
+    def _entity_has_buffered_component(self, entity_id: EntityId, component: ComponentType,
+                                       existing_components: list[ComponentType]) -> bool:
         # Look for the latest state of this entity w.r.t this component given the unstaged command buffer.
-        # We look in the buffer from right to left and return 1 if the component was added, -1 if it was not
-        # If the component is not in the buffer at all, we check if it is already in the entity and return +1/-1 as well
+        # We look in the buffer from right to left and return True if the component was added, False otherwise.
+        # If the component is not in the buffer at all, we check if it is already in the entity. Returns a bool.
         for old_command in reversed(self.data):
             if old_command.entity_id != entity_id:
                 continue
             if old_command.command_type == CommandType.ADD_COMPONENT:
                 old_component = old_command.args["component"]
                 if component == old_component:
-                    return 1
+                    return True
             if old_command.command_type == CommandType.REMOVE_COMPONENT:
                 old_component = old_command.args
                 if component == old_component:
-                    return -1
-        return -1 if component not in existing_components else 1
+                    return False
+        return component in existing_components
 
     def append(self, command: Command):
         """Appends a command to the buffer"""
@@ -72,9 +72,8 @@ class CommandBuffer:
             raise ValueError(f"Entity: {entity_id} not in live entities ({command})")
 
         if command.command_type == CommandType.ADD_ENTITY:
-            fk = {k: v for k, v in command.args.items() if k != "components"}
-            world._validate_components(command.args["components"], **fk)
-            command.args.update(world._defaults_for(command.args["components"], **fk))
+            # nothing to do here: world.add_entity already ensures validated args (& defaults) come here.
+            pass
 
         elif command.command_type == CommandType.REMOVE_ENTITY:
             # needed so we can fast check in world.remove_enitity if this is a no-op (same tick) or error (stale eid).
@@ -87,8 +86,8 @@ class CommandBuffer:
 
             components = self._get_entity_components(entity_id)
             assert len(components) > 0, f"guaranteed to be >0 {entity_id} {components}"
-            state = self._get_components_state(component, existing_components=components, entity_id=entity_id)
-            if state == 1:
+            has_component = self._entity_has_buffered_component(entity_id, component, existing_components=components)
+            if has_component:
                 raise ValueError(f"Component: {component} either added twice or exists already (id: {entity_id})")
 
         elif command.command_type == CommandType.REMOVE_COMPONENT:
@@ -98,8 +97,8 @@ class CommandBuffer:
 
             components = self._get_entity_components(entity_id)
             assert len(components) > 0, f"guaranteed to be >0 {entity_id} {components}"
-            state = self._get_components_state(component, existing_components=components, entity_id=entity_id)
-            if state == -1:
+            has_component = self._entity_has_buffered_component(entity_id, component, existing_components=components)
+            if not has_component:
                 raise ValueError(f"Component: {component} either removed twice or doesn't exist (id: {entity_id})")
 
         self.data.append(command)

@@ -16,10 +16,11 @@ twice) is rejected at the SECOND call, before the poisoning command reaches the 
 dtype / shape / missing-required are checked at the call too, mirroring add_entity (world.py:69 already
 runs _check_components_against_pool eagerly), so no field-data error reaches commit either.
 
-add_entity is the template: it is already fully eager (world.py:74). add_component / remove_component are
-being brought to the same bar by centralizing validation in CommandBuffer.append -- the single gate every
-command passes through. Those buffer-level unit tests live in test_command_buffer.py; the eager-id-tracking
-tests below exercise the same staging model through the Entity/World API.
+add_entity is the template: it is fully eager (world.py:78) and, since task 44, it is the SOLE validator of
+a spawn -- CommandBuffer.append used to repeat the same pass and no longer does. add_component /
+remove_component have no such single owner (Entity queues a bare command), so for them append IS the gate.
+Those buffer-level unit tests live in test_command_buffer.py; the eager-id-tracking tests below exercise the
+same staging model through the Entity/World API.
 """
 from dataclasses import field
 import os
@@ -629,12 +630,13 @@ def test_operate_on_uncommitted_spawn_same_tick():
 
 
 # --- task 23 subtask 2: a REJECTED add_entity must not leave bookkeeping behind ------------------------------------
-# add_entity bumps _last_id and inserts live_entities[id]=None BEFORE the append that could raise. That is safe
-# today only because add_entity pre-validates (subtask 1's redundant pass) before mutating -- so a bad spawn raises
-# before any bookkeeping happens. Subtask 1 wants that pre-validation deleted (append is already a complete gate,
-# pinned in test_command_buffer.py). Delete it WITHOUT reordering and a rejected spawn burns an id and leaks a
-# dangling live_entities entry, i.e. `world.get_entity(that_id)` returns a handle to an entity that will never
-# exist. These two are green now and are the safety net for that refactor.
+# add_entity bumps _last_id and inserts live_entities[id]=None BEFORE the append. That ordering is safe because
+# add_entity validates FIRST -- a bad spawn raises before any bookkeeping happens. Task 44 settled which side owns
+# that validation, and it chose this one, so the ordering is now load-bearing rather than incidental: append does
+# nothing for ADD_ENTITY but the liveness check, which add_entity has just satisfied by construction. Move the
+# validation out of add_entity without also moving the two mutations after the append, and a rejected spawn burns
+# an id and leaks a dangling live_entities entry -- `world.get_entity(that_id)` hands back an entity that will
+# never exist. These two are that tripwire.
 
 def test_rejected_add_entity_burns_no_id():
     """A refused spawn must not consume an entity id: the next successful add_entity gets the id it would have."""
@@ -806,12 +808,18 @@ def test_remove_unknown_entity_id_fails():
 
 def test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick():
     """Despawn the last entity of an archetype, then spawn a new one of the SAME archetype, same tick.
-    The despawn reclaims the pool at commit; the newcomer must still land in a live, queryable pool, not orphaned."""
+    The newcomer must land in a live, queryable pool, not an orphaned one.
+
+    #49 changed HOW this holds, and for the better. Reclamation used to happen inside `_pop_from_pool`, mid-commit:
+    the despawn deleted the pool and the spawn built a brand-new one behind it. It is now a single sweep at the END
+    of update(), so the emptied pool is still there when the spawn arrives and gets REUSED -- see the identity
+    assertion below. Same observable result, one less Pool allocation."""
     world = World(components=[HasPosition])
     old = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
     world.update()
+    pool_before = world.pools[world._make_key((HasPosition,))]
 
-    world.remove_entity(old)                                       # queued first: empties -> reclaims the pos pool
+    world.remove_entity(old)                                       # queued first: empties the pos pool
     new = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))
     world.update()
 
@@ -820,6 +828,46 @@ def test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick():
     assert world._make_key((HasPosition,)) in world.pools          # its pool is live / registered (not orphaned)
     pool, ix = world._eid_to_pool_ix[new]
     np.testing.assert_array_equal(pool.position[ix], [1.0, 1.0])
+    assert pool is pool_before                                     # reused, not blinked: no realloc, no new Pool
+
+
+def test_an_archetype_emptied_and_refilled_in_one_tick_is_never_torn_down():
+    """The same property stated as the thing it fixes: a bullet archetype that momentarily hits zero mid-tick used
+    to cost a full Pool teardown + rebuild (INITIAL_CAPACITY rows per field, per blink -- the space-shooter run
+    measured 747 pool builds in a chaos session). With reclamation deferred to the end of update(), a pool that is
+    refilled before the sweep runs is never torn down at all."""
+    world = World(components=[HasPosition])
+    ids = [world.add_entity((HasPosition,), position=np.array([float(i), 0.0], "float32")) for i in range(3)]
+    world.update()
+    pool_before = world.pools[world._make_key((HasPosition,))]
+
+    for _ in range(5):                                             # drain to zero and refill, 5 ticks running
+        for eid in ids:
+            world.remove_entity(eid)
+        ids = [world.add_entity((HasPosition,), position=np.array([float(i), 1.0], "float32")) for i in range(3)]
+        world.update()
+        assert world.pools[world._make_key((HasPosition,))] is pool_before
+
+    assert len(world.pools) == 1 and len(pool_before) == 3
+    _assert_pool_ids_invariants(world)
+
+
+def test_an_archetype_left_empty_at_the_end_of_a_tick_is_reclaimed():
+    """The other side of the sweep: if nothing refills it, the pool and BOTH its bookkeeping entries go away.
+    A pool left in `pool_to_components` or `_pool_ids` would be a leak the query loop still walks every tick."""
+    world = World(components=[HasPosition, HasVelocity])
+    a = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.add_entity((HasPosition, HasVelocity), position=np.array([3.0, 4.0], "float32"),
+                     velocity=np.array([5.0, 6.0], "float32"))
+    world.update()
+    assert len(world.pools) == 2
+
+    world.remove_entity(a)
+    world.update()
+
+    assert len(world.pools) == len(world.pool_to_components) == len(world._pool_ids) == 1
+    assert world._make_key((HasPosition,)) not in world.pools      # the emptied one is gone, not just empty
+    _assert_pool_ids_invariants(world)
 
 
 # --- fully-eager staging (task 178, landed) ----------------------------------------------------------------------
@@ -1364,6 +1412,65 @@ def test_pool_ids_stay_aligned_through_random_churn():
     assert len(world.live_entities) > 0                            # sanity: the churn left a populated world
 
 
+# --- #49 item 1: the two despawn paths must not drift ---------------------------------------------------------------
+# Dropping the discarded copy added `_remove_from_pool` beside `_pop_from_pool`. The refactor kept the duplication
+# small on purpose -- hoisting empty-pool reclamation into a single sweep at the end of update() took the biggest
+# shared block out of both -- but they still carry the same pop-swap and id-repointing, and differ only in whether
+# the row is copied out first. update() sends REMOVE_ENTITY to the no-copy one and component migration to the
+# copying one, so a fix applied to one and not the other silently desyncs half the churn paths. Nothing else
+# compares them directly, so this does.
+
+
+def _world_shape(world: World) -> dict:
+    """Everything about the world's structure that a despawn can move, in a comparable form (pools are keyed by
+    archetype rather than by object identity, since the two paths build different Pool instances)."""
+    by_key = {world._make_key(cs): p for p, cs in world.pool_to_components.items()}
+    return {
+        "live": sorted(world.live_entities),
+        "pool_keys": sorted(world.pools),
+        "ids_per_pool": {k: list(world._pool_ids[p]) for k, p in by_key.items()},
+        "rows": {(k, f): p.data[f][0:len(p)].tolist() for k, p in by_key.items() for f in p.fields},
+        "eid_rows": {eid: (world._make_key(world.pool_to_components[p]), ix)
+                     for eid, (p, ix) in world._eid_to_pool_ix.items()},
+    }
+
+
+@pytest.mark.parametrize("victims", [(0,), (4,), (2,), (0, 1, 2), (4, 3, 2), (2, 0, 4), (0, 1, 2, 3, 4)],
+                         ids=["first", "last", "middle", "front-run", "back-run", "scattered", "drain-pool"])
+def test_the_two_despawn_paths_leave_identical_world_state(victims):
+    """Same removals, once through each path -- head, tail, middle, and a full drain that reclaims the pool.
+    Any divergence in the pop-swap, the id repointing, or the empty-pool cleanup shows up as a state mismatch."""
+    def _run(path_name):
+        world = World(components=[HasPosition, HasVelocity])
+        ids = [world.add_entity((HasPosition, HasVelocity),
+                                position=np.array([float(i), float(i)], "float32"),
+                                velocity=np.array([float(-i), float(i)], "float32")) for i in range(5)]
+        world.add_entity((HasPosition,), position=np.array([99.0, 99.0], "float32"))   # a 2nd pool, untouched
+        world.update()
+        for v in victims:
+            getattr(world, path_name)(ids[v])
+            del world.live_entities[ids[v]]        # what World.remove_entity does around the pool call
+        return _world_shape(world)
+
+    assert _run("_remove_from_pool") == _run("_pop_from_pool")
+
+
+def test_the_last_despawn_in_a_world_leaves_no_bookkeeping_behind():
+    """Drain the world entirely through the no-copy path: every map must end empty. Neither despawn path reclaims
+    pools any more -- the end-of-update sweep does -- so this pins that the sweep covers the no-copy path too, and
+    that nothing is left dangling in `pool_to_components` / `_pool_ids` / `_eid_to_pool_ix`."""
+    world = World(components=[HasPosition, HasVelocity])
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+    assert len(world.pools) == 1
+
+    world.remove_entity(eid)
+    world.update()
+
+    assert world.pools == {} and world.pool_to_components == {} and world._pool_ids == {}
+    assert world._eid_to_pool_ix == {} and world.live_entities == {}
+
+
 # --- QueryResult.entity_ids: a flat (N,) integer array, pool-by-pool aligned with the qr.field parts -----------
 
 def test_query_result_entity_ids_is_flat_and_aligned_across_pools():
@@ -1677,6 +1784,93 @@ def test_add_entity_wrong_shape_crashes_eagerly():
     # name + dtype are correct here, so the only thing that can crash at the call is the shape mismatch
     with pytest.raises(ValueError):
         world.add_entity((HasRadius,), radius=np.zeros((2,), "float32"))  # wrong shape must crash here
+
+
+def test_add_entity_missing_required_field_crashes_eagerly():
+    """A field with default=None is REQUIRED at spawn: omitting it raises at the add_entity call, not at commit
+    (where it would surface as a KeyError deep in pool materialization, mid-loop and un-attributable)."""
+    world = World(components=[HasPosition])  # HasPosition.position has default=None
+
+    with pytest.raises(KeyError):
+        world.add_entity((HasPosition,))     # position not supplied and has no default
+
+    assert list(world.live_entities) == []
+    assert len(world._command_buffer) == 0
+
+
+def test_add_entity_rejects_a_non_ndarray_field():
+    """Field values are np.ndarray, full stop -- a list that merely looks array-like is refused at the call. Pools
+    are typed columns, so a list would be silently coerced (or worse, stored as object) at commit."""
+    world = World(components=[HasPosition])
+
+    with pytest.raises(TypeError):
+        world.add_entity((HasPosition,), position=[1.0, 2.0])   # a list, not an ndarray
+
+    assert list(world.live_entities) == []
+    assert len(world._command_buffer) == 0
+
+
+# --- task 44 (landed): the spawn path validates ONCE ----------------------------------------------------------------
+# add_entity ran _validate_components + _defaults_for, then CommandBuffer.append ran BOTH again on the same args --
+# a superset-check of the check that had just happened, whose _defaults_for could only return {}. ~2.0 us/spawn:
+# 34% of add_entity, 20% of a full spawn, 16% of a spawn+despawn pair, landing on w5 churn (the one workload
+# microecs loses at every N). Fixed by giving the verb ONE owner: World.add_entity validates, and append -- whose
+# only ADD_ENTITY producer is world.py:82 -- stages it verbatim.
+#
+# These two are the regression guard, and they catch BOTH directions: a re-added pass in append (the bug that was
+# removed) and a second pass anywhere else on the spawn path. Everything else about the change is invisible, which
+# is exactly why a plain behaviour test cannot protect it -- the counter is the test.
+
+
+def _count_calls(world, method_name):
+    """Wrap a bound method on this world instance with a call counter. The buffer reaches the world through
+    `self.world`, i.e. the same instance -- so a second pass from either file lands in the same list."""
+    calls = []
+    original = getattr(world, method_name)
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    setattr(world, method_name, counted)
+    return calls
+
+
+def test_spawn_validates_exactly_once():
+    """One spawn, one validation pass. The whole point of task 44."""
+    world = World([HasPosition])
+    calls = _count_calls(world, "_validate_components")
+
+    world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    assert len(calls) == 1, f"spawn validated {len(calls)}x -- the duplicate pass is back"
+
+
+def test_spawn_computes_defaults_exactly_once():
+    """Same for the defaults pass, on the archetype that actually has one to fill -- and the default still lands.
+    The second pass ran on the ALREADY-merged kwargs, so it could only ever return {}: pure cost, no effect."""
+    world = World([HasColorDefault])
+    calls = _count_calls(world, "_defaults_for")
+
+    world.add_entity((HasColorDefault,))                        # color omitted -> filled once, by add_entity
+    world.update()
+
+    assert len(calls) == 1, f"defaults computed {len(calls)}x -- the duplicate pass is back"
+    pool = world.query(HasColorDefault).pool_list[0]
+    np.testing.assert_array_equal(pool.color[0], np.array([10, 20, 30], "int32"))
+
+
+def test_rejected_spawn_validates_exactly_once_too():
+    """A REJECTED spawn must not validate twice either: it raises on the first pass and stops there -- no retry,
+    no second opinion. (Pins that the fix did not just move the duplicate behind the happy path.)"""
+    world = World([HasPosition])
+    calls = _count_calls(world, "_validate_components")
+
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        world.add_entity((HasPosition,), position=np.array([1.0, 2.0, 3.0], "float32"))   # (3,) into a (2,) field
+
+    assert len(calls) == 1
 
 
 # --- task 43 subtask 1 (landed): duplicate components at spawn ------------------------------------------------------

@@ -13,10 +13,10 @@ Consequence, as predicted: the commit-time `Duplicate keys` path is now **unreac
 so `test_add_component_with_field_name_clash_raises_at_update` was removed and
 `test_world_rejects_duplicate_field_name_across_components` lost its xfail and is a live test.
 
-**Still open: subtasks 1–3** (the "single gate" tidy-ups at the bottom). Re-verified 2026-07-25 — `add_entity`
-(`world.py:76-77`) still runs `_validate_components` + `_defaults_for`, and `CommandBuffer.append`
-(`command_buffer.py:73-76`) still runs both again on the same args; `_last_id` / `live_entities` are still
-mutated before the `append` that could raise.
+**Still open: subtask 3 only.** Subtasks 1 and 2 closed on 2026-07-27 with
+[#44](../../done/44-spawn-path-validates-twice/TASK.md) — 1 done (the duplicate pass is gone, resolved
+toward the world), 2 moot (validation stayed ahead of the mutations, so a rejected spawn cannot burn an id).
+See the subtask block at the bottom for what that changed about subtask 3's target.
 
 ## Why
 
@@ -81,43 +81,58 @@ never-happens internal invariant.
 
 ## Subtasks (redundancy cleanups from the 178 review — the gate works, these are tidy-ups)
 
-These make `CommandBuffer.append` the *single, only* validation gate. None are correctness bugs; they
-undercut the "one gate" story and leave dead work / fragile coupling.
+These were written to make `CommandBuffer.append` the *single, only* validation gate. **#44 (2026-07-27)
+settled the ownership question the other way**, and it was the right way: which side gates a verb depends
+on whether the verb has a single producer. ADD_ENTITY has one (`world.py:82`) → the world owns it.
+ADD_COMPONENT / REMOVE_COMPONENT do not (`Entity` queues a bare command) → `append` owns those. So the goal
+is not "one gate for everything", it is **one gate per verb**, which is what the code now does.
 
-1. **ADD_ENTITY is validated twice.** `world.add_entity` runs `_validate_components` + `_defaults_for`, then
-   `append` runs *both again* on the same args. The second pass is a no-op → dead work, and it contradicts
-   "append is the single gate". Make `add_entity` a thin command-builder: build the `ADD_ENTITY` command,
-   let `append` do the only validation + default-fill.
+1. **~~ADD_ENTITY is validated twice.~~ DONE (#44, `3ba0e76`)** — resolved toward `World.add_entity`, not
+   `append`: the world validates and fills defaults, `append` stages the command verbatim. 1.97× on
+   `add_entity`, 1.36× on a churn pair, and w5 improved 25–57% against the whole field.
 
-2. **`add_entity` mutates before it validates.** It bumps `_last_id` and inserts `live_entities[id]=None`
-   *before* `append`. Safe **only because** subtask 1's redundant pre-validation guarantees append won't
-   raise — remove that pre-validation and a rejected spawn leaks a dangling `live_entities` entry and a burnt
-   id. Fix with 1: build → `append` (validate) → *then* commit `_last_id` / `live_entities`.
+2. **~~`add_entity` mutates before it validates.~~ MOOT (#44)** — the concern was that deleting the
+   pre-validation (subtask 1 as originally written) would let `append` raise *after* `_last_id` and
+   `live_entities[id]=None` were already committed. #44 kept the validation in `add_entity`, ahead of both
+   mutations, and left `append` with nothing to raise for ADD_ENTITY but the liveness check `add_entity`
+   just satisfied. The ordering is now load-bearing rather than incidental, and it is pinned by
+   `test_world.py::test_rejected_add_entity_burns_no_id` + `..._leaves_no_live_entity_and_nothing_staged`.
 
-3. **Default-filling is asymmetric.** ADD_ENTITY fills defaults into `command.args` eagerly; ADD_COMPONENT
-   defers to commit. Both correct, but pick one story — simplest is fill-at-append for both, so a staged
-   command always carries a complete arg set and `update()` never computes defaults. (Do after 1/2.)
+3. **Default-filling is asymmetric.** ADD_ENTITY carries a complete arg set into the buffer; ADD_COMPONENT
+   defers to commit (`_do_add_component`). Both correct, but pick one story. #44 changed *where* the one
+   story would live: it is now **the producer fills defaults** (`World.add_entity` does), so the symmetric
+   fix is `Entity.add_component` filling them too — not `append` filling them for both. Still open; pinned
+   by the `xfail(strict=True)` `test_command_buffer.py::test_buffer_alone_fills_defaults_into_a_staged_add_component`,
+   which flips to XPASS when it lands.
 
 Land the field-name guard first; 1–3 are lower value.
 
-### Tests for 1–3 (in place 2026-07-25)
+### Tests (rewritten 2026-07-27 for the shape #44 actually took)
 
-Subtask 1 has no observable behaviour of its own (deleting dead work), so what protects it is the pair of
-invariants around it — both **green today**, so they are a safety net, not a spec:
+Subtask 1 has no observable behaviour of its own — deleting dead work is invisible — so the guard has to
+count, not assert an outcome:
 
-- `test_command_buffer.py::test_buffer_alone_fully_validates_a_raw_add_entity` (5 cases: shape / dtype /
-  non-ndarray / unknown field / missing-required) — proves `append` is already a complete gate for ADD_ENTITY,
-  so removing `add_entity`'s pre-pass loses no validation.
-- `test_command_buffer.py::test_buffer_alone_fills_defaults_into_a_staged_add_entity` — same for `_defaults_for`.
-- `test_world.py::test_rejected_add_entity_burns_no_id` and
-  `..._leaves_no_live_entity_and_nothing_staged` — **subtask 2's net.** Mutation-checked
-  (`test/manual/23-single-gate/mutation_check.py`): deleting the pre-pass *without* reordering fails exactly
-  these two; deleting it *and* reordering (build → append → then commit `_last_id`/`live_entities`) passes.
-  So they tell the good refactor from the bad one.
+- `test_world.py::test_spawn_validates_exactly_once`, `..._computes_defaults_exactly_once`,
+  `test_rejected_spawn_validates_exactly_once_too` — wrap the bound method on the world instance and assert
+  one call. The buffer reaches the world through `self.world` (same instance), so a re-added pass on
+  *either* side lands in the same counter. This is the regression guard.
+- `test_command_buffer.py::test_buffer_stages_a_spawn_verbatim` — the buffer's half: the args dict it
+  stages is the same object it was handed, with no default injected.
+- `test_command_buffer.py::test_buffer_rejects_a_spawn_for_an_unregistered_id` — the liveness check is the
+  one thing `append` still does for ADD_ENTITY, and with validation gone it is the only thing between a
+  hand-built spawn command and `update()`.
+- `test_world.py::test_rejected_add_entity_burns_no_id` and `..._leaves_no_live_entity_and_nothing_staged` —
+  **still subtask 2's net**, now guarding the validate-before-mutate ordering rather than a planned refactor.
+  Mutation-checked (`test/manual/23-single-gate/mutation_check.py`).
 
-Subtask 3 is the only one with a real behaviour change, so it gets the xfail:
+The five ADD_ENTITY rejection cases (shape / dtype / non-ndarray / unknown field / missing-required) and the
+duplicate-components case **moved from `test_command_buffer.py` to `test_world.py`**: they are now raised by
+`World.add_entity`, and testing them against the buffer would defend it from commands its only caller cannot
+build. Two of them (missing-required, non-ndarray) had no `add_entity`-level test at all before the move.
+
+Subtask 3 is the only one left with a real behaviour change, so it keeps the xfail:
 - `test_command_buffer.py::test_buffer_alone_fills_defaults_into_a_staged_add_component` —
-  `xfail(strict=True)`, flips to XPASS when ADD_COMPONENT fills defaults at append like ADD_ENTITY does.
+  `xfail(strict=True)`, flips to XPASS when `Entity.add_component` fills defaults like `World.add_entity` does.
 
 ## Relates
 

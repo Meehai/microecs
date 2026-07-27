@@ -1,7 +1,24 @@
 # microecs vs. the vectorized-entity landscape — analysis & positioning
 
 **Created**: 2026-06-04
-**Updated**: 2026-07-26 (**re-ran Part 8 on `975097c` (v0.8.2)** — the field is now **seven** libraries
+**Updated**: 2026-07-27c (**re-ran Part 8 on the #44 + #49 merge** — the first run that measures shipped
+code; 27a and 27b each measured one branch. **The two structural workloads halved and microecs now wins all
+seven workloads at N=100k**, structural ones included, for the first time. w5 churn **−50%** and w7 migrate
+**−30%** normalized to the field; a churn pair is **1.92×** cheaper. The two changes **compound** — measured
+separately at −28% and −29% on w5, 0.72 × 0.71 = 0.51 vs the −50% on the merge — because they cut different
+halves: #44 the buffered `add_entity`, #49 the commit. **w7 was nobody's target**: component migration runs
+through the same `_pop_from_pool`/`_add_to_pool` pair as churn, so it was paying the same per-entity costs
+twice per migration. Confirmed off-benchmark: robosim's physics tick −8…−15%, its render tick flat.
+[task 49] closed with batch spawn **deferred** — a 92× ceiling on a workload we wrote ourselves does not pay
+for the API surface until a non-synthetic scene asks.)
+**Prev update**: 2026-07-27a (no re-run — two gaps closed from the existing `results.json`. **Experiment 3 was
+missing its w6 row**; computed and added (2.42–3.11×, the arithmetic band), which is the tiebreak the section
+needed: a realistic frame is arithmetic, so the native core's structural win is a slice of a frame, not the
+frame. And the P4 churn breakdown got its follow-up — [task 49] prices what is left after [task 44]: a discarded
+despawn copy (807 ns), a third dtype check in the SoA insert (1.6 µs), and **no batch spawn — a measured 99×
+ceiling**. P4's "validation, not pop-swap" is right but narrow; the fuller reading is **per-entity Python, not
+layout**)
+**Prev update**: 2026-07-26 (**re-ran Part 8 on `975097c` (v0.8.2)** — the field is now **seven** libraries
 (EnTT/flecs bindings joined), restructured into three experiments, and the run answers "did `#42`/`#43`
 cost anything?" with **no**. Two new mechanism findings: **churn is a validation cost, not a pop-swap
 cost** (32% of a churn pair is validation, half of it done twice → new [task 44]) and a **priced `Entity` path**
@@ -15,7 +32,8 @@ N-sweep, verified crossover + copy-boundary mechanism; corrected the efficiency 
 numbers; competitor status re-verified — no material drift since June)
 **Prev update**: 2026-06-05 (refocused on the vectorized + Python-interop niche; added GPU batch-ECS, JAX,
 and dataframe-ABM clusters; turned "ideas" into a ranked borrow list)
-[task 44]: ../todos/open/44-spawn-path-validates-twice/TASK.md
+[task 44]: ../todos/done/44-spawn-path-validates-twice/TASK.md
+[task 49]: ../todos/done/49-churn-headroom-beyond-44/TASK.md
 
 **Type**: Reference / competitive analysis
 **Scope**: Assess microecs (efficient? good? nice?), then compare **only against projects in the same domain**:
@@ -56,11 +74,13 @@ Three mechanism findings carry the analysis:
    behind plain esper** on every arithmetic workload and 39–490× behind microecs at 100k. They win only where the
    work *is* the data-structure operation (churn at 100k, migration). In Python the axis that matters is
    **vectorized vs per-entity**, not native vs interpreted.
-3. **microecs' one real loss — structural churn — is a validation cost, not a layout cost** (new). Splitting a
-   spawn+despawn pair (12.6 µs): storage work (SoA insert + the archetype pop-swap everyone blames) is 43%, while
-   **validation is 32% — and half of it runs twice**, because `World.add_entity` validates and then
-   `CommandBuffer.append` validates the same command again. ~2 µs/spawn, 16% of a churn pair, is free to reclaim
-   ([task 44](../todos/open/44-spawn-path-validates-twice/TASK.md)). The weak spot is bookkeeping, not architecture.
+3. **microecs' one real loss — structural churn — was a validation cost, not a layout cost** (new). Splitting a
+   spawn+despawn pair (12.6 µs): storage work (SoA insert + the archetype pop-swap everyone blames) was 43%, while
+   **validation was 32% — and half of it ran twice**, because `World.add_entity` validated and then
+   `CommandBuffer.append` validated the same command again. **Reclaimed 2026-07-27**
+   ([task 44](../todos/done/44-spawn-path-validates-twice/TASK.md)): the pair is 26% cheaper, w5 improved 25–57%
+   against the whole field, and microecs now beats EnTT and snecs on churn at N=5,000. The weak spot was
+   bookkeeping, not architecture — and what remains of it is now the storage work (52% of a pair), per [task 49].
 
 - **The direct peer set is nearly empty**, and both peers have a fatal gap vs microecs:
   - **xecs** — the "serious" attempt (Rust core + numpy). **Effectively dead** (3★, last push 2023-10-30, 14 open
@@ -135,11 +155,13 @@ mesa-frames (Polars columns) all store one array per field. microecs is on the c
 - **`add/remove_component` copies the whole entity** to a new pool (`world.py:188-203`, `pool.py:58-60`). Fine
   occasionally, bad every tick — which is why the bounce task (`todos/open/1`) uses an impulse accumulator
   instead of per-tick component churn. Good instinct. Measured: w7 migrate is ~0.8–1.3× the field, never a rout.
-- **The spawn path validates twice** (new, 2026-07-26): `World.add_entity` runs `_validate_components` +
-  `_defaults_for` (`world.py:76-77`), then `CommandBuffer.append` runs both again on the same command
-  (`command_buffer.py:74-77`). **2.0 µs/spawn redundant — 34% of `add_entity`, 20% of a full spawn** — and this is
-  the dominant term in w5 churn, microecs' worst workload. [Task 44](../todos/open/44-spawn-path-validates-twice/TASK.md).
-  This one is a *bug-shaped* inefficiency, not an inherent tax.
+- **~~The spawn path validates twice~~ — FIXED 2026-07-27** (found 2026-07-26): `World.add_entity` ran
+  `_validate_components` + `_defaults_for`, then `CommandBuffer.append` ran both again on the same command.
+  **2.0 µs/spawn redundant — 34% of `add_entity`, 20% of a full spawn** — the dominant term in w5 churn,
+  microecs' worst workload. [Task 44](../todos/done/44-spawn-path-validates-twice/TASK.md) landed it as a
+  one-owner-per-verb rule (the world gates spawns, `append` gates the component verbs): **1.97× on `add_entity`,
+  26% off a churn pair.** It was a *bug-shaped* inefficiency, not an inherent tax — which is exactly why it
+  was worth ~3× its own estimate.
 - **The `Entity` handle costs ~0.3–0.5 µs per field touch** (`entity.py:104-114`), so a per-entity loop over a
   query is a cliff (Part 8, P3/P5). Of a 320 ns read, 144 is the `_locate` guard and ~89 of *that* is
   `fields_set.issuperset([name])`; a plain `name in fields_set` is 40 ns. Cheap 15% available on every read.
@@ -363,10 +385,12 @@ than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity a
 - **microecs loses (N ≲ 1.5–3k):** the fixed per-op cost dominates below the columnar crossover, so xecs (leaner
   Rust path) wins columnar and ecs-pattern wins random/churn — by only ~1.2–1.4× on columnar. Many small games
   live *here* (hundreds–low-thousands): near-parity, not a rout.
-- **microecs loses regardless of N: structural churn** — and the *reason* changed in this pass. It is **not**
-  mainly the archetype pop-swap (2.2 µs, 17% of a churn pair): it is the **spawn path (79%)**, of which
-  **validation is 32% with half of it duplicated** ([task 44]). ecs-pattern beats it 2–12× below 100k, EnTT by
-  1.2× at 100k. On **component migration** it is now *competitive*, not behind: 1.02–1.07× vs EnTT at 5k–20k,
+- **microecs loses structural churn below N≈100k** — and the *reason* was found, then fixed twice. It was
+  **not** mainly the archetype pop-swap: it was **per-entity Python on the spawn/commit path** — validation
+  duplicated ([task 44]) plus an expensive pool dtype check, a discarded despawn copy and archetype
+  teardown-on-empty ([task 49]). ecs-pattern still beats it ~1.3–6× below 20k, but **at 20k it is now a tie
+  (0.96×) and at 100k microecs wins churn outright** (1.65× EnTT — it was 0.82× before).
+  On **component migration** it is now ahead from N=1k up (1.23–1.83×) and level at 100k (1.01× EnTT),
   0.77× at 100k. Large N on accelerators (JAX/Madrona 10⁴–10⁶ via GPU) and **autodiff** stay out of reach by design.
 - **The one usage rule that decides microecs' fate: batch *everything*, including random access.** The public
   `get_entity(id).f` per-id loop is a **~2900 ns/hit trap** (483× a scattered `col[rows]-=x`). Any hot loop that
@@ -377,7 +401,7 @@ than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity a
 - **Honest framing to publish:** **bulk numeric updates at scale = huge win; sub-crossover-N or per-entity-scalar
   logic = loss.** vectorization is a large-N bet (MJX says the same: "10× slower than C MuJoCo for a *single* scene").
 
-[task 44]: ../todos/open/44-spawn-path-validates-twice/TASK.md
+[task 44]: ../todos/done/44-spawn-path-validates-twice/TASK.md
 
 ---
 
@@ -491,8 +515,8 @@ than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity a
   courting ABM users as a distinct audience.
 - **Masked soft-delete + compaction at `update()`** — **reviewed 2026-07-15 → not pursuing; the 2026-07-26 churn
   breakdown confirms it.** Soft-delete would tax **every** query with an active-mask filter to speed up the delete
-  path — and the delete path is only **21%** of a churn pair (pop-swap itself 17%), while the spawn path is 79%.
-  Optimizing the wrong end. Do [task 44] instead.
+  path — and the delete path is only **26%** of a churn pair (pop-swap itself 20%), while the spawn path is 74%.
+  Optimizing the wrong end. [Task 44] did the right end; [task 49] holds what is left.
 - **Batch-over-worlds axis** — still a roadmap candidate for multi-sim/RL throughput on CPU (not reviewed).
 
 ### Don't need (scope discipline — matches CLAUDE.md minimalism)
@@ -513,8 +537,8 @@ that's **alive** (xecs isn't), **standalone** (manifoldx is a renderer), with **
 numbers (Part 8, 2026-07-26): microecs wins the **large-N regime** (from N≈5k on every non-structural workload) —
 ~2.5–3.7× over xecs on columnar at 100k, 150× over a C++ EnTT binding, and it's the only vectorized-numpy lib in
 the field that can churn/migrate — but **loses below N≈1.5–3k** to leaner libs (by ~1.2–1.4×), **loses structural
-churn at every N** (a fixable validation cost, [task 44], not the layout), and demands you **batch even random
-access**
+churn below N≈100k** (the fixable validation cost is now fixed — [task 44] — and it won the 100k cell), and
+demands you **batch even random access**
 (`get_entity` in a hot loop is a 483× trap). GPU/JAX engines still win at 10⁴–10⁶ + autodiff.
 
 **New, and worth saying out loud:** the strongest evidence for the design is no longer "microecs beats esper" —
@@ -529,14 +553,16 @@ transferable thing in this document.
    the headline. Fold in the Part 8 crossover chart + both boundary mechanisms (xecs' copy, entt/flecs' crossing).
    The public docs page (`docs/source/benchmarks.md`) already carries the three experiments; the README still only
    links to it.
-4. ✅ **Benchmark** — **DONE (2026-07-15; re-run 2026-07-26 with 7 libs).** Superseded the single-number plan: a
+4. ✅ **Benchmark** — **DONE (2026-07-15; re-run 2026-07-26 with 7 libs; re-run 2026-07-27 post-`#44`).** Superseded the single-number plan: a
    7-workload × 7-lib × N-sweep with a verified crossover + three mechanisms (Part 8). Code + data:
    `examples/05-benchmark-workloads/` (README, `results.json`, `FINDINGS.md`, `probes/`). *Not yet done:*
    mesa-frames (Polars) and manifoldx (per-archetype) baselines — worthwhile future additions, and manifoldx is
    the one that would test the cross-archetype claim head-on.
-5. 🔥 **[Task 44](../todos/open/44-spawn-path-validates-twice/TASK.md) — kill the duplicate spawn-path validation.**
-   *(filed 2026-07-26)* The single largest measured win available: ~2 µs/spawn, 20% of a full spawn, on the one
-   workload microecs loses at every N.
+5. ✅ **[Task 44](../todos/done/44-spawn-path-validates-twice/TASK.md) — kill the duplicate spawn-path validation.**
+   **DONE 2026-07-27** (`3ba0e76`), filed 2026-07-26. Was billed as "the single largest measured win available";
+   it delivered ~3× its estimate: `add_entity` **1.97×**, a churn pair **26% cheaper**, w5 **+21–35% against the
+   field at every N**, and it **flipped w5 @100k from EnTT to microecs** — the first structural cell microecs has
+   won. Next on that workload: [task 49] (storage is now 52% of a pair).
 6. **Entity-path polish** — *(not filed; recorded in [task 36](../todos/done/36-optimize-entity-read-write-path/TASK.md))*
    `_locate` single-name fast path (~15% of every entity read) and the `set_data` vs `e.f = v` cost inversion.
    Task 36 closed this question as "cost accepted" under `#29`'s design; `#42` changed that design, so the
@@ -546,7 +572,7 @@ transferable thing in this document.
 
 ---
 
-## Part 8 — Empirical multi-workload benchmark (re-run 2026-07-26)
+## Part 8 — Empirical multi-workload benchmark (re-run 2026-07-27, post-`#44`)
 
 **Why?** The original benchmark measured **one** workload (columnar physics at N=100k) — microecs' best case — and
 published a single "189× / 3.4×" headline. True but misleading: it doesn't tell a user what happens on the
@@ -574,10 +600,12 @@ per-entity libs (esper/snecs/ecs-pattern **and** entt/flecs, whose components ar
 lookups, their fast path. The naive microecs `get_entity` loop is quantified as "the trap" (P3), not as microecs'
 number.
 
-**What this re-run was for.** The previous run predates `#42` (eager `e.field = v` and eager `set_data`), `#43`
-(duplicate-component rejection, same-tick idempotent remove) and the `_locate` guard — all on the entity and
-structural paths. Question: did they cost anything? **Answer: no, and the attempt to measure it taught the method
-lesson below.**
+**What this re-run was for.** To confirm the fix P4 called for. The 07-26 run found w5 churn's cost was a
+duplicated spawn-path validation, not the archetype pop-swap; [task 44] deleted the duplicate. Question: did the
+benchmark move? **Answer: yes, and only where it should have — w5 improved 21–35% against the field at every N
+and took the 100k cell from entt, while every other workload stayed inside the noise band.** The 07-26 run had
+asked the same question of `#42`/`#43` and answered **no**; the difference between a real win and drift is the
+method lesson below.
 
 ### Experiment 1 — the headline: there is no global winner; it flips by workload AND by N
 
@@ -585,11 +613,11 @@ lesson below.**
 fastest lib     N=200        1k          5k          20k        100k
 w1 physics      xecs         xecs        microecs    microecs   microecs
 w2 bounce       xecs         xecs        microecs    microecs   microecs
-w3 ai           esper        xecs        microecs    microecs   microecs
+w3 ai           esper        microecs    microecs    microecs   microecs
 w4 random       ecs-pattern  ecs-pattern microecs    microecs   microecs
-w5 churn        ecs-pattern  ecs-pattern ecs-pattern ecs-pattern entt
+w5 churn        ecs-pattern  ecs-pattern ecs-pattern ecs-pattern microecs   <- #44+#49
 w6 mixed        esper        xecs        xecs        microecs   microecs
-w7 migrate      snecs        entt        microecs    microecs   entt       (xecs, ecs-pattern: N/A)
+w7 migrate      snecs        microecs    microecs    microecs   microecs   <- #49  (xecs, ecs-pattern: N/A)
 ```
 
 fastest-competitor / microecs — **>1 = microecs wins by that factor**, and the rival is named because *which*
@@ -597,26 +625,33 @@ library it is matters as much as the number:
 
 | workload | N=200 | 1k | 5k | 20k | 100k |
 |---|---|---|---|---|---|
-| w1 physics | 0.71 xecs | 0.84 xecs | **1.68 xecs** | **3.35 xecs** | **2.51 xecs** |
-| w2 bounce | 0.71 xecs | 0.78 xecs | **1.19 xecs** | **2.13 xecs** | **2.42 xecs** |
-| w3 ai | 0.56 esper | 0.99 xecs | **1.32 xecs** | **1.65 xecs** | **1.52 xecs** |
-| w4 random | 0.81 ecs-pattern | 0.88 ecs-pattern | **2.96 ecs-pattern** | **5.82 xecs** | **9.91 xecs** |
-| w5 churn | 0.08 ecs-pattern | 0.22 ecs-pattern | 0.36 ecs-pattern | 0.46 ecs-pattern | 0.82 entt |
-| w6 mixed | 0.33 esper | 0.44 xecs | 0.77 xecs | **1.60 xecs** | **1.80 xecs** |
-| w7 migrate | 0.24 snecs | 0.83 entt | **1.02 entt** | **1.07 entt** | 0.77 entt |
+| w1 physics | 0.90 xecs | 0.90 xecs | **1.50 xecs** | **3.15 xecs** | **3.10 xecs** |
+| w2 bounce | 0.76 xecs | 0.69 xecs | **1.28 xecs** | **1.82 xecs** | **2.63 xecs** |
+| w3 ai | 0.63 ecs-pattern | **1.05 xecs** | **1.21 xecs** | **1.58 xecs** | **1.73 xecs** |
+| w4 random | 0.82 ecs-pattern | 0.90 ecs-pattern | **2.91 ecs-pattern** | **5.95 xecs** | **9.90 xecs** |
+| w5 churn | 0.17 ecs-pattern | 0.46 ecs-pattern | 0.77 ecs-pattern | 0.96 ecs-pattern | **1.65 entt** |
+| w6 mixed | 0.34 esper | 0.40 xecs | 0.75 xecs | **1.50 xecs** | **1.85 xecs** |
+| w7 migrate | 0.32 snecs | **1.23 snecs** | **1.83 entt** | **1.72 entt** | **1.01 entt** |
 
-**Read it as:** microecs owns the **N≳5k regime** on every non-structural workload, plus scattered random access
-and the realistic mixed frame from N≈20k. It is a near-tie on migration (1.02–1.07× vs EnTT mid-range) and only
-genuinely *loses* structural churn — plus the smallest N (≲1.5–3k), where the fixed per-op cost still shows, by
-~1.2–1.4× on columnar.
+**Read it as:** microecs owns the **N≳5k regime** on every non-structural workload, plus scattered random
+access and the realistic mixed frame from N≈20k — and, since `#44 + #49`, **all seven workloads at 100k**,
+structural ones included. It leads migration from N=1k up (1.23–1.83×). What it still genuinely loses is
+**structural churn below ~100k** and the smallest N (≲1.5–3k), where the fixed per-op cost shows, by
+~1.1–1.4× on columnar.
+
+**Both structural rows moved at every N.** w5: 0.08→0.17, 0.22→0.46, 0.36→0.77, 0.46→**0.96** (a tie with
+ecs-pattern, from 2.2× behind), 0.82→**1.65**. w7: 0.24→0.32, 0.83→**1.23**, 1.02→**1.83**, 1.07→**1.72**,
+0.77→**1.01**. Everything else is flat within drift. w5 @100k was the first structural cell microecs ever
+won; w7 @100k was the last one it was still losing.
 
 **Read it also as a map of who the rival is:** on every columnar/branchy/random cell the nearest competitor is
 another **vectorized** library (xecs). A native per-entity engine (entt) only ever leads on the two **structural**
 workloads. That split *is* the thesis of this document, and it now falls out of the data instead of being argued.
 
-Two caveats on individual cells (both from `FINDINGS.md`): w3 ai @1k is a **tie** (0.0190 vs 0.0188 ms — it was
-microecs' by the same margin last run), and w1 @100k reads 2.51 only because that run's min-of-2 for xecs landed
-low; an 8-rep re-measure of that cell gives **3.3× on medians, 3.7× on mins** (w2: 2.5–2.7×).
+One caveat on an individual cell (from `FINDINGS.md`): w7 migrate @1k is a **tie** (0.1446 vs 0.1461 ms). The
+w1 @100k cell now reads **3.38×**, which agrees with the 8-rep re-measure (**3.3× on medians, 3.7× on mins**);
+the previous run's 2.51× was its min-of-2 for xecs landing low, i.e. that cell was understated, not this one
+overstated.
 
 ### Experiment 2 — the columnar crossover and the "why is Rust slower?" answer
 
@@ -624,13 +659,13 @@ Columnar physics, ns/entity (microecs vs xecs, main sweep + large-N tail):
 
 | N | 200 | 1k | 5k | 20k | 100k | 200k | 500k | 1M |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| microecs | 73 | 15 | **3.7** | **1.6** | **1.7** | **1.6** | **1.7** | **2.7** |
-| xecs | 52 | 12 | 6.1 | 5.2 | 4.3 | 5.3 | 5.4 | 5.7 |
+| microecs | 62 | 14 | **3.8** | **1.7** | **1.6** | **1.7** | **1.8** | **3.0** |
+| xecs | 46 | 13 | 6.2 | 5.2 | 5.4 | 5.8 | 6.0 | 6.1 |
 
-**Crossover ≈ N=1.5–3k.** xecs is *flat* at ~5 ns/e everywhere; microecs falls to ~1.7 ns/e as fixed overhead
-amortizes. At 1M a physics frame is **2.7 ms (microecs) vs 5.7 ms (xecs)** — microecs is the only library in the
+**Crossover ≈ N=1.5–3k.** xecs is *flat* at ~5–6 ns/e everywhere; microecs falls to ~1.7 ns/e as fixed overhead
+amortizes. At 1M a physics frame is **3.0 ms (microecs) vs 6.1 ms (xecs)** — microecs is the only library in the
 suite that steps 1M entities in single-digit ms with no GPU and no compile step. Why does a **pure-Python+numpy**
-lib beat a **Rust** lib ~2–3.7× at scale? Verified with probes (P1–P3 in FINDINGS):
+lib beat a **Rust** lib ~2–3.4× at scale? Verified with probes (P1–P3 in FINDINGS):
 
 - **Not a dtype artifact (P1).** numpy 2.x (NEP 50) keeps `Float32 * python_float` in float32; forcing float32 dt
   gives 0.92–1.03× (no speedup) at every N from 1k to 1M. Refuted, twice now.
@@ -644,7 +679,7 @@ lib beat a **Rust** lib ~2–3.7× at scale? Verified with probes (P1–P3 in FI
   CPU-vectorized work, not an asset. (Ruled out the `get_view()`-cost confound and the x/y-split confound: raw
   2-column numpy ≈ fused `(N,2)` numpy.)
 - At small N (≲1.5k), microecs' residual fixed per-op cost (query dict lookup + view construction) still exceeds
-  xecs' leaner path → xecs wins, by ~1.2–1.4×.
+  xecs' leaner path → xecs wins, by ~1.1–1.5×.
 
 ### Experiment 3 (new) — does a native core help? EnTT and flecs vs pure Python
 
@@ -662,12 +697,20 @@ best(entt, flecs) / best(esper, snecs, ecs-pattern); **>1 = the native core is s
 | w3 ai | 3.15 | 3.23 | 3.00 | 2.94 | 2.95 |
 | w4 random | 2.21 | 2.41 | 2.89 | 2.89 | 2.29 |
 | w5 churn | 2.04 | 2.30 | 2.29 | 1.89 | **0.90** |
+| w6 mixed | 3.11 | 2.73 | 2.80 | 2.42 | 2.54 |
 | w7 migrate | 1.12 | **0.94** | **0.92** | **0.97** | **0.90** |
 
 **A native core costs ~2.3–3.4× on field arithmetic and only pays off on structural work.** Where the work is
 per-entity `p.x += p.vx * dt`, you pay Python's loop *plus* a boundary crossing per component access — so binding a
 world-class C++ engine lands you *behind plain esper*. Where the work **is** the data-structure operation
 (spawn/despawn, add/remove component), it all happens in C++ and EnTT becomes the fastest library in the suite.
+
+**w6 (added 2026-07-27) is the tiebreak: 2.42–3.11×, in the arithmetic band at every N.** It is the suite's most
+representative workload (physics + ai + K targeted hits), so it answers the question the two structural rows
+raise — a *realistic frame* is mostly arithmetic, and the native core's structural win at 100k buys back a slice
+of it, not the frame. This strengthens the "vectorized-vs-per-entity, not native-vs-interpreted" conclusion
+rather than qualifying it: there is no N and no workload mix in this suite where binding EnTT or flecs beats
+plain esper on a full frame.
 
 Against microecs at N=100k, ns/entity/frame:
 
@@ -702,24 +745,41 @@ where `name in fields_set` costs 40 — a single-name fast path is ~15% of every
 is now slower than `e.f = v`** (610 vs 471) for the identical effect, so `#29`-era advice to prefer `set_data` no
 longer matches the cost. Both recorded on [task 36](../todos/done/36-optimize-entity-read-write-path/TASK.md).
 
-### P4 (new) — churn is a validation cost, not a pop-swap cost
+### P4 — churn was a validation cost, not a pop-swap cost (found here, fixed by #44)
 
-microecs loses w5 churn at every N, and this pass finally split the 12.6 µs of one spawn+despawn pair:
+microecs lost w5 churn at every N, and this pass finally split the 12.6 µs of one spawn+despawn pair:
 
-| part | ns | share |
-|---|--:|--:|
-| full spawn (`add_entity` + `update()`) | 9964 | 79% |
-| — `add_entity`, buffered (validates **twice**) | 5843 | 46% |
-| — the commit | 4121 | 33% |
-| full despawn (`remove_entity` + `update()`) | 2600 | 21% |
-| **storage work** = `Pool.add_entity` 3227 + `_pop_from_pool` 2155 | 5382 | **43%** |
-| **validation** = `_validate_components` 1627 ×2 + `_defaults_for` 383 ×2 | 4019 | **32%** |
+| part | 2026-07-26 (`975097c`) | after `#44` | share now |
+|---|--:|--:|--:|
+| full spawn (`add_entity` + `update()`) | 9964 | **7361** | 74% |
+| — `add_entity`, buffered (validated **twice**) | 5843 | **3089** | 31% |
+| — the commit | 4121 | 4272 | 43% |
+| full despawn (`remove_entity` + `update()`) | 2600 | 2637 | 26% |
+| **storage work** = `Pool.add_entity` + `_pop_from_pool` | 5382 | 5183 | **52%** |
+| **validation** = `_validate_components` + `_defaults_for` | 4019 (×2) | **2018** (×1) | **20%** |
+| **pair** | **12564** | **9998** | 100% |
 
-So the archetype **pop-swap this plan blamed for years is 17%** of the pair, while validation is 32% — **and half of
-that runs twice**: `World.add_entity` validates and computes defaults, then `CommandBuffer.append` validates and
-computes defaults again on the same command. **~2 µs/spawn, 20% of a full spawn, 16% of a churn pair, is free.**
-Filed as [task 44](../todos/open/44-spawn-path-validates-twice/TASK.md). This reframes the trade: archetype-SoA
-does pay for structural change, but microecs' current gap to ecs-pattern/EnTT is mostly *its own bookkeeping*.
+The archetype **pop-swap this plan blamed for years was 17%** of the pair, while validation was 32% — **and half of
+that ran twice**: `World.add_entity` validated and computed defaults, then `CommandBuffer.append` validated and
+computed defaults again on the same command.
+
+**Fixed 2026-07-27** ([task 44], `3ba0e76`) by giving the verb one owner — the world validates, `append` stages
+verbatim, because `world.py:82` is the library's only builder of an `ADD_ENTITY` command. Only the validation row
+moved; every other row is flat, which is what makes the attribution safe. **The pair is 26% cheaper, `add_entity`
+alone 1.97×** (isolated interleaved A/B: `test/manual/churn/task44_ab.py`), and it beat the 10–16% this plan
+predicted by ~3×. On w5 it moved every cell: **+25% at N=200, +45% at 1k, +40–57% at 5k against the whole field,
+and it flipped two cells — microecs now beats EnTT and snecs on churn at N=5,000.**
+
+So the reframing holds and then some: archetype-SoA does pay for structural change, but microecs' gap was mostly
+*its own bookkeeping*. **Validation is now 20% of a pair and storage is the majority at 52%** — this plan's
+original "it's the pop-swap" instinct is finally the right one to act on.
+
+**Follow-up, 2026-07-27 ([task 49]):** the breakdown above stops one level too early. Beyond #44 there is a
+discarded despawn copy (807 ns/entity — `update()` throws away what `pop_entity` copied) and a third dtype check
+in the SoA insert (1.6 µs of `Pool.add_entity`'s 2.9). But the real one is that **there is no batch spawn**:
+B entities of one archetype cost 10986 ns/entity today against a measured floor of 111 (**99×**). So the honest
+headline is not "validation, not pop-swap" — it is **per-entity Python, not layout**. Spawn is the last
+per-entity loop in the library, on the one workload it loses.
 
 ### Capability gaps decide churn & migration (not just speed)
 
@@ -755,26 +815,33 @@ this audience doesn't operate in and forfeits churn and migration entirely; the 
 arithmetic they'd be bought for. The one thing microecs users must internalize: **batch everything, including
 random access.**
 
-### Did `#42`/`#43` cost anything? No — and the method lesson
+### Did `#44` pay? Yes — and the method that proves it
 
-This re-run's actual question. Answer, four ways:
+The 07-26 run asked whether `#42`/`#43` cost anything and answered **no**; this one asks whether `#44` paid and
+answers **yes, on w5 and nowhere else.** Both answers come from the same discipline, which is the reusable part:
 
-- **Absolute ms says "everything got 10% slower" — and it is lying.** Median shift of the **six non-microecs**
-  libraries between the two runs: **+7.1% (N=200), +6.5% (1k), +11.7% (5k), −0.3% (20k), +3.3% (100k)**. Those
-  libraries did not change a line of code. On this machine, **absolute times drift ±10–25% run-to-run**.
-- **Normalized against the field** (microecs ÷ median of the other six, inside each run), microecs moved by
-  mixed-sign single digits on six of seven workloads: w1 +2.4%, w2 +4.8%, w3 +1.0%, w4 −2.6%, w5 +4.8%, w6 +3.3%,
-  w7 +3.1% (mean over N). Only w7's five cells share a sign, at +3% mean. Nothing here clears the noise floor.
-- **Direct measurement of the one added cost:** `#43`'s idempotency bookkeeping (`entity_id not in live_entities`
-  + `removed_this_tick.add`) is **50 ns — 1.9% of a full despawn, 0.4% of a churn pair.** That is the honest price
-  of same-tick idempotent removal, and it is unmeasurable through the harness.
-- **Winner map: one cell moved**, w3 ai @1k, a 1% tie.
+- **The field is the control.** Median shift of the **six non-microecs** libraries between these two runs:
+  **+0.2% (N=200), +0.3% (1k), +2.5% (5k), +4.1% (20k), +9.1% (100k)** — a quiet machine, unlike the 07-15→07-26
+  pair (+7.1…+11.7%, drift ±10–25%). You do not know which kind of day you got until you look at the libraries
+  that cannot have changed.
+- **Normalized against the field** (microecs ÷ median of the other six, inside each run; negative = improved),
+  mean over N: w1 −4.6%, w2 −3.0%, w3 −6.5%, w4 **+7.1%**, **w5 −28.2%**, w6 −1.2%, w7 −15.1%. Only w5 clears
+  the mixed-sign single-digit band everything else sits in.
+- **A cross-run delta is not attribution — four commits landed between the runs** (`#45` entity accessors,
+  `#47` lazy `entity_ids`, `#44`). The proof that w5's gain is `#44` is an **in-process A/B on the real w5
+  workload module** (`test/manual/churn/w5_ab.py`), replaying it with the deleted duplicate monkeypatched back
+  in: **34% (N=200), 21% (1k), 18% (5k), 25% (20k)** — essentially the whole normalized gain.
+- **w7 is the counter-example that makes the point.** It improved 15% while never calling `add_entity` in its
+  hot loop, so that belongs to `#45`/`#47`. Credit w5 from the cross-run delta alone and `#44` would have been
+  over-claimed by exactly whatever those two were worth.
+- **Winner map: one real cell moved** — w5 @100k, entt → microecs. (w3 @1k, w6 @200 and w7 @1k also flipped;
+  all three are ties inside the drift band.)
 
-**Method fixed as a result** (also in the benchmark README): compare **ratios inside one run**, never ms across
-days; normalize against the unchanged field when judging a library change; keep the machine idle while the suite
-runs. A first attempt at this re-run was **discarded** because unrelated work (network fetches, file edits) ran
-concurrently and inflated every library by 10–30% — which looked exactly like a regression until the control
-libraries gave it away.
+**Method, fixed and now load-bearing** (also in the benchmark README): compare **ratios inside one run**, never
+ms across days; normalize against the unchanged field; keep the machine idle; and **credit a code change only
+when it is isolated in one process, or when a control workload it cannot touch stays put.** A first attempt at
+the 07-26 re-run was **discarded** because unrelated work ran concurrently and inflated every library by 10–30%
+— which looked exactly like a regression until the control libraries gave it away.
 
 ### Honest limitations of this benchmark (pre-empting the skeptic)
 

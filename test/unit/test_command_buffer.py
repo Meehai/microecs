@@ -6,8 +6,15 @@ infallible apply -- it materializes the buffer, it does NOT re-validate or roll 
 
 These are UNIT TESTS ON THE COMMAND BUFFER: they append raw Command objects to world._command_buffer and
 assert on what it accepts/rejects + its length -- not on entity.add_component / world.update (those become
-thin Command-builders over this gate). add_entity already validates eagerly (world.py:74); this brings
-add/remove_component to the same bar. Validation has two halves:
+thin Command-builders over this gate).
+
+WHICH verbs append gates is a per-verb answer (task 44). ADD_ENTITY has exactly ONE producer -- World.add_entity
+(world.py:82) -- and that producer validates and fills defaults itself, so append stages it VERBATIM; validating
+again there was pure duplicate work (20% of a spawn) and its tests belong at World.add_entity, in test_world.py.
+The component verbs have no such single owner (Entity.add_component/remove_component do no validation of their
+own), so append is their gate. What append still does for EVERY verb is the liveness check.
+
+For the component verbs, validation has two halves:
   1. structural: dup-add / absent-remove judged against the PROJECTED set (committed + this tick's queued
      adds - queued removes). Valid churn (add->remove->add->remove) is accepted; a same-tick self-conflict
      (the same component added twice) is rejected at the SECOND append, before the poisoning command is staged.
@@ -255,14 +262,23 @@ def test_data_write_appends_no_command():
 
 
 # ==================================================================================================================
-# ADD_ENTITY through the gate — task 23 subtasks 1 & 3
-# world.add_entity is NOT yet a thin command-builder: it runs _validate_components + _defaults_for itself, and then
-# append runs BOTH again on the same args (subtask 1: dead work, and it undercuts "append is the single gate").
-# The tests below pin the two properties that make deleting that pre-validation safe:
-#   * append alone fully validates a raw ADD_ENTITY (so nothing is lost by removing the earlier pass), and
-#   * append alone fills defaults into the staged command (so update() never has to compute them).
-# The bookkeeping half — a rejected spawn must not burn an id or leak a live_entities entry (subtask 2) — is in
-# test_world.py, since that is world.add_entity's own state.
+# ADD_ENTITY is a PASS-THROUGH — task 44 (landed), task 23 subtasks 1 & 2
+# The spawn path used to validate every entity twice: World.add_entity ran _validate_components + _defaults_for,
+# then append ran BOTH again on the same args -- a superset-check of a check that just happened, whose _defaults_for
+# could only return {}. Measured at ~2.0 us/spawn: 34% of add_entity, 20% of a full spawn, and it landed on w5 churn,
+# the one workload microecs loses at every N.
+#
+# Task 44 offered two shapes and the world won: World.add_entity owns spawn validation (it is the SOLE producer of
+# an ADD_ENTITY command -- world.py:82 is the only construction site in the library), and append does nothing for
+# the verb beyond the liveness check every verb gets. So the rejection tests -- shape, dtype, non-ndarray, unknown
+# field, missing-required, duplicate components -- moved to test_world.py, where the check that raises them lives.
+# Testing them here would defend the buffer against commands its only caller cannot build.
+#
+# What stays here is the buffer's own half of the contract: it stages the spawn UNTOUCHED, and it still refuses an
+# id the world never registered. The "validated exactly once" regression guard (the point of task 44) is at the
+# world layer -- test_world.py::test_spawn_validates_exactly_once -- because that is where both passes were.
+# The bookkeeping half -- a rejected spawn must not burn an id or leak a live_entities entry (subtask 2) -- is in
+# test_world.py too, since that is world.add_entity's own state.
 # ==================================================================================================================
 
 class HasColorDefault(Component):   # optional field: a real default, filled when omitted
@@ -281,59 +297,40 @@ def _register_id(world, entity_id):
     world._last_id = entity_id
 
 
-@pytest.mark.parametrize("bad_data,reason", [
-    ({"position": np.array([1.0, 2.0, 3.0], "float32")}, "wrong shape"),
-    ({"position": np.array([1.0, 2.0], "float64")},      "wrong dtype"),
-    ({"position": [1.0, 2.0]},                           "not an ndarray"),
-    ({"bogus": np.array([1.0, 2.0], "float32")},         "unknown field"),
-    ({},                                                 "missing required"),
-], ids=["shape", "dtype", "not-ndarray", "unknown-field", "missing-required"])
-def test_buffer_alone_fully_validates_a_raw_add_entity(bad_data, reason):
-    """append is already a COMPLETE gate for ADD_ENTITY: every field-data error is refused here, with no help from
-    world.add_entity's pre-validation. This is what makes subtask 1 (delete that pre-pass) a safe no-op."""
-    world = World([HasPosition])
+def test_buffer_stages_a_spawn_verbatim():
+    """append neither validates nor rewrites an ADD_ENTITY: the args dict it stages is the SAME object it was
+    handed, with the same keys. This is the direct pin of task 44 from the buffer's side -- re-introduce either
+    pass and the identity check (for _validate_components) or the key set (for _defaults_for) moves."""
+    world = World([HasPosition, HasColorDefault])
     _register_id(world, 0)
+    args = {"components": [HasPosition, HasColorDefault],       # color omitted, and NOT filled here
+            "position": np.array([1.0, 2.0], "float32")}
 
-    with pytest.raises((ValueError, TypeError, KeyError)):
-        world._command_buffer.append(_spawn_cmd(0, [HasPosition], **bad_data))
-    assert len(world._command_buffer) == 0                       # nothing staged
-    world.update()
-    assert len(world.pools) == 0                                 # nothing materialized
+    world._command_buffer.append(Command(CommandType.ADD_ENTITY, 0, args=args))
+
+    (cmd,) = world._command_buffer.data
+    assert cmd.args is args                                      # untouched: not copied, not rebuilt
+    assert set(cmd.args) == {"components", "position"}           # no default injected -- world.add_entity did that
 
 
-def test_buffer_alone_rejects_duplicate_components():
-    """Same gate, structural half (task 43 subtask 1): a duplicated component builds a pool with a duplicated
-    field, so append must refuse it too -- not only world.add_entity's pre-pass, which subtask 1 wants deleted."""
-    world = World([HasPosition, HasVelocity])
-    _register_id(world, 0)
+def test_buffer_rejects_a_spawn_for_an_unregistered_id():
+    """The liveness check is the ONE thing append still does for ADD_ENTITY, and with validation gone it is the
+    only thing standing between a hand-built spawn command and update(). An id the world never minted is refused."""
+    world = World([HasPosition])                                 # no _register_id: id 0 is not live
 
-    with pytest.raises(ValueError, match="Duplicate components"):
-        world._command_buffer.append(_spawn_cmd(0, [HasPosition, HasPosition],
-                                                position=np.array([1.0, 2.0], "float32")))
+    with pytest.raises(ValueError, match="not in live entities"):
+        world._command_buffer.append(_spawn_cmd(0, [HasPosition], position=np.array([1.0, 2.0], "float32")))
     assert len(world._command_buffer) == 0
     world.update()
     assert len(world.pools) == 0
 
 
-def test_buffer_alone_fills_defaults_into_a_staged_add_entity():
-    """append fills omitted defaulted fields into command.args, so a staged ADD_ENTITY carries a COMPLETE arg set
-    and update() never computes defaults. (world.add_entity also pre-fills them -- the redundancy of subtask 1.)"""
-    world = World([HasPosition, HasColorDefault])
-    _register_id(world, 0)
-
-    world._command_buffer.append(                                # color omitted; it has a default
-        _spawn_cmd(0, [HasPosition, HasColorDefault], position=np.array([1.0, 2.0], "float32")))
-
-    (cmd,) = world._command_buffer.data
-    assert set(cmd.args) == {"components", "position", "color"}   # default filled AT APPEND, not at commit
-    np.testing.assert_array_equal(cmd.args["color"], [10, 20, 30])
-
-
 @pytest.mark.xfail(strict=True, reason="task 23 subtask 3: ADD_COMPONENT defers default-filling to commit")
 def test_buffer_alone_fills_defaults_into_a_staged_add_component():
-    """The asymmetry subtask 3 wants gone: ADD_ENTITY fills defaults at append (above) but ADD_COMPONENT defers to
-    commit, so its staged args are incomplete. Both are correct today; pick one story -- fill at append for both,
-    so a staged command always carries everything update() needs."""
+    """The asymmetry subtask 3 wants gone. Since task 44 the rule is 'the producer fills defaults': World.add_entity
+    fills them for a spawn, so a staged ADD_ENTITY carries a complete arg set. ADD_COMPONENT has no such producer --
+    Entity.add_component is a bare command-builder -- so its staged args are incomplete and _do_add_component
+    computes them at commit. Both work; pick one story, so a staged command always carries what update() needs."""
     world = World([HasPosition, HasColorDefault])
     eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
     world.update()

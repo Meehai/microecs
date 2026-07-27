@@ -29,17 +29,16 @@ class Pool:
         for _field, shape, dtype in zip(fields, shapes, dtypes):
             self.data[_field] = np.empty(shape=(self.capacity, *shape), dtype=dtype)
 
-    def add_entity(self, **entity_fields) -> int:
-        """Adds an entity to the pool. All the fields required by this pool must be provided as kwargs"""
+    def add_entity(self, entity_data: dict[str, np.ndarray]) -> int:
+        """Adds an entity to the pool. All the fields required by this pool must be provided in entity_data"""
         if self.size == self.capacity:
             self._realloc(self.capacity * 2)
             logger.debug(f"Capacity extended from {self.capacity // 2} to {self.capacity}")
 
         for _field, field_shape, field_dtype in zip(self.fields, self.shapes, self.dtypes):
-            new_item: np.ndarray = entity_fields[_field] # checked in World._get_entity_pool(entity).
-            assert isinstance(new_item, np.ndarray), f"{_field=} {new_item=} {type(new_item)}"
-            assert new_item.shape == field_shape, f"{_field=} {new_item=}, {new_item.shape=}, {field_shape=}"
-            assert np.issubdtype(new_item.dtype, field_dtype), f"{_field=} {new_item=} {new_item.dtype=} {field_dtype=}"
+            new_item = entity_data[_field] # checked in World._get_entity_pool(entity).
+            if (dtp := new_item.dtype) != field_dtype or new_item.shape != field_shape:
+                raise ValueError(f"Field {_field}. Dtype: {dtp} {field_dtype=}. Shape: {new_item.shape} {field_shape=}")
             self.data[_field][self.size] = new_item
         self.size += 1
         return self.size - 1

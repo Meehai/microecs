@@ -27,15 +27,27 @@ Anti-flake design, in order of importance:
      own band the *machine* is not measuring cleanly, so the test **skips** instead of blaming
      `entity.py`. A perf test that cries wolf gets deleted; one that abstains survives.
   4. **Best-of-3 attempts.** A single interleaved sweep is ~100 ms, so retrying is cheap insurance.
+  5. **Skipped on CI** (`CI=true`), and read sceptically on a loaded laptop -- see below.
+
+**The controls have a blind spot, and it produced a false failure (2026-07-27).** Anti-flake measure 3
+assumes interference scales every path alike, so a clean control implies a clean machine. It does not:
+interference hits the *slowest* path hardest, and `ent` is the slowest by construction. Under load,
+`ent/oop` drifted to **35.46** while `zip/oop` (16, ceiling 22) and `pool/oop` (18.6, ceiling 26) stayed
+well in band and declined to trip -- so the test failed and blamed `entity.py` for the machine. Re-measured
+idle minutes later: **ent/oop 28.1-29.8, ent/zip 1.76-1.86** over 15 samples. Hence measure 5. Note 35.46 is
+uncomfortably near a genuine `#45` revert (37.97), so widening the bound was rejected: it would leave ~2
+points of daylight between "fine" and "regressed". The environment is the thing to control, not the ceiling.
 
 Thresholds sit roughly midway between today and the pre-`#45` baseline: they catch a real regression
-(a revert lands at 40x / 2.48) without tripping on a busy laptop. Retune with
-`test/manual/get-entity-perf/ratio_stability.py`, which is where N and these bounds came from.
+(a revert lands at 40x / 2.48) without tripping on an *idle* laptop. Retune with
+`test/manual/get-entity-perf/ratio_stability.py`, which is where N and these bounds came from -- and only
+from an idle-machine reading.
 
 Known hole: this pins the *entity* path. If a change slowed `zip-rows` itself by the same factor, the
 control would trip and the test would skip rather than fail. That is the deliberate trade.
 """
 import gc
+import os
 import time
 from dataclasses import field
 import numpy as np
@@ -176,11 +188,31 @@ def test_i_entity_access_paths_all_compute_the_same_step():
 
 # --- 2. perf: the published ratios still hold ----------------------------------------------------------------------
 
+@pytest.mark.skipif(os.environ.get("CI") == "true",
+                    reason="timing-based; unreliable on shared CI runners. See the note in this test's "
+                           "docstring -- run it locally on an idle machine instead.")
 def test_i_entity_access_path_ratios_stay_within_published_bounds():
     """`get_entity` must stay near 29x OOP-scalar and ~1.8x zip-rows -- a revert of #45 scores 40x / 2.48.
 
     Skips (does not fail) when a control path is out of band: that means the machine is too noisy to
     attribute anything to `Entity`.
+
+    **Not run on CI, and not run trustworthily on a loaded laptop either** (added 2026-07-27). The control
+    mechanism below has a blind spot that a false failure exposed: interference does not scale every path
+    equally, it hits the SLOWEST path hardest, and `ent` is the slowest by construction (~29x oop). So a
+    busy machine inflates `ent/oop` while `zip/oop` and `pool/oop` -- measured at 16 and 18.6 against
+    ceilings of 22 and 26 -- sit comfortably in band and decline to trip. The observed case scored
+    **ent/oop = 35.46** with both controls clean, i.e. the test asserted "this is the entity path, not the
+    machine" and was wrong.
+
+    That is close enough to a real `#45` revert (37.97) that the two are indistinguishable under load, which
+    is the whole reason for the skip rather than a looser bound: raising the ceiling to swallow 35.46 would
+    leave ~2 points between "fine" and "regressed" and gut the test. The bounds stay where they are.
+
+    Re-measured on an idle machine right after that failure
+    (`test/manual/get-entity-perf/ratio_stability.py`, 5 reps x 3 values of N):
+    **ent/oop 28.1-29.8, ent/zip 1.76-1.86** -- dead on the published 29x, and the spread across 15 samples
+    is under 2 points. The bounds are correctly placed; the environment was the variable.
     """
     failures = None
     for attempt in range(ATTEMPTS):
@@ -201,8 +233,13 @@ def test_i_entity_access_path_ratios_stay_within_published_bounds():
                         f"All ratios: {shown}")
 
     pytest.fail(
-        f"Entity access path regressed: {'; '.join(failures)}. Controls were in band, so this is the "
-        f"entity path, not the machine. Best of {ATTEMPTS} interleaved sweeps at N={N}.\n"
+        f"Entity access path MAY have regressed: {'; '.join(failures)}. "
+        f"Best of {ATTEMPTS} interleaved sweeps at N={N}.\n"
         f"Reference (post-#45): ent/oop ~27.7, ent/zip ~1.77. Pre-#45: 40 and 2.48.\n"
-        f"Re-measure and retune with test/manual/get-entity-perf/ratio_stability.py, and if the new cost "
-        f"is intended, update docs/source/benchmarks.md's get-entity row along with these bounds.")
+        f"CHECK THE MACHINE FIRST. The controls being in band does NOT rule it out: interference hits the "
+        f"slowest path hardest and `ent` is the slowest, so a loaded machine moves ent/oop while zip/oop "
+        f"and pool/oop stay clean. A measured false failure scored ent/oop=35.46 that way. Confirm with "
+        f"`uptime` and re-run `test/manual/get-entity-perf/ratio_stability.py` on an idle machine -- an "
+        f"idle reading is ent/oop 28-30, ent/zip 1.76-1.86, and it is tight.\n"
+        f"Only if an IDLE machine still reproduces it: retune here and update the get-entity row in "
+        f"docs/source/benchmarks.md to match.")

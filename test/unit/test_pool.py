@@ -16,10 +16,9 @@ def _pool_pos_vel() -> Pool:
 
 def test_add_single_entity():
     pool = _pool_pos_vel()
-    pool.add_entity(
-        position=np.array([1.0, 2.0], "float32"),
-        velocity=np.array([3.0, 4.0], "float32"),
-    )
+    pool.add_entity({
+        "position": np.array([1.0, 2.0], "float32"),
+        "velocity": np.array([3.0, 4.0], "float32")})
     assert len(pool) == 1
     assert pool.position[0].tolist() == [1.0, 2.0]
     assert pool.velocity[0].tolist() == [3.0, 4.0]
@@ -28,10 +27,9 @@ def test_add_single_entity():
 def test_add_multiple_entities():
     pool = _pool_pos_vel()
     for i in range(5):
-        pool.add_entity(
-            position=np.array([float(i), 0.0], "float32"),
-            velocity=np.zeros(2, "float32"),
-        )
+        pool.add_entity({
+            "position": np.array([float(i), 0.0], "float32"),
+            "velocity": np.zeros(2, "float32")})
     assert len(pool) == 5
     assert pool.position[:, 0].tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
 
@@ -39,10 +37,9 @@ def test_add_multiple_entities():
 def test_remove_swaps_tail_into_slot():
     pool = _pool_pos_vel()
     for i in range(3):
-        pool.add_entity(
-            position=np.array([float(i), 0.0], "float32"),
-            velocity=np.zeros(2, "float32"),
-        )
+        pool.add_entity({
+            "position": np.array([float(i), 0.0], "float32"),
+            "velocity": np.zeros(2, "float32")})
     pool.remove_entity(0)  # tail (i=2) should swap into slot 0
     assert len(pool) == 2
     assert pool.position[0, 0] == 2.0
@@ -51,10 +48,9 @@ def test_remove_swaps_tail_into_slot():
 
 def test_pop_returns_removed_entity_data():
     pool = _pool_pos_vel()
-    pool.add_entity(
-        position=np.array([1.0, 2.0], "float32"),
-        velocity=np.array([3.0, 4.0], "float32"),
-    )
+    pool.add_entity({
+        "position": np.array([1.0, 2.0], "float32"),
+        "velocity": np.array([3.0, 4.0], "float32")})
     popped = pool.pop_entity(0)
     assert len(pool) == 0
     assert popped["position"].tolist() == [1.0, 2.0]
@@ -65,10 +61,9 @@ def test_pop_swaps_tail_into_slot():
     """pop returns the data at the index, then the tail fills that slot (same swap-remove as remove_entity)."""
     pool = _pool_pos_vel()
     for i in range(3):
-        pool.add_entity(
-            position=np.array([float(i), 0.0], "float32"),
-            velocity=np.zeros(2, "float32"),
-        )
+        pool.add_entity({
+            "position": np.array([float(i), 0.0], "float32"),
+            "velocity": np.zeros(2, "float32")})
     popped = pool.pop_entity(0)  # returns slot 0 (i=0); tail (i=2) swaps into slot 0
     assert popped["position"][0] == 0.0
     assert len(pool) == 2
@@ -79,8 +74,8 @@ def test_pop_swaps_tail_into_slot():
 def test_pop_returns_independent_copy():
     """Popped data is a copy: reusing the freed slot must not mutate what pop returned."""
     pool = _pool_pos_vel()
-    pool.add_entity(position=np.array([1.0, 2.0], "float32"), velocity=np.zeros(2, "float32"))
-    pool.add_entity(position=np.array([5.0, 6.0], "float32"), velocity=np.zeros(2, "float32"))
+    pool.add_entity({"position": np.array([1.0, 2.0], "float32"), "velocity": np.zeros(2, "float32")})
+    pool.add_entity({"position": np.array([5.0, 6.0], "float32"), "velocity": np.zeros(2, "float32")})
     popped = pool.pop_entity(0)                          # returns [1,2]; tail [5,6] swaps into slot 0
     pool.position[0] = np.array([9.0, 9.0], "float32")   # overwrite the reused slot
     assert popped["position"].tolist() == [1.0, 2.0]     # copy is unaffected
@@ -89,7 +84,7 @@ def test_pop_returns_independent_copy():
 def test_pop_oob_raises():
     """pop_entity delegates the bounds check to remove_entity, so it rejects the same way (task 34)."""
     pool = _pool_pos_vel()
-    pool.add_entity(position=np.array([1.0, 2.0], "float32"), velocity=np.zeros(2, "float32"))
+    pool.add_entity({"position": np.array([1.0, 2.0], "float32"), "velocity": np.zeros(2, "float32")})
     with pytest.raises(IndexError, match="OOB"):
         pool.pop_entity(5)
 
@@ -99,10 +94,9 @@ def test_dynamic_grow_preserves_data():
     pool = _pool_pos_vel()
     n = Pool.INITIAL_CAPACITY * 3  # triggers at least two growths
     for i in range(n):
-        pool.add_entity(
-            position=np.array([float(i), float(i) * 2], "float32"),
-            velocity=np.zeros(2, "float32"),
-        )
+        pool.add_entity({
+            "position": np.array([float(i), float(i) * 2], "float32"),
+            "velocity": np.zeros(2, "float32")})
     assert len(pool) == n
     assert pool.capacity >= n
     for i in range(n):
@@ -113,10 +107,9 @@ def test_dynamic_grow_preserves_data():
 def test_dynamic_shrink_halves_capacity():
     pool = _pool_pos_vel()
     for i in range(Pool.INITIAL_CAPACITY + 1):  # grows: 100 -> 200
-        pool.add_entity(
-            position=np.array([float(i), 0.0], "float32"),
-            velocity=np.zeros(2, "float32"),
-        )
+        pool.add_entity({
+            "position": np.array([float(i), 0.0], "float32"),
+            "velocity": np.zeros(2, "float32")})
     assert pool.capacity == Pool.INITIAL_CAPACITY * 2
     while len(pool) > Pool.INITIAL_CAPACITY * 2 // 4:
         pool.remove_entity(len(pool) - 1)
@@ -127,25 +120,39 @@ def test_dynamic_shrink_halves_capacity():
 def test_add_missing_field_raises():
     pool = _pool_pos_vel()
     with pytest.raises(KeyError):
-        pool.add_entity(position=np.array([1.0, 2.0], "float32"))
+        pool.add_entity({"position": np.array([1.0, 2.0], "float32")})
 
 
 def test_add_wrong_shape_raises():
+    """#49 item 2 turned the pool's three per-field asserts into one `raise ValueError`, so this is a raise
+    that survives `python -O` now, not an assert. The message must name the field and both expectations."""
     pool = _pool_pos_vel()
-    with pytest.raises(AssertionError):
-        pool.add_entity(
-            position=np.array([1.0, 2.0, 3.0], "float32"),
-            velocity=np.zeros(2, "float32"),
-        )
+    with pytest.raises(ValueError, match="position"):
+        pool.add_entity({
+            "position": np.array([1.0, 2.0, 3.0], "float32"),
+            "velocity": np.zeros(2, "float32")})
 
 
 def test_add_wrong_dtype_raises():
+    """The dtype half of the same guard. This is the case that catches the walrus/short-circuit trap: with
+    `if (dtp := ...) != dt or (shp := ...) != shape`, a dtype mismatch makes the first operand True, `or`
+    never evaluates the second, and the message's `{shp}` blows up with UnboundLocalError instead of raising
+    ValueError -- i.e. the wrong-dtype path, the one thing this guard exists for, is the one that misfires."""
     pool = _pool_pos_vel()
-    with pytest.raises(AssertionError):
-        pool.add_entity(
-            position=np.array([1.0, 2.0], "float64"),
-            velocity=np.zeros(2, "float32"),
-        )
+    with pytest.raises(ValueError, match="position"):
+        pool.add_entity({
+            "position": np.array([1.0, 2.0], "float64"),
+            "velocity": np.zeros(2, "float32")})
+
+
+def test_add_bad_field_error_message_reports_both_dtype_and_shape():
+    """Whatever the check's internal form, the message has to carry both facts for either kind of mismatch --
+    that is the whole reason the walrus bindings are in the condition. Pins it from the outside."""
+    pool = _pool_pos_vel()
+    for bad, why in [(np.array([1.0, 2.0], "float64"), "dtype"), (np.array([1.0, 2.0, 3.0], "float32"), "shape")]:
+        with pytest.raises(ValueError) as ex:
+            pool.add_entity({"position": bad, "velocity": np.zeros(2, "float32")})
+        assert "float32" in str(ex.value) and "(2,)" in str(ex.value), f"{why}: {ex.value}"
 
 
 def test_remove_oob_raises():
@@ -154,10 +161,9 @@ def test_remove_oob_raises():
     succeeds, a never-live row gets written and `size` goes to -1, after which `len(pool)` itself blows up --
     a corrupt pool complaining somewhere else entirely. Once per removal, so the check is not hot."""
     pool = _pool_pos_vel()
-    pool.add_entity(
-        position=np.array([1.0, 2.0], "float32"),
-        velocity=np.zeros(2, "float32"),
-    )
+    pool.add_entity({
+        "position": np.array([1.0, 2.0], "float32"),
+        "velocity": np.zeros(2, "float32")})
     with pytest.raises(IndexError, match="OOB"):
         pool.remove_entity(5)
 
@@ -170,7 +176,7 @@ def test_remove_negative_index_raises_and_changes_nothing(bad_index):
     Assert on the contents, not just `len` -- the size does change, which is what makes it look like it worked."""
     pool = _pool_pos_vel()
     for i in range(3):
-        pool.add_entity(position=np.array([float(i), 0.0], "float32"), velocity=np.zeros(2, "float32"))
+        pool.add_entity({"position": np.array([float(i), 0.0], "float32"), "velocity": np.zeros(2, "float32")})
 
     with pytest.raises(IndexError, match="OOB"):
         pool.remove_entity(bad_index)
@@ -181,7 +187,7 @@ def test_pop_negative_index_raises_and_changes_nothing():
     """pop_entity has the same hole, plus it reads (and would return) the row before the check runs."""
     pool = _pool_pos_vel()
     for i in range(3):
-        pool.add_entity(position=np.array([float(i), 0.0], "float32"), velocity=np.zeros(2, "float32"))
+        pool.add_entity({"position": np.array([float(i), 0.0], "float32"), "velocity": np.zeros(2, "float32")})
 
     with pytest.raises(IndexError, match="OOB"):
         pool.pop_entity(-1)
@@ -191,10 +197,9 @@ def test_pop_negative_index_raises_and_changes_nothing():
 def test_rebind_field_raises_and_keeps_storage():
     """Rebinding a field (pool.position = ...) must raise instead of silently detaching from SoA storage."""
     pool = _pool_pos_vel()
-    pool.add_entity(
-        position=np.array([1.0, 2.0], "float32"),
-        velocity=np.zeros(2, "float32"),
-    )
+    pool.add_entity({
+        "position": np.array([1.0, 2.0], "float32"),
+        "velocity": np.zeros(2, "float32")})
     with pytest.raises(ValueError):
         pool.position = np.array([[9.0, 9.0]], "float32")
     assert pool.position[0].tolist() == [1.0, 2.0]  # storage untouched, no shadow attribute
@@ -243,7 +248,7 @@ def test_object_dtype_stores_python_objects_by_reference():
     """An object-dtype field holds arbitrary Python objects, stored by reference (not copied)."""
     pool = Pool(fields=["payload"], shapes=[(1,)], dtypes=["object"])
     obj = {"hp": 10}
-    pool.add_entity(payload=np.array([obj], dtype=object))
+    pool.add_entity({"payload": np.array([obj], dtype=object)})
     assert pool.payload.dtype == object
     assert pool.payload[0, 0] is obj  # the exact same object came back, not a copy
 
@@ -252,7 +257,7 @@ def test_object_dtype_pop_returns_same_object():
     """pop_entity hands back the stored object reference unchanged."""
     pool = Pool(fields=["payload"], shapes=[(1,)], dtypes=["object"])
     obj = object()
-    pool.add_entity(payload=np.array([obj], dtype=object))
+    pool.add_entity({"payload": np.array([obj], dtype=object)})
     popped = pool.pop_entity(0)
     assert popped["payload"][0] is obj
 

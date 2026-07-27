@@ -137,7 +137,7 @@ class World:
         field_names = sum([self.component_to_field_names[c] for c in include], [])
         field_shapes = dict(zip(field_names, sum([self.component_to_shapes[c] for c in include], [])))
         field_dtypes = dict(zip(field_names, sum([self.component_to_dtypes[c] for c in include], [])))
-        self._qr_cache[key] = QueryResult(res, field_shapes, field_dtypes, pool_ids=self._pool_ids)
+        self._qr_cache[key] = QueryResult(res, field_shapes, field_dtypes=field_dtypes, pool_ids=self._pool_ids)
         return self._qr_cache[key]
 
     def update(self):
@@ -145,9 +145,9 @@ class World:
         for command in self._command_buffer:
             if command.command_type == CommandType.ADD_ENTITY:
                 components = command.args.pop("components")
-                self._add_to_pool(command.entity_id, components=components, **command.args)
+                self._add_to_pool(command.entity_id, components=components, entity_data=command.args)
             elif command.command_type == CommandType.REMOVE_ENTITY:
-                self._pop_from_pool(command.entity_id)
+                self._remove_from_pool(command.entity_id)
             elif command.command_type == CommandType.ADD_COMPONENT:
                 component = command.args.pop("component")
                 self._do_add_component(command.entity_id, component=component, **command.args)
@@ -155,6 +155,13 @@ class World:
                 self._do_remove_component(command.entity_id, component=command.args)
             else: # CommandType.REMOVE_COMPONENT
                 raise NotImplementedError(command)
+
+        # Check if there's any empty pool since the last movements and remove it, if so.
+        empty_keys = [pool_key for pool_key, pool in self.pools.items() if len(pool) == 0]
+        for pool_key in empty_keys:
+            pool = self.pools.pop(pool_key)
+            del self.pool_to_components[pool]
+            del self._pool_ids[pool]
 
         if len(self._command_buffer) > 0:
             self._qr_cache.clear()
@@ -164,37 +171,48 @@ class World:
 
     # eager mode methods equivalent to add/remove entities and add/remove_components
 
-    def _add_to_pool(self, entity_id: EntityId, components: list[ComponentType], **kwargs):
+    def _add_to_pool(self, entity_id: EntityId, components: list[ComponentType], entity_data: dict[str, np.ndarray]):
         """adds the item to the pool"""
         pool = self._get_entity_pool(components)
-        pool_index = pool.add_entity(**kwargs)
+        pool_index = pool.add_entity(entity_data=entity_data)
         self._eid_to_pool_ix[entity_id] = (pool, pool_index)
         self._pool_ids.setdefault(pool, []).append(entity_id)
         assert len(self._pool_ids[pool]) == len(pool), (pool, len(self._pool_ids[pool]), len(pool))
+
+    def _remove_from_pool(self, entity_id: EntityId):
+        """removes the entity from the pool w/o any internal data copying, like _pop_from_pool"""
+        old_pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
+        old_pool.remove_entity(pool_ix)
+        # Move the last id from the pool in the place of the recently removed entity
+        id_which_was_last_in_pool = self._pool_ids[old_pool].pop()
+
+        if entity_id != id_which_was_last_in_pool:
+            self._eid_to_pool_ix[id_which_was_last_in_pool] = (old_pool, pool_ix) # we re-use the popped id (swapped)
+            self._pool_ids[old_pool][pool_ix] = id_which_was_last_in_pool
 
     def _pop_from_pool(self, entity_id: EntityId) -> tuple[dict[str, np.ndarray], list[ComponentType]]:
         """common function that updates the entities inside a pool (after popswap) and removes them if they get empty"""
         old_pool, pool_ix = self._eid_to_pool_ix.pop(entity_id)
         entity_data = old_pool.pop_entity(pool_ix)
         components = self.pool_to_components[old_pool]
+
+        # Move the last id from the pool in the place of the recently removed entity
         id_which_was_last_in_pool = self._pool_ids[old_pool].pop()
         if entity_id != id_which_was_last_in_pool:
             self._eid_to_pool_ix[id_which_was_last_in_pool] = (old_pool, pool_ix) # we re-use the popped id (swapped)
             self._pool_ids[old_pool][pool_ix] = id_which_was_last_in_pool
-        if len(old_pool) == 0:
-            del self.pools[self._make_key(components)]
-            del self.pool_to_components[old_pool]
-            del self._pool_ids[old_pool]
+
         return entity_data, components
 
     def _do_add_component(self, entity_id: EntityId, component: ComponentType, **kwargs):
-        entity_data, components = self._pop_from_pool(entity_id)
-        new_components = [*components, component]
-        if not entity_data.keys().isdisjoint(kwargs):
-            raise ValueError(f"Duplicate keys: {entity_data.keys()} vs {kwargs.keys()}")
+        curr_data, curr_components = self._pop_from_pool(entity_id)
+        if not curr_data.keys().isdisjoint(kwargs):
+            raise ValueError(f"Duplicate keys: {curr_data.keys()} vs {kwargs.keys()}")
 
-        default_kwargs = self._defaults_for(new_components, **entity_data, **kwargs)
-        self._add_to_pool(entity_id, new_components, **entity_data, **kwargs, **default_kwargs)
+        new_components = [*curr_components, component]
+        default_kwargs = self._defaults_for(new_components, **curr_data, **kwargs)
+        new_data = {**curr_data, **kwargs, **default_kwargs}
+        self._add_to_pool(entity_id, components=new_components, entity_data=new_data)
 
     def _do_remove_component(self, entity_id: EntityId, component: ComponentType):
         entity_data, components = self._pop_from_pool(entity_id)
@@ -202,7 +220,7 @@ class World:
             assert _field in entity_data, f"Field {component}/{_field} not in components: {components} ({entity_id=})"
             entity_data.pop(_field)
         new_components = [c for c in components if c != component]
-        self._add_to_pool(entity_id, new_components, **entity_data)
+        self._add_to_pool(entity_id, components=new_components, entity_data=entity_data)
 
     # other low-level methods
 
