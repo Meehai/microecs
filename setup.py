@@ -16,6 +16,11 @@ REQUIRED_CORE = [
     "loggez>=0.8",
 ]
 
+REQUIRED_DEV = [
+    "pytest>=8.4",
+    "raylib>=5.5.0",
+]
+
 setup(
     name=NAME,
     version=VERSION,
@@ -25,7 +30,7 @@ setup(
     url=URL,
     packages=find_packages(),
     install_requires=REQUIRED_CORE,
-    extras_require={},
+    extras_require={"dev": REQUIRED_DEV},
     dependency_links=[],
     license="MIT",
     python_requires=">=3.12",

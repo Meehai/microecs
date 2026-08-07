@@ -3,8 +3,15 @@
 **Created**: 2026-07-26
 **Type**: Audit
 **Re-run**: 2026-07-26 against `b6d2192` (v0.8.2). Every number below was re-measured on that commit;
-nothing here is inherited from the first pass. The library is **846 LoC**, 459 unit+integration tests green
+nothing here is inherited from the first pass. The library was **846 LoC**, 459 unit+integration tests green
 (8 xfail, all deliberate), pylint 10.00.
+**Re-scored**: 2026-07-27 against `3748416` (v0.8.3) — after [#44](../todos/done/44-spawn-path-validates-twice/TASK.md),
+[#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md),
+[#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md),
+[#47](../todos/done/47-lazy-entity-ids/TASK.md) and
+[#49](../todos/done/49-churn-headroom-beyond-44/TASK.md) landed. **894 LoC**, 500 tests green (8 xfail),
+pylint 10.00. The scorecard (Part 6) gained a third measured column; the findings below carry per-finding
+status updates where one of those tasks moved them. **One finding regressed** (4, by #45) — see Appendix A.
 **Scope**: Build a throwaway 2D space shooter on microecs, on purpose, to (a) find corner cases a probe
 script cannot reach and (b) grade both advertised patterns — the batch/ECS path and the `Entity`/OOP path —
 from the seat of someone writing an app. Then decide whether anything is **structurally** wrong.
@@ -26,17 +33,20 @@ lifetime, a `qr.field` with two types, and a short list of contracts and message
 
 - A shadow-model fuzzer replays **155,859 random structural ops** (600 seeds × 40 ticks) against plain dicts,
   comparing every entity's components and every field value after every `update()`, plus structural
-  invariants. **Zero mismatches.** Pop-swap, archetype migration, buffer ordering, pool teardown: correct.
-  Hand-rolled SoA ECSs usually have a pop-swap bug. This one does not.
-- The app works and is fast enough: **864 live entities at 0.71 ms/tick**.
-- **18 probes: 7 FINDING, 9 OK, 2 NOTE.** At the first pass it was 15 FINDING, 2 OK, 1 NOTE — eight findings
-  closed the same day by #42, its `_locate` follow-up, and #43.
+  invariants. **Zero mismatches**, re-run on 07-27 — which matters more than it sounds, because #49 rewrote
+  `_remove_from_pool` and moved pool teardown to the end of `update()`. Pop-swap, archetype migration, buffer
+  ordering, pool teardown: correct. Hand-rolled SoA ECSs usually have a pop-swap bug. This one does not.
+- The app works and is fast enough: **864 live entities at 0.56 ms/tick** (0.71 on 07-26).
+- **18 probes: 7 FINDING, 8 OK, 3 NOTE** (07-26: 7 / 9 / 2; first pass: 15 / 2 / 1). The count held still but
+  the composition did not: **13 was closed** by #47 and **4 regressed** under #45.
 - **No finding, then or now, is corruption in the storage machinery.** Every one is a contract, an error
   message, composability, or scaling.
-- What is left that is *structural*: **the query has no lifetime** (Part 3) and **`qr.field` has two types**
-  (Part 4). Both are known ground in the tracker (#27, #37, #38); the app's contribution is showing they are
-  not corner cases.
-- Scorecard in Part 6: **~8/10 today** (from ~6.5 at the audit), **~9 with Parts 3–4 and the polish list**.
+- What is left that is *structural*: **the query has no lifetime** (Part 3 — half shipped as #47) and
+  **`qr.field` has two types** (Part 4). Both are known ground in the tracker (#27, #37, #38); the app's
+  contribution is showing they are not corner cases.
+- Scorecard in Part 6: **~8.5/10 now** (~8 on 07-26, ~6.5 at the audit), **~9 with Parts 3–4 and the polish
+  list**. Perf carried the round (+1); error messages went **down** half a point, which is the whole reason to
+  re-measure instead of assuming a merged branch only adds.
 
 ---
 
@@ -58,19 +68,29 @@ them tags.
 | churn | `--headless --chaos` | random add/remove component/entity every tick, exceptions catalogued |
 | scale | `--headless --heavy 400` | ~900 entities, pool reallocs |
 
-### Numbers (2026-07-26, `b6d2192`)
+### Numbers (2026-07-27, `3748416`; 07-26 `b6d2192` in brackets)
 
 ```
-plain    3000 ticks   0.24 ms/tick    87 live /   92 peak / 1027 ever spawned   4-8 archetypes,  40 pools, 0 reallocs
-heavy    1500 ticks   0.71 ms/tick   864 live / 1107 peak / 4753 ever spawned   4-8 archetypes, 235 pools, 10 reallocs
-chaos    3000 ticks   0.27 ms/tick    15 live /   21 peak /  453 ever spawned   3-10 archetypes, 777 pools
-                                     104 exceptions caught: 81 uncommitted-read, 23 has_component-blind
-fuzz      600 seeds x 40 ticks       155,859 ops, 0 mismatches vs the shadow model
-probes     18 probes                 7 FINDING, 9 OK, 2 NOTE
+plain    3000 ticks   0.221 ms/tick [0.24]    87 live /   92 peak / 1027 ever spawned   4-8 archetypes,  40 pools, 0 reallocs
+heavy    1500 ticks   0.558 ms/tick [0.71]   864 live / 1107 peak / 4753 ever spawned   4-8 archetypes, 235 pools, 10 reallocs
+chaos    3000 ticks   0.242 ms/tick [0.27]    15 live /   21 peak /  453 ever spawned   3-10 archetypes, 766 pools [777]
+                                             104 exceptions caught: 81 uncommitted-read, 23 has_component-blind
+fuzz      600 seeds x 40 ticks               155,859 ops, 0 mismatches vs the shadow model
+probes     18 probes                         7 FINDING, 8 OK, 3 NOTE [7 / 9 / 2]
 ```
 
-Timings are the median of 2-3 runs (they wander ~5%); entity and pool counts are deterministic and identical
-run to run.
+Timings are the median of 3 runs (they wander ~5%); entity and pool counts are deterministic and identical
+run to run — which is why **-21% on the heavy run** is a real number and not noise: the same 4753 spawns and
+235 pool builds, 0.71 → 0.558 ms/tick. That is #44 + #49 (churn) plus #45 (the AI systems' entity access).
+
+Two harness repairs were needed before this pass could report anything, both recorded because a broken probe
+lies in whichever direction its hardcoded verdict points:
+
+- **probe 13 crashed** on `World._cache`, renamed `_qr_cache` by #47. Rewritten against the current API, and
+  its verdict is now computed from whether the cold query scales with N (it does not).
+- **probes 4, 5 and 12 had stale labels.** 5 printed "does not compose" while reporting OK (it composes since
+  #42); 12 measured only the across-tick case, so #49's same-tick fix was invisible to it; 4's FINDING text
+  claimed a false message where the real defect is now two *different* true messages.
 
 Two notes on reading the chaos line. The **81** are a system picking a random id out of `world.live_entities`
 and touching an entity spawned this tick — the id is public before the row exists, so it is the app's
@@ -83,9 +103,14 @@ The ergonomic headline. None of them is app logic:
 
 | helper | why it is needed | finding |
 |---|---|---|
-| `f32(shape, default)` | a bare field decl is 90 chars of ceremony for "two floats" | — |
+| `f32(shape, default)` | a bare field decl is 90 chars of ceremony for "two floats" | now [#50](../todos/open/50-field-declaration-helpers/TASK.md) |
 | `join(dst_ids, src_ids, col)` | the only join key is `entity_ids` and there is no gather | 2 |
 | `kill_all(world, eids)` | a bare `for` loop: there is no batch despawn | minor |
+
+The `f32` row got filed on 07-27, on evidence rather than taste: **11 files in this repo wrote that same
+helper independently** (three of them also `i32`, two also `obj`), across 138 field declarations whose median
+length is 95 characters. robosim, with two `extra_metadata` keys, writes each of its 25 declarations as a
+4-line block. When every consumer writes the same three lines, they belong in the library.
 
 `Reaper` — the per-tick kill **set** every app had to grow — is **gone** (#43). It is worth naming what
 replaced it, because it is the shape of a good fix: nothing was added. `remove_entity` became idempotent
@@ -120,12 +145,16 @@ original text, because *why* a trap existed is the part worth re-reading before 
 | # | finding | kind | status |
 |---|---|---|---|
 | 2 | `has_component()` cannot see the command buffer | ergonomics | not filed |
+| 4 | a dangling `Entity`: read and write phrase the same state differently | error quality | **regressed 07-27** by #45 (Appendix A) |
 | 6b | the removal leak is exactly "the last row of a surviving pool" | lifetime | sharpens [#40](../todos/open/40-object-dtype-lifetimes/TASK.md) |
 | 7 | reductions work at 1 archetype, raise at 2 | contract | extends [#37](../todos/open/37-qrarray-qrfield-one-contract/TASK.md)/[#38](../todos/open/38-array-function-honour-check/TASK.md) |
 | 9b | removing the last component reaches the state `add_entity` forbids | state machine | not filed — needs a decision, not a check |
-| 12 | an emptied archetype is deleted and rebuilt from scratch | perf/design | not filed |
-| 13 | a cold query is O(entities), and the cache never survives a tick | perf | not filed → Part 3 |
+| 12 | an emptied archetype is deleted and rebuilt from scratch | perf/design | **half closed** by [#49](../todos/done/49-churn-headroom-beyond-44/TASK.md) (same-tick only) |
+| 13 | a cold query is O(entities), and the cache never survives a tick | perf | **first half closed** by [#47](../todos/done/47-lazy-entity-ids/TASK.md); now a NOTE |
 | 14 | a mid-tick `update()` voids the queries already taken | perf/correctness | game-shaped [#27](../todos/open/27-stale-queryresult-guard/TASK.md) |
+
+Seven again, but two rows moved and they moved in opposite directions: 13 went out (closed) and 4 came back
+(regressed). 12 is the interesting middle — see its section for what "half closed" bought.
 
 ### 2 — `has_component()` cannot see the command buffer
 
@@ -141,7 +170,7 @@ system granting a shield while another expires it, are normal events — `shoote
 `granted_shield` set purely for this, and the chaos run still produces **23** `either added/removed twice`
 from the paths that trusted `has_component`.
 
-`CommandBuffer._get_components_state` (`command_buffer.py:49-63`) already computes this answer and uses it
+`CommandBuffer._entity_has_buffered_component` (`command_buffer.py:49-65`) already computes this answer and uses it
 only to raise. **Fix**: expose it — `has_component(pending=True)`, or make it buffer-aware.
 
 This is now the *only* app-side bookkeeping the shooter still needs, which is what promotes it to the top of
@@ -150,7 +179,7 @@ the polish list.
 ### 6b — the removal leak is exactly the pool's last row
 
 **6b sharpens #40.** The leak happens **only when the removed row is the pool's last row**:
-`Pool.remove_entity` does `data[i] = data[size-1]` (`pool.py:52`), which for `i == size-1` is a
+`Pool.remove_entity` does `data[i] = data[size-1]` (`pool.py:51`), which for `i == size-1` is a
 self-assignment, so nothing overwrites the dead reference. Any other row is overwritten by the pop-swap and
 freed at once; and if the removal empties the pool, the pool is deleted and takes the reference with it. So
 the leak is "*the most recently added entity of a surviving archetype*", lasting until the pool refills past
@@ -181,7 +210,7 @@ a malformed `QRField` instead of raising. `primitives.md` already records this a
 
 `add_entity([])` is explicitly forbidden, but `remove_component` of the last one gets there anyway: the
 entity lives on with `components=[]`, `fields=set()`, invisible to every query except the no-arg one. And it
-cannot be repaired — `add_component` on it hits `assert len(components) > 0` (`command_buffer.py:89`), an
+cannot be repaired — `add_component` on it hits `assert len(components) > 0` (`command_buffer.py:88`), an
 **assert**, so under `python -O` the guard is gone and the state is silently reachable. Either forbid
 removing the last component (symmetric with `add_entity`) or accept the empty archetype as legal — not both.
 
@@ -190,7 +219,8 @@ deliberately **not** bundled with it: a check and a decision do not belong in on
 
 ### 12 — archetype blink rebuilds the pool from scratch
 
-An archetype is deleted the moment its last entity leaves (`world.py:183`) and rebuilt on the next spawn.
+An archetype is deleted the moment its last entity leaves (then `world.py:183`; since #49 it is the
+end-of-`update()` sweep at `world.py:159-164`) and rebuilt on the next spawn.
 One entity toggling one component 100× ⇒ **201 Pool objects**, each allocating `INITIAL_CAPACITY = 100` rows
 per field at construction. Measured for the shooter's 6-field bullet archetype:
 
@@ -199,7 +229,7 @@ per field at construction. Measured for the shooter's 6-field bullet archetype:
 | build time | 4.82 µs | 0.97 ms | 3.74 ms |
 | allocated | 4.3 KiB | 0.8 MiB | 3.3 MiB |
 
-In the app: **40** builds for 7 live archetypes in normal play, **235** in the heavy run, **777** in chaos.
+In the app: **40** builds for 7 live archetypes in normal play, **235** in the heavy run, **766** in chaos.
 
 Absolute cost is small — under 4 ms and 3.3 MB over 50 s of game — so this is a **design smell, not an
 emergency**: unbounded churn in the hot path with no reuse and no free list, scaling with the number of
@@ -207,14 +237,26 @@ entities that toggle capabilities, i.e. with the feature the docs advertise ("ca
 Cheapest fix: keep an emptied pool (it already knows its fields) instead of deleting it, or start new pools
 small and grow.
 
+> **Half closed by #49 (2026-07-27), and for free.** Empty-pool reclamation moved out of `_pop_from_pool` into
+> one sweep at the end of `update()` (`world.py:159-164`) — done to avoid duplicating a block between two
+> despawn paths, not to fix this. The side effect: **an archetype emptied and refilled inside one tick is
+> never torn down.** Re-measured on the 100-toggle probe: **200 pools with an `update()` between add and
+> remove, 100 with both in one tick** (it was 201 either way). Pinned by
+> `test_an_archetype_emptied_and_refilled_in_one_tick_is_never_torn_down`.
+>
+> What is left is the case an app actually hits, because a game commits every tick: toggle across ticks and
+> both pools are still rebuilt. Chaos is unmoved at **766** builds (777 before). So the finding stands, one
+> notch smaller, and the remaining fix is still "keep the emptied pool, or start small and grow".
+
 ### 13 — a cold query is O(entities), and the cache never survives a tick
 
-`update()` clears the whole cache whenever the buffer was non-empty (`world.py:158`) — **one structural
+`update()` clears the whole cache whenever the buffer was non-empty (`world.py:166-167`) — **one structural
 change from one entity anywhere in the frame is enough**. Measured in the shooter: **13.1 `query()` calls per
 tick, 74% of them cache hits** — so the cache *does* work, but only *within* a tick, for repeats of the same
 query. The ~3.4 distinct queries per tick are rebuilt from scratch, every tick, forever.
 
-And a cold rebuild is not O(pools), it is O(entities), because of one line (`world.py:136`):
+And a cold rebuild is not O(pools), it is O(entities), because of one line (then `world.py:136`, now the
+lazy property at `query_result.py:38-43`):
 
 ```python
 entity_ids = np.array(sum((self._pool_ids[p] for p in res), []), dtype="int64")
@@ -232,6 +274,27 @@ things `world.query()` actually does, over 3 archetypes:
 A cached query is flat at **0.36 µs** at every N. So at N=10k a cold query costs **12× the system that
 consumes it**, and 98% of that is a column most systems never read — motion, wrap, cooldown and decay never
 touch `entity_ids`. See Part 3.
+
+> **First half closed by #47 (2026-07-27): `entity_ids` is a lazy property.** Re-measured with
+> `test/manual/13-query-cost/measure.py` (3 archetypes, min of 5) — a cold query is now **flat in N**, and the
+> id column is paid only by a caller that reads it:
+>
+> | N | cold query (07-26 → now) | `.entity_ids` if read | one motion system | cold ÷ motion |
+> |---|---|--:|--:|--:|
+> | 100 | 10.8 → **6.2 µs** | 11.2 µs | 12.5 µs | 0.9× → **0.50×** |
+> | 1 000 | 30.8 → **6.8 µs** | 41.8 µs | 23.5 µs | 2.6× → **0.29×** |
+> | 10 000 | 262.7 → **5.1 µs** | 238.5 µs | 17.4 µs | 12.1× → **0.29×** |
+> | 100 000 | ~1900 → **4.8 µs** | 3061.8 µs | 105.5 µs | ~18× → **0.05×** |
+>
+> Nothing is paid twice: read the ids and the total is what it always was. **The second half is untouched** —
+> `update()` still clears the whole cache whenever the buffer was non-empty, so the ~3.4 distinct queries per
+> tick are still rebuilt every tick. It is just cheap now (~5 µs), which is why probe 13 is a **NOTE** and not
+> a FINDING. Part 3.2 (refresh instead of clear) is what closes it, and #27 rides along.
+>
+> Two things #47 left behind, both one-liners, both recorded in its task: `__repr__` still reads
+> `len(self.entity_ids)`, so logging a query result materialises the column (**1907 µs at N=100k**); and the
+> `assert len(entity_ids) == sum(len(p) …)` invariant was **dropped rather than moved into the property** — the
+> only check that the id map and the pools still agree, now that the two are built at different times.
 
 ### 14 — a mid-tick `update()` silently voids the queries already taken
 
@@ -254,10 +317,15 @@ tick, at the end.
 
 ## Part 3 — Structural #1: a query has no lifetime
 
+> **Status 2026-07-27: item 1 shipped as [#47](../todos/done/47-lazy-entity-ids/TASK.md), item 2 still open.**
+> The forecast below said "263 µs → ~5 µs at N=10k"; measured **5.1 µs**. Prediction and outcome agreeing to
+> one significant figure is the part worth trusting — the model of where the time went was right. Item 2
+> (refresh-not-clear) is now the whole of this Part, and it is what subsumes #27 and finding 14.
+
 ### Why
 
 `world.query()` is a memo, not an object: keyed by include+exclude, dropped wholesale when the buffer was
-non-empty, holding raw pool slices (`query_result.py:32`), and eagerly building `entity_ids` for callers who
+non-empty, holding raw pool slices (`query_result.py:33`), and eagerly building `entity_ids` for callers who
 mostly never read it. Two consequences, one already in the tracker and one measured above:
 
 - **#27 (stale qr)** is a *symptom* of this. If the world refreshed the queries it owns at `update()` instead
@@ -270,24 +338,25 @@ mostly never read it. Two consequences, one already in the tracker and one measu
 
 Two **independent** changes; either can land alone.
 
-1. **Lazy `entity_ids`.** Make it a property built on first access. A cold query drops to O(pools) — from
-   263 µs to ~5 µs at N=10k on the numbers above. This is the single highest-value perf change on this list
-   for anything above ~1000 entities.
+1. ~~**Lazy `entity_ids`.**~~ **Shipped 2026-07-27 as #47** — a cold query is O(pools) and flat in N (table in
+   finding 13). `__len__` had to stop depending on the column for the win to be visible at all.
 2. **Refresh instead of clear.** At `update()`, re-slice the cached queries the world already holds
-   (`self._cache`) instead of `self._cache.clear()`. Held queries stay valid; the cache starts working across
-   ticks, not just within one. This only works *because* the world owns every live query — which it already
-   does.
+   (`self._qr_cache`) instead of `self._qr_cache.clear()`. Held queries stay valid; the cache starts working
+   across ticks, not just within one. This only works *because* the world owns every live query — which it
+   already does.
 
-Incremental extra, if #13's cost still shows: keep `_pool_ids` as a numpy array per pool with a size counter
-(append and pop-swap stay O(1)), so `entity_ids` becomes `np.concatenate([p.ids[:len(p)] ...])` in C instead
-of a python list concat.
+Incremental extra, if the id column's cost still shows where it *is* read (239 µs at N=10k, 3.1 ms at N=100k):
+keep `_pool_ids` as a numpy array per pool with a size counter (append and pop-swap stay O(1)), so
+`entity_ids` becomes `np.concatenate([p.ids[:len(p)] ...])` in C instead of a python list concat.
 
 ### How
 
-- `QueryResult.entity_ids` → `@property` with a `_entity_ids` cache; `world.py:136` stops running eagerly;
-  the `assert len(entity_ids) == sum(len(p) ...)` in `QueryResult.__init__` moves into the property.
-- `World.update()`: replace `self._cache.clear()` (`world.py:158`) with a loop asking each cached
-  `QueryResult` to re-slice (`_data`, `_cache`, `_entity_ids`) — drop entries whose pools are gone.
+- ~~`QueryResult.entity_ids` → `@property`~~ (done; `world.py:140` passes `pool_ids=self._pool_ids` and builds
+  nothing). **Still owed from it**: put the dropped `assert len(self._entity_ids) == len(self)` in the property,
+  and make `__repr__` use `len(self)`.
+- `World.update()`: replace `self._qr_cache.clear()` (`world.py:167`) with a loop asking each cached
+  `QueryResult` to re-slice (`_data`, `_cache`, `_entity_ids`, `_len`) — drop entries whose pools are gone.
+  Note #47 added two memos, so a refresh must now invalidate **four** fields, not two.
 - Then #27's generation guard is unnecessary; if it lands first, it is the right cheap stopgap.
 - **Validation**: existing `test_queryresult.py` plus a new test that a qr held across `update()` (with
   growth, shrink, pool death and a new archetype) reads and writes correctly. The shooter's finding-14 repro
@@ -334,10 +403,10 @@ entity-axis surface is closed. Both branches then behave identically, and #26's 
   *what the write does*, not *which object you reached for* — see Appendix B for why that distinction was
   the whole audit.
 - **Bitmask archetype keys**, order-independent, query = a mask scan over pools. The standard right answer,
-  in 4 lines (`world.py:128-131`), and measurably free: 0.2 µs of a query at any N.
+  in 4 lines (`world.py:132-135`), and measurably free: 0.2 µs of a query at any N.
 - **Globally unique field names** (#23/#29) buying `set_data(**fields)` without naming the component.
   Constraint-buys-simplicity, the good kind of Tiger Style trade.
-- **846 LoC, pylint 10.00.** The whole library is readable in ten minutes, after which pop-swap edge cases
+- **894 LoC, pylint 10.00.** The whole library is readable in ten minutes, after which pop-swap edge cases
   can be reasoned about from memory. This is the vendoring thesis paying off, and it is why an audit like
   this is even possible.
 
@@ -345,25 +414,74 @@ entity-axis surface is closed. Both branches then behave identically, and #26's 
 
 ## Part 6 — Scorecard
 
-Column *audit* is where this plan opened (pre-#42, 2026-07-25). Column **today** is `b6d2192`, re-measured.
-Column *left* is what Parts 3–4 plus the Part 7 polish list would buy.
+Column *audit* is where this plan opened (pre-#42, 2026-07-25). Column *07-26* is `b6d2192`. Column **now** is
+`3748416` (v0.8.3, 2026-07-27) after #44/#45/#46/#47/#49, every axis re-measured. Column *left* is what Parts
+3–4 plus the Part 7 polish list would buy.
 
-| axis | audit | **today** | left |
-|---|---|---|---|
-| Core correctness (pools, migration, pop-swap) | 9 | **9** | 9.5 |
-| API coherence / conceptual integrity | 5 | **8** | 9.5 |
-| Ergonomics — batch/ECS path | 7 | **7** | 8.5 |
-| Ergonomics — `Entity`/OOP path | 5 | **8** | 9 |
-| Error messages / debuggability | 4 | **7.5** | 9 |
-| Performance as a game loads it | 7 | **7.5** | 9 |
-| Docs | 8 | **8.5** | 9 |
-| Size / auditability / deps | 10 | **10** | 10 |
-| Fit for robosim (~10² entities, batch physics, 1 update/tick) | 8 | **9** | 9.5 |
-| Fit for a game (this audit) | 6 | **7.5** | 9 |
+| axis | audit | 07-26 | **now** | left |
+|---|---|---|---|---|
+| Core correctness (pools, migration, pop-swap) | 9 | 9 | **9** | 9.5 |
+| API coherence / conceptual integrity | 5 | 8 | **8** | 9.5 |
+| Ergonomics — batch/ECS path | 7 | 7 | **7** | 8.5 |
+| Ergonomics — `Entity`/OOP path | 5 | 8 | **8** | 9 |
+| Error messages / debuggability | 4 | 7.5 | **7** ▼ | 9 |
+| Performance as a game loads it | 7 | 7.5 | **8.5** ▲ | 9 |
+| Docs | 8 | 8.5 | **9** ▲ | 9.5 |
+| Size / auditability / deps | 10 | 10 | **10** | 10 |
+| Fit for robosim (~10² entities, batch physics, 1 update/tick) | 8 | 9 | **9.5** ▲ | 9.5 |
+| Fit for a game (this audit) | 6 | 7.5 | **8** ▲ | 9 |
 
-Overall **~6.5 → ~8 → ~9**.
+Overall **~6.5 → ~8 → ~8.5 → ~9**.
 
-What moved, and why:
+### What moved on 07-27, and why
+
+- **Perf 7.5 → 8.5** — the round's whole story, and every part of it measured rather than assumed:
+  - a cold query is **flat in N** (#47): 12.1× the motion system it feeds at N=10k, now **0.29×**;
+  - a churn pair **12564 → 6556 ns** (#44 + #49), and the two were checked for compounding rather than
+    added — 0.72 × 0.71 = 0.51 against a measured −50.2%;
+  - the entity accessor: read **290 → 159 ns**, write **430 → 267**, `get_entity` end-to-end **40× → 29×**
+    vs `oop-scalar` (#45);
+  - the shooter's heavy run **0.71 → 0.558 ms/tick** at identical entity and pool counts;
+  - microecs now **wins all seven benchmark workloads at N=100k**, structural ones included, a first.
+  Not 9: finding 12's across-tick pool churn, [#48](../todos/open/48-qrfield-low-n-fixed-cost/TASK.md)'s
+  low-N `QRField` cost, and a cache that still dies every tick (cheaply — Part 3.2).
+- **Error messages 7.5 → 7** — the one axis that went **down**, and the reason to re-measure at all. #45
+  inlined the row-less check into `Entity.__getattr__`/`__setattr__` for speed, so the read path grew its own
+  phrasing of a message `_locate` already had. Finding 4 is back to FINDING: not because either message lies,
+  but because **read and write now describe the same dead entity differently**, and there are **four**
+  phrasings of "no such entity" where the 07-26 pass counted three — `entity.py:76` "not in world. Call
+  `world.update()` if it was just added", `entity.py:110`/`123` "not in world. Perhaps call `world.update()`",
+  `world.py:92` "is not in the world (stale)", `world.py:103` "not in the world". #45's own task records the
+  message pinning as a gap that was **not** filed, which is exactly how this drifted; nothing pins prose.
+  Everything else on this axis is unchanged (finding 7's numpy-scalar `TypeError`s, 9b's bare
+  `AssertionError`).
+- **Docs 8.5 → 9** — each of the three example pages now carries a **`## Full code`** block: the whole file,
+  copy-pasteable in one grab, clamped to a "Show more" toggle by the docs build. Because that duplicates the source, it is
+  **checked, not trusted** (`test/integration/test_i_docs_full_code.py` — the block must equal the `.py`
+  byte for byte, so it cannot drift). [Example 3](../../docs/source/example-3-serialization.md) was rewritten
+  as a bottom-up tutorial: flag a field → dump one entity → dump the world → load it back → wire it into the
+  loop, with real output at each step and a table of what does **not** round-trip (entity ids are renumbered).
+  It no longer assumes the reader opens the source. #45/#49 also refreshed `benchmarks.md` and
+  `primitives.md`. Not 9.5: object-fields-are-an-escape-hatch is still unwritten (Part 7 item 8), and
+  field-declaration prose is thin (#50).
+- **robosim fit 9 → 9.5** — robosim's own physics tick got **2–18% faster (~11% mean)** for free, with its
+  draw-bound render tick flat at 0–3% as the control that rules out drift. Nothing that regressed touches it:
+  it does not hold dangling entities, and it commits once per tick. The two open items that *do* touch it are
+  small and named: finding 6b / #40 (its `HasModel.model` is a `dtype=object` field holding a raylib handle,
+  so a leaked last row is GPU memory) and #50 (it is the worst-hit consumer of the declaration ceremony — 25
+  fields, two `extra_metadata` keys, four lines each).
+- **Fit for a game 7.5 → 8** — churn is a shooter's dominant cost and it halved; the cold query stopped
+  scaling with entity count. Still held back by findings 2, 7, 12 and 14, and by the three batch-path walls
+  (no reductions, no gather, no batch despawn).
+- **Core correctness holds at 9, and that is the load-bearing statement of this pass.** #49 rewrote
+  `_remove_from_pool` to skip the data copy and moved pool teardown out of the despawn path into an
+  end-of-`update()` sweep — surgery on precisely the machinery a shadow model exists to check. Re-run:
+  **155,859 ops, 0 mismatches**, and the same-tick blink case got its own test. Unmoved by construction:
+  coherence (8), batch ergonomics (7), `Entity` ergonomics (8) — nothing in this round touched a contract.
+- **Size 10 → 10 at 894 LoC** (+48 for lazy ids, the cheaper churn path and the inlined accessors), 500 tests,
+  pylint 10.00, still numpy + loggez.
+
+### Carried over from 07-26 (unchanged, kept for the trajectory)
 
 - **Coherence 5 → 8** is the whole bet of this plan paying off. The eager/deferred line is now drawn at
   structure-vs-data on every surface, both write paths follow numpy's rules, `_locate` is the single gate for
@@ -371,42 +489,39 @@ What moved, and why:
   arbitrary one. It stops at 8 because a query still has no lifetime and `qr.field` still has two types.
 - **`Entity` ergonomics 5 → 8**: RMW composes, `e.field = v` and `+=` work, reads and writes agree, and the
   `Reaper` is deleted. Held back by exactly one thing — finding 2's `granted_shield` bookkeeping.
-- **Error messages 4 → 7.5**: findings 1, 4 and 15 all fixed; one message now covers both row-less states.
-  What still reads badly: finding 7's reduction `TypeError`s naming a numpy scalar type, 9b's bare
-  `AssertionError`, and three different phrasings for "there is no entity with this id" — `entity.py:76`
-  "Entity N not in world", `world.py:90` "Entity: N is not in the world (stale)", `world.py:99` "Entity id: N
-  not in the world".
-- **Batch ergonomics 7 → 7** is the honest one: nothing in this round touched it. #42 and #43 were both on
+- **Error messages 4 → 7.5**: findings 1, 4 and 15 all fixed; one message covered both row-less states — a
+  claim that survived exactly one day (see above).
+- **Batch ergonomics 7 → 7** is the honest one: nothing in that round touched it. #42 and #43 were both on
   the entity/world side. Reductions, the missing gather, and the missing batch despawn are all still there.
 - **Perf 7 → 7.5**: #42 deleted the per-read row-freeze tax (491 → 227 ns/op), but finding 13's cold query
-  and finding 12's pool churn are untouched. Part 3.1 is what moves this axis.
+  and finding 12's pool churn were untouched. Part 3.1 was named as what would move this axis — it did.
 - **robosim fit 8 → 9**: robosim sits in the sweet spot — ~100 entities, mostly batch physics, one `update()`
-  per tick — so findings 13 and 14 do not bite, and the entity path got both faster and correct. None of
-  what is left is urgent for robosim.
+  per tick — so findings 13 and 14 do not bite, and the entity path got both faster and correct.
 
 ---
 
 ## Part 7 — Action list
 
-Ranked, and only what is still open. Ids are this plan's findings unless a `#` says otherwise. Nothing here
-is filed as a task yet.
+Ranked, and only what is still open. Ids are this plan's findings unless a `#` says otherwise.
+**Re-ranked 2026-07-27**: item 1 shipped as #47, so the order below is what is actually left.
 
 | order | work | size | note |
 |---|---|---|---|
-| 1 | **Lazy `entity_ids`** (Part 3.1) | S | biggest measured win: 98% of a cold query at N=10k, which is 12× the system consuming it |
-| 2 | **Buffer-aware `has_component`** (2) | S | the information already exists in `_get_components_state`; deletes the last app-side bookkeeping the shooter needs |
+| 1 | **Buffer-aware `has_component`** (2) | S | the information already exists in `_entity_has_buffered_component`, which since 07-27 is even a plain `bool` with the question in its name; deletes the last app-side bookkeeping the shooter needs |
+| 2 | **One phrasing for "no such entity"** (4) | XS | promoted: **four** phrasings now, and read-vs-write disagree on the same state. Cheapest item on the list, and it is a live regression rather than an old wart |
 | 3 | **Close 9b** | S | an `assert` on a reachable path *and* a decision — forbid removing the last component, or accept the empty archetype. Not both |
-| 4 | **Refresh-not-clear queries** (Part 3.2) | M | subsumes #27 and finding 14; do after 1 |
+| 4 | **Refresh-not-clear queries** (Part 3.2) | M | subsumes #27 and finding 14. Now purely a correctness item: with #47 in, the cache rebuild is ~5 µs, so the perf argument for it is gone |
 | 5 | **One contract for `qr.field`** (Part 4) | M | concrete resolution for open P1 #37 + #38, including finding 7's reductions |
-| 6 | **Pool reuse** (12) | S | design smell, low absolute cost today (3.74 ms / 3.3 MiB across a chaos run) |
-| 7 | **Docs: object fields are an escape hatch** (6) | S | name the one rule they opt out of: nothing can check what you stored |
-| 8 | **One phrasing for "no such entity"** | XS | three today, across `entity.py` and two sites in `world.py` |
+| 6 | **Field-declaration helpers** ([#50](../todos/open/50-field-declaration-helpers/TASK.md)) | S | filed 07-27. Pure sugar, ~15 LoC, no new code path — and 11 files in this repo already wrote it themselves |
+| 7 | **Pool reuse** (12) | S | design smell, halved by #49 (same-tick blink is free now); what is left is the across-tick case, ~3.7 ms / 3.3 MiB across a chaos run |
+| 8 | **Docs: object fields are an escape hatch** (6) | S | name the one rule they opt out of: nothing can check what you stored |
+| 9 | **#47's two leftovers** | XS | `__repr__` → `len(self)` (1907 µs at N=100k today), and put the dropped id/pool-agreement assert in the property |
 
 Append-only, no new task needed: **6b → #40** (the leak is only the pool's last row), **7 → #38** (reductions
 are a third class), **14 → #27** (game-shaped trigger + repro).
 
-Candidate new tasks: 2, 9b, 12, 13/Part 3 (lazy ids — the one worth filing first), Part 4 (or fold into #37
-as the chosen approach).
+Candidate new tasks: 2, 4, 9b, 12, Part 4 (or fold into #37 as the chosen approach). Filed since this list was
+written: **#47** (was item 1) and **#50**.
 
 ---
 ---
@@ -417,13 +532,14 @@ The eight findings that were live when this audit opened and are not any more, e
 plus what changed. Kept because *why* a trap existed is the part worth re-reading before re-introducing it.
 All eight closed on 2026-07-26: six with [#42](../todos/done/42-set-data-eager-again/TASK.md) and its
 `_locate` follow-up, two with
-[#43](../todos/done/43-duplicate-components-and-idempotent-remove/TASK.md).
+[#43](../todos/done/43-duplicate-components-and-idempotent-remove/TASK.md). **One (4) came back on 07-27** —
+the case for keeping this appendix, made by the appendix itself.
 
 | # | finding | closed by |
 |---|---|---|
 | 1 | uncommitted entity: 4 of 5 reads raise a bare `KeyError(eid)` | the `_locate` follow-up |
 | 3 | `remove_entity()` is not idempotent | #43 subtask 2 |
-| 4 | a dangling `Entity` reports "not committed yet" | the `_locate` follow-up |
+| 4 | a dangling `Entity` reports "not committed yet" | the `_locate` follow-up — **partly undone by #45** |
 | 5 | RMW through `Entity` silently loses writes | #42 |
 | 6 | an `object` field bypasses the write rules | restated by #42 (docs item survives) |
 | 8 | the two write paths disagree on dtype validation | #42, by unification |
@@ -573,6 +689,24 @@ Wrong in the most confusing way: the entity was dead and `update()` would never 
 > the advice made conditional: *"Entity N not in world. Call `world.update()` if it was just added."* The
 > false claim is gone, and the despawn case is not sent hunting for a missing commit. **Dev's call**: one
 > accurate sentence beats two branches over a state the caller already knows.
+>
+> **Regressed in part by #45 (2026-07-27) — this is the only entry in this appendix that came back.** #45
+> inlined the row-less check into `Entity.__getattr__`/`__setattr__` (the `pool.data[name]` lookup *is* the
+> field check, which is where the 1.8× read came from) and wrote a **second** phrasing there: *"Entity N not
+> in world. Perhaps call `world.update()`."* `set_data` / `get_fields` / `get_components` still go through
+> `_locate` and still say the first one. So:
+>
+> ```python
+> e.position                              # AttributeError: ... Perhaps call `world.update()`.
+> e.set_data(position=np.float32([1, 1]))  # AttributeError: ... Call `world.update()` if it was just added.
+> ```
+>
+> Nothing *lies* — that half of the fix held. What broke is that **read and write describe the same dead
+> entity differently**, which is the confusion this finding was about, one level up. The library now has four
+> spellings of "no such entity" across three files. Two things to take from it: the fix was prose, and
+> **prose is the one thing this suite does not pin** (#45's task says so explicitly and did not file it); and
+> a perf inlining is exactly the change that duplicates an error path, because the message is the part you
+> rewrite by hand while moving the check. Now Part 7 item 2 — an XS fix: have both paths raise from one helper.
 
 ### Reversed on purpose — spawn-then-modify in one tick
 
@@ -660,9 +794,14 @@ middle**, and it did not.
 | 2026-07-26 | `_locate` follow-up (untracked, 4 lines on #42) | findings 1 and 4 fixed |
 | 2026-07-26 | [#43](../todos/done/43-duplicate-components-and-idempotent-remove/TASK.md) shipped | findings 9 and 3 fixed; the shooter's `Reaper` deleted |
 | 2026-07-26 | plan re-run against `b6d2192` | 7 FINDING / 9 OK / 2 NOTE; scorecard ~8; this rewrite |
+| 2026-07-27 | [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) + [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) shipped | entity read/write 1.7×; **finding 4 half-regressed** (a second message) |
+| 2026-07-27 | [#47](../todos/done/47-lazy-entity-ids/TASK.md) shipped | Part 3.1; finding 13's first half closed, probe 13 → NOTE |
+| 2026-07-27 | [#44](../todos/done/44-spawn-path-validates-twice/TASK.md) + [#49](../todos/done/49-churn-headroom-beyond-44/TASK.md) shipped | churn pair 1.92×; finding 12 half closed (same-tick blink) |
+| 2026-07-27 | [#50](../todos/open/50-field-declaration-helpers/TASK.md) filed | Part 1's `f32` helper row finally has an id |
+| 2026-07-27 | re-score against `3748416` | 7 FINDING / 8 OK / 3 NOTE; scorecard **~8.5**; Part 6 + per-finding updates |
 
-Two evidence-side repairs were needed for the re-run, both recorded here because a broken harness reports
-"no findings" just as loudly as a fixed library:
+Two evidence-side repairs were needed for the 07-26 re-run, and three more for 07-27 (listed at the end of
+Part 1), all recorded here because a broken harness reports "no findings" just as loudly as a fixed library:
 
 - **`fuzz.py` had been dead since #42** — it wrote to entities spawned in the same tick, which now raises.
   Repairing it surfaced a *model* bug too: it applied ops in call order, but data writes land before the

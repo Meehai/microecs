@@ -7,7 +7,7 @@ workflow:
 
 linter:
   before_script:
-    - pip install -r requirements.txt
+    - pip install -e ".[dev]"
     - export PYTHONPATH="$PYTHONPATH:."
     - pip install ruff pylint
   script:
@@ -16,7 +16,7 @@ linter:
 
 test_and_run:
   before_script:
-    - pip install -r requirements.txt
+    - pip install -e ".[dev]"
     - export PYTHONPATH="$PYTHONPATH:."
   script:
     - python examples/01-hello-world.py --help
@@ -24,7 +24,7 @@ test_and_run:
 
 pages:                                # GitLab Pages: themed pdoc site (README home + docs/source/*.md prose + microecs/ API)
   before_script:
-    - pip install -r requirements.txt
+    - pip install -e ".[dev]"
     - export PYTHONPATH="$PYTHONPATH:."
   script:
     - bash docs/build_docs.sh public  # must output to public/ for Pages to serve it
