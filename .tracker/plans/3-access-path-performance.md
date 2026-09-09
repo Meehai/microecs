@@ -37,7 +37,7 @@ a time. Nothing to optimize there; see Part 3.
 - **The single biggest win was not the step at all, it was the query.** #47 made `entity_ids` lazy: a cold
   query is now O(pools), flat ~4 µs at every N, against ~2 ms at N=100k before. All the step-level items on
   this plan together are worth less than that one.
-- **Row access went ~40× → 29×** — [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md)
+- **Row access went ~40× → 29×** — [#45](../todos/closed/45-entity-accessor-cost-and-recursion/TASK.md)
   **shipped 2026-07-27**, on forecast. **~19× is the floor** — not 16×. `zip` is faster than *any* indexed
   access before microecs does anything: numpy's array iterator is 718 ns/row, `col[i]` is 885 ns/row. The
   remaining 29× → 19× is three dunder dispatches and three id→row lookups per tick; the cache that would
@@ -160,7 +160,7 @@ why it sits at 19×, and why **19× is the floor for any id-addressed path**, me
 ### What is available
 
 Per field touch, and end-to-end for `ent.position += ent.velocity*dt` at N=100k
-(full ladder in [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md)):
+(full ladder in [#45](../todos/closed/45-entity-accessor-cost-and-recursion/TASK.md)):
 
 | | read | write | entity tick | ×zip | docs scale |
 |---|--:|--:|--:|--:|--:|
@@ -219,11 +219,11 @@ All six are filed. Items 1, 2 and 5 are one finding at three sites, so they are 
 
 | order | work | task | size | axis | payoff |
 |---|---|---|---|---|---|
-| 1 | ~~Identity short-circuit in `QueryResult.__setattr__`~~ **DONE 2026-07-27, reduced** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | premise withdrawn — numpy already short-circuits `a[:] = a`. Shipped for the fixed ~1 µs/call it does save: **1.0–1.1×**, not 2.3× |
-| 2 | ~~Docs: the in-place idiom is the floor idiom~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | S | both | still real at **1.3–1.5×** (not ~2×) and still free — refile if wanted |
-| 3 | ~~Inline the Entity accessors~~ **DONE 2026-07-27** | [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) | S | row | 40× → **29×**, as forecast; also fixed the copy/pickle recursion |
-| 4 | ~~Lazy `entity_ids` (plan 2, Part 3.1)~~ **DONE 2026-07-27** | [#47](../todos/done/47-lazy-entity-ids/TASK.md) | S | columnar | the plan's biggest win: a cold query went O(entities) → O(pools), **~9× at N=1k, ~53× at 10k, ~490× at 100k**, flat in N |
-| 5 | ~~Better `Pool.__setattr__` message~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | `pool.py:78` keeps recommending the 2-temporary spelling |
+| 1 | ~~Identity short-circuit in `QueryResult.__setattr__`~~ **DONE 2026-07-27, reduced** | [#46](../todos/closed/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | premise withdrawn — numpy already short-circuits `a[:] = a`. Shipped for the fixed ~1 µs/call it does save: **1.0–1.1×**, not 2.3× |
+| 2 | ~~Docs: the in-place idiom is the floor idiom~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/closed/46-in-place-is-the-floor-idiom/TASK.md) | S | both | still real at **1.3–1.5×** (not ~2×) and still free — refile if wanted |
+| 3 | ~~Inline the Entity accessors~~ **DONE 2026-07-27** | [#45](../todos/closed/45-entity-accessor-cost-and-recursion/TASK.md) | S | row | 40× → **29×**, as forecast; also fixed the copy/pickle recursion |
+| 4 | ~~Lazy `entity_ids` (plan 2, Part 3.1)~~ **DONE 2026-07-27** | [#47](../todos/closed/47-lazy-entity-ids/TASK.md) | S | columnar | the plan's biggest win: a cold query went O(entities) → O(pools), **~9× at N=1k, ~53× at 10k, ~490× at 100k**, flat in N |
+| 5 | ~~Better `Pool.__setattr__` message~~ **DROPPED 2026-07-27, dev's call** | [#46](../todos/closed/46-in-place-is-the-floor-idiom/TASK.md) | XS | columnar | `pool.py:78` keeps recommending the 2-temporary spelling |
 | 6 | `QRField` low-N fixed cost (Part 1.3) | [#48](../todos/open/48-qrfield-low-n-fixed-cost/TASK.md) | M | columnar | the last real gap: 2.3–6× the floor at N=1000 with ≥2 pools. Biggest and least certain |
 
 #45, #46 and #47 are done (#46 reduced to item 1; items 2 and 5 dropped). #48 is P3 and explicitly **not ready** — it waits
@@ -259,14 +259,14 @@ comment annoying enough.
 
 ## Relates
 
-- [#46](../todos/done/46-in-place-is-the-floor-idiom/TASK.md) — items 1/2/5, **closed 2026-07-27**: item 1
+- [#46](../todos/closed/46-in-place-is-the-floor-idiom/TASK.md) — items 1/2/5, **closed 2026-07-27**: item 1
   shipped reduced, items 2 and 5 dropped. Its verdict corrects this plan's Part 1.1.
-- [#45](../todos/done/45-entity-accessor-cost-and-recursion/TASK.md) — item 3, **done 2026-07-27**. Its
+- [#45](../todos/closed/45-entity-accessor-cost-and-recursion/TASK.md) — item 3, **done 2026-07-27**. Its
   postmortem also records what did NOT improve: `get_entity` random access at N=100k is unchanged, because
   there the cost is cache misses, not the accessor.
-- [#36](../todos/done/36-optimize-entity-read-write-path/TASK.md) — closed "cost accepted"; its live item 1
+- [#36](../todos/closed/36-optimize-entity-read-write-path/TASK.md) — closed "cost accepted"; its live item 1
   is superseded by #45, its live item 2 (`set_data` slower than `e.f = v`) is still open and still true.
-- [#26](../todos/done/26-low-n-field-overhead/TASK.md) — solved item 6 for one pool; item 6 is its
+- [#26](../todos/closed/26-low-n-field-overhead/TASK.md) — solved item 6 for one pool; item 6 is its
   unfinished half.
 - [#37](../todos/open/37-qrarray-qrfield-one-contract/TASK.md) + plan 2 Part 4 — the *contract* side of the
   same `_QRArray`/`QRField` split; the chosen direction there does not change item 6's cost.

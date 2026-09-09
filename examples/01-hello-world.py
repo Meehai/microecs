@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """01-hello-world.py The basic hello world for ECS. Creates some static balls. You can add some with the mouse."""
-from dataclasses import field
 from typing import Callable
 from argparse import ArgumentParser, Namespace
 import random
@@ -8,7 +7,7 @@ import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from microecs import World, Component
+from microecs import World, Component, f32, i32
 
 Point2D = tuple[float, float]
 DT = 1 / 100
@@ -17,13 +16,13 @@ MAX_SUBTICKS_PER_RENDER_TICK = 3
 # components
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "default": None})
+    radius: np.ndarray = f32((1, ))
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2, ))
 
 class HasColor(Component):
-    color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32", "default": np.array(rl.BLACK, dtype="int32")})
+    color: np.ndarray = i32((4, ), default=np.array(rl.BLACK, dtype="int32"))
 
 # systems
 

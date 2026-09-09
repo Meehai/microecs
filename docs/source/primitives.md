@@ -14,6 +14,54 @@ microecs is five small primitives: `Component`, `Entity`, `Pool`, `QueryResult`,
 - Structural change is lazy, data is not. Entity lifecycle lives on `World` (`add_entity`, `remove_entity`) and component changes on the entity itself (`world.get_entity(eid).add_component(...)`, `.remove_component(...)`) — those go into a command buffer that is only executed when calling `world.update()`, because they move rows between pools. Writing a field (`e.field = ...`, `e.set_data(...)`, `qr.field = ...`) moves nothing, so it lands in the pool immediately. See [Mutation timing](#mutation-timing-structural-changes-are-buffered-data-writes-are-eager).
 - `Systems` are a convention, they are not part of this library. They can be defined at application level and act as hooks or callbacks. The `World` object doesn't need to know more than entities and components. See [Systems & Per-Entity Iteration](systems.md).
 
+## Declaring fields: the verbose form, or a builder
+
+A field is a `dataclasses.Field` whose metadata the `World` enforces: exactly `shape`, `dtype`,
+`default`, plus any extras the `World` declares via `World(extra_metadata=[...])`. The verbose form:
+
+```python
+from dataclasses import field
+import numpy as np
+from microecs import World, Component
+
+class HasPosition(Component):
+    position: np.ndarray = field(metadata={
+        "shape": (2,), "dtype": "float32", "default": None, "serializable": True,
+        "comment": "The position of the entity"})
+```
+
+The builders (`f32`/`i32`/`obj`/`boolf`) remove the ceremony — 90 characters become one line. Beyond
+`shape` and `default`, anything you hand them goes into the field's metadata as-is, so the same helper
+works with or without extras:
+
+```python
+from microecs import f32, obj, zeros
+
+class HasPosition(Component):
+    position: np.ndarray = f32((2,), default=zeros)                 # plain world: fine
+    tag: np.ndarray = obj((1,), default=zeros, serializable=True,   # extras must be declared:
+                          comment="The tag of this entity")         # World(extra_metadata=[...])
+
+world = World(components=[HasPosition], extra_metadata=["serializable", "comment"])
+```
+
+Only `shape`/`dtype`/`default` are the world's own keys: a field that carries any extra metadata (like
+`serializable`/`comment`) used in a `World` that did not declare those extras raises at construction, and
+a `World(extra_metadata=...)` declared *without* the extras on the fields raises too — the sets must match
+exactly. The `zeros` sentinel means "all zero": `np.zeros(shape, dtype)` for numerics/bool and
+`array([None])` for `object` fields. `default=None` means REQUIRED (omitting it at spawn raises); a list,
+tuple or scalar default is broadcast to the shape, like data is (see below).
+
+## Broadcasting data everywhere
+
+`add_entity`, `entity.add_component` and `entity.set_data` all accept array-like data — lists, tuples,
+scalars — converted to the field's dtype and broadcast into its shape; explicit ndarrays are still taken
+as-is and validated strictly (dtype/shape, never silently cast). On the structural paths (`add_entity`,
+`entity.add_component`) a key present with value `None` is DATA for `object` fields (`array([None])`,
+e.g. `texture_path: null`) and a `TypeError` for numeric ones; **key absence** is omission → the metadata
+default, or the required `KeyError` if `default=None`. (Eager entity writes keep numpy's own rule: whatever
+`e.field = v` accepts, including `None` → `nan` for a float field.)
+
 ## Mutation timing: structural changes are buffered, data writes are eager
 
 One frame holds two different timings, and **what the write does decides which one you get** — not which
@@ -190,8 +238,10 @@ That covers elementwise math and ufuncs (e.g. `np.where`, `np.linalg.norm(..., a
 Edge cases worth knowing:
 
 - **Not a full ndarray — the contract.** Entity-axis *selection* of any kind
-  (`qr.f[i]`, `qr.f[2:4]`, `qr.f[::2]`, `qr.f[mask]`, fancy), partial entity writes, and ndarray
+  (`qr.f[i]`, `qr.f[2:4]`, `qr.f[::2]`, fancy), partial entity writes, and ndarray
   methods/attrs (`.sum()`, `.mean()`, `.dtype`, `.ndim`, `.T`) are **not** part of the contract.
+  The one exception: boolean masks — `qr.f[mask]` reads (gather) and `qr.f[mask] = v` writes
+  (scatter) with numpy parity, see *Boolean masks* at the end of this page.
   Keeping every entity is fine, so `qr.f[:]` and `qr.f[...]` read the whole field. Need a single
   entity? Use `world.get_entity(qr.entity_ids[i])`. Need a real array? Materialize first with
   `qr.f.numpy()` (note: `<field>.numpy()`, there is no `qr.numpy()`).
@@ -209,7 +259,8 @@ Edge cases worth knowing:
 >
 > | expression | 1 matching pool | ≥2 matching pools |
 > |---|---|---|
-> | `qr.f[0]`, `qr.f[::2]`, `qr.f[mask]` | works | `TypeError` |
+> | `qr.f[0]`, `qr.f[::2]` | works | `TypeError` |
+> | `qr.f[mask]` / `qr.f[mask] = v` | works | works — numpy gather/scatter parity |
 > | `qr.f[0] = x` (single-entity write) | works | `TypeError` |
 > | `qr.f.sum()`, `qr.f.dtype` | works | `AttributeError` |
 > | `np.sort(qr.f, axis=0)` | correct | silently sorted **per pool** |
@@ -219,7 +270,9 @@ Edge cases worth knowing:
 > elsewhere creates a second archetype — so **write to the contract, not to what happens to run**.
 > Second, `qr.f[0] = x` indexes the entity axis, which is exactly what has no meaning across pools — the
 > timing is fine (a data write is eager either way), the *addressing* is not. For one entity go by id:
-> `world.get_entity(eid).f = x`.
+> `world.get_entity(eid).f = x`. `qr.f[mask]` is the deliberate exception (task 51): a mask addresses
+> *logical* rows, which CAN be given per-pool meaning, so the shim splits it per pool instead of
+> rejecting it.
 - **Reserved field names.** A field is read back as `qr.<field>`, `entity.<field>` and `pool.<field>`,
   all three via `__getattr__` — which Python only calls *after* normal lookup fails. So a field named
   like any member of those classes is shadowed by that member and unreachable. `World(...)` rejects
@@ -237,3 +290,38 @@ Edge cases worth knowing:
 
   Adding an instance attr to one of those classes means adding it to that file's private
   `_*_INTERNAL_ATTRS` — methods are picked up from the class dict automatically, attrs cannot be.
+
+## Boolean masks: `qr.f[mask]`
+
+The one entity-axis selection that IS part of the contract (task 51). `qr.f[mask]` behaves exactly
+like `qr.f.numpy()[mask]` — a gather (one copy) for reads, a scatter for writes — no matter how many
+pools the query spans. Single-pool queries (`_QRArray`, a real ndarray) had this for free; the shim
+(`QRField`, ≥2 pools) used to raise `TypeError` and now splits the mask per pool instead:
+
+```python
+hit = qr.velocity[:, 0] > 3.0       # bool QRField (n,) -- the usual comparison idiom; may also be a
+                                    # plain bool ndarray, or come from another query of same length
+hit_rows = qr.velocity[hit]         # (k, 2) ndarray -- exactly qr.velocity.numpy()[hit.numpy()]
+
+qr.velocity[hit] = 0.0                       # scalar broadcast: zero just the hit rows
+qr.velocity[hit] = np.zeros_like(hit_rows)   # (k, *e) -- split across pools by per-part counts
+qr.velocity[hit] = qr.acceleration[hit]      # composition: a field read fed straight back in
+```
+
+Rules, all numpy parity:
+
+- **Mask shapes**: bool `(n,)` or `(n, 1)` — the `(n, 1)` form (natural for `qr.f == x` on a `(1,)`
+  field) is squeezed to the entity axis; numpy's own `(n, 1)` boolean indexing is elementwise, so
+  compare against `numpy()[mask.ravel()]`, not `numpy()[mask]`. A `QRField` mask is accepted
+  directly and coerced via `.numpy()`.
+- **Empty masks**: `qr.f[np.zeros(n, bool)]` reads `(0, *e)` and writes nothing — numpy parity.
+- **Rejected**: a non-bool mask falls through to the usual `TypeError`; a wrong length raises
+  `ValueError`; a bad value shape raises *before* anything is written, leaving the pool byte-identical.
+- **What it is not**: a filtered `QueryResult`. The mask selects *rows of one field*, so it is the
+  primitive for "batch-op just the entities satisfying a condition" (e.g. robosim's physics-law
+  dispatch). A where-style `qr[mask]` that returns a *new result with fewer entities* is
+  container-level and deliberately out of scope — if it ever lands it composes over these masks
+  (`qr.velocity[mask] = qr.acceleration[mask]` stays the primitive), it does not replace them.
+
+Tested in `test/unit/test_field_bool_mask.py` (parity per dtype, single + multi pool,
+`(n,)`/`(n, 1)`, QRField masks, composition, rejection-with-nothing-written).

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from dataclasses import field
 from typing import Callable
 from argparse import ArgumentParser, Namespace
 import random
@@ -7,7 +6,7 @@ import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from microecs import World, Component
+from microecs import World, Component, f32, boolf
 
 Point2D = tuple[float, float]
 DT = 1 / 100
@@ -52,16 +51,16 @@ class Clock:
 # components
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "default": None})
+    radius: np.ndarray = f32((1, ))
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2, ))
 
 class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2, ))
 
 class HasCollision(Component):
-    is_colliding: np.ndarray = field(metadata={"shape": (1, ), "dtype": "bool", "default": None})
+    is_colliding: np.ndarray = boolf((1, ))
 
 # systems
 

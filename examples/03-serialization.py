@@ -6,7 +6,6 @@ Keybinds:
 - F5 to store sthe state
 - F6 to load the state
 """
-from dataclasses import field
 from typing import Callable, Any
 from pathlib import Path
 from argparse import ArgumentParser, Namespace
@@ -16,7 +15,7 @@ import numpy as np
 import raylib as rl
 from loggez import loggez_logger as logger
 
-from microecs import World, Component
+from microecs import World, Component, f32, i32, zeros
 
 Point2D = tuple[float, float]
 DT = 1 / 100
@@ -25,18 +24,18 @@ MAX_SUBTICKS_PER_RENDER_TICK = 3
 # components
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "serializable": True, "default": None})
+    radius: np.ndarray = f32((1, ), serializable=True)
 
 class HasColor(Component):
-    color: np.ndarray = field(metadata={"shape": (4, ), "dtype": "int32", "serializable": True, "default": None})
+    color: np.ndarray = i32((4, ), serializable=True)
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "serializable": True, "default": None})
+    position: np.ndarray = f32((2, ), serializable=True)
 
 class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "serializable": True, "default": None})
+    velocity: np.ndarray = f32((2, ), serializable=True)
     # magnitude is a derived property from velocity (not a source a truth). Not serializable as it is updated each frame
-    magnitude: np.ndarray = field(metadata={"shape": (1, ), "dtype": "float32", "serializable": False, "default": None})
+    magnitude: np.ndarray = f32((1, ), serializable=False, default=zeros)
 
 class HasCustom(Component):
     pass

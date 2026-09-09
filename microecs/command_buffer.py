@@ -82,6 +82,8 @@ class CommandBuffer:
         elif command.command_type == CommandType.ADD_COMPONENT:
             component = command.args["component"]
             fk = {k: v for k, v in command.args.items() if k != "component"}
+            # same data conversion as add_entity (lists/tuples/scalars, None semantics, extras preserved)
+            fk = world._convert_components_data([component], **fk)
             world._validate_component(component, strict=True, check_extra=True, **fk)
 
             components = self._get_entity_components(entity_id)
@@ -89,6 +91,7 @@ class CommandBuffer:
             has_component = self._entity_has_buffered_component(entity_id, component, existing_components=components)
             if has_component:
                 raise ValueError(f"Component: {component} either added twice or exists already (id: {entity_id})")
+            command.args = {"component": component, **fk}   # commit path materializes the converted data
 
         elif command.command_type == CommandType.REMOVE_COMPONENT:
             component = command.args # TODO: use command.args["component"] for consistency

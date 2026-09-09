@@ -14,7 +14,7 @@ so `test_add_component_with_field_name_clash_raises_at_update` was removed and
 `test_world_rejects_duplicate_field_name_across_components` lost its xfail and is a live test.
 
 **Still open: subtask 3 only.** Subtasks 1 and 2 closed on 2026-07-27 with
-[#44](../../done/44-spawn-path-validates-twice/TASK.md) — 1 done (the duplicate pass is gone, resolved
+[#44](../../closed/44-spawn-path-validates-twice/TASK.md) — 1 done (the duplicate pass is gone, resolved
 toward the world), 2 moot (validation stayed ahead of the mutations, so a rejected spawn cannot burn an id).
 See the subtask block at the bottom for what that changed about subtask 3's target.
 

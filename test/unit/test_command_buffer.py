@@ -340,3 +340,55 @@ def test_buffer_alone_fills_defaults_into_a_staged_add_component():
     (cmd,) = world._command_buffer.data
     assert set(cmd.args) == {"component", "color"}                # today: just {"component"}
     np.testing.assert_array_equal(cmd.args["color"], [10, 20, 30])
+
+
+# -- broadcastable data: ADD_COMPONENT converts array-likes like add_entity / set_data ------------------------------
+# Entity.add_component used to stage RAW kwargs; append's _validate_component wanted ndarrays, so lists/tuples/
+# scalars were refused there even though add_entity and set_data accept them. append now routes the data through
+# World._convert_components_data first (same contract as add_entity: convert, None-as-data for object, extras kept
+# so the extra-field guard fires), and the converted values are what commit materializes.
+
+class HasLabel(Component):   # object field, for the None-as-data case
+    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
+
+
+def test_add_component_converts_array_like_data():
+    """A tuple is converted to the field's dtype/shape at append, and the CONVERTED values hit the pool at commit."""
+    world = World([HasPosition, HasVelocity])
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasVelocity, velocity=(3.0, 4.0))     # tuple, not ndarray
+    (cmd,) = world._command_buffer.data
+    assert cmd.args["velocity"].dtype == np.float32 and cmd.args["velocity"].shape == (2,)
+
+    world.update()
+    e = world.get_entity(eid)
+    assert e.velocity.dtype == np.float32 and e.velocity.shape == (2,)
+    np.testing.assert_array_equal(e.velocity, [3.0, 4.0])
+
+
+def test_add_component_scalar_broadcast_and_omitted_default():
+    """Scalar data is broadcast to the shape; omitted fields fall to the metadata default (like add_entity)."""
+    world = World([HasPosition, HasColorDefault])
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasColorDefault)     # nothing supplied -> default at commit
+    world.update()
+    np.testing.assert_array_equal(world.get_entity(eid).color, [10, 20, 30])
+
+
+def test_add_component_none_semantics_match_add_entity():
+    """Key-present None is DATA for object fields (array([None])) and a caller bug (TypeError) for numeric ones."""
+    world = World([HasPosition, HasVelocity, HasLabel])
+    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    world.get_entity(eid).add_component(HasLabel, label=None)
+    world.update()
+    label = world.get_entity(eid).label
+    assert label.dtype == np.object_ and label.shape == (1,) and label[0] is None
+
+    with pytest.raises(TypeError, match="velocity"):
+        world.get_entity(eid).add_component(HasVelocity, velocity=None)       # after commit the label add is done

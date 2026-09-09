@@ -196,7 +196,8 @@ def test_inplace_op_with_full_n_raw_operand_splits_across_pools():
 
 def test_unsupported_ops_are_rejected():
     """Operations with no per-pool meaning raise instead of returning a wrong result: a cross-pool reduction
-    (np.sum) and a masked/partial write (qr.velocity[mask] = 0) both raise.
+    (np.sum) raises. (A masked write `qr.velocity[mask] = 0` USED to be here; task 51 gave masks numpy
+    gather/scatter semantics — see test_field_bool_mask.py.)
 
     Note: the whitelist in __array_function__ was removed -- any numpy func now runs per-pool and is policed by
     the `len(result) == rows` guard in _apply_fn_on_parts. A full reduction yields a scalar, so that guard's
@@ -206,9 +207,6 @@ def test_unsupported_ops_are_rejected():
 
     with pytest.raises((TypeError, AssertionError)):  # reduction collapses the entity axis -> guard rejects it
         np.sum(qr.velocity)
-
-    with pytest.raises(Exception):     # partial write; only whole `[:]` assignment is allowed
-        qr.velocity[np.array([True, False, True, False, True])] = 0
 
 
 def test_inplace_op_writes_through_to_pools():
@@ -330,9 +328,11 @@ def test_ellipsis_indexing_reshapes_a_mask_to_broadcast_over_a_higher_rank_field
 
 
 def test_entity_axis_index_stays_rejected():
-    """The whole entity axis is off-limits: a bare int (`qr.position[i]`), a slice (`qr.position[0:1]`), or a
-    boolean mask all single out / cross entities, which spans pools, so all raise TypeError. Per-entity access
-    goes through `world.get_entity(qr.entity_ids[i])`; iteration through `zip(qr.position, ...)`."""
+    """The whole entity axis is off-limits for SELECTORS: a bare int (`qr.position[i]`) or a slice
+    (`qr.position[0:1]`) single out / cross entities, which spans pools, so they raise TypeError. Boolean
+    MASKS are the exception (task 51): `qr.position[mask]` gathers/scatters with numpy parity — see
+    test_field_bool_mask.py. Per-entity access goes through `world.get_entity(qr.entity_ids[i])`;
+    iteration through `zip(qr.position, ...)`."""
     qr = _query([_drawable_pool([([0.0, 0.0], 5.0)]), _drawable_pool([([1.0, 1.0], 6.0)])],
                 "position", "radius")
 
@@ -340,8 +340,6 @@ def test_entity_axis_index_stays_rejected():
         qr.position[0]                          # a bare int -> a single entity (forbidden: use get_entity)
     with pytest.raises(TypeError):
         qr.position[0:1]                        # a range of entities -> spans pools
-    with pytest.raises(TypeError):
-        qr.position[np.array([True, False])]    # a mask over entities
 
 
 def test_single_entity_int_index_is_forbidden():
@@ -424,7 +422,7 @@ def test_qr_field_whole_field_keys_that_work_and_selections_that_must_not():
     qr.position += 1                                    # the taught form -> __setattr__, no __getitem__ involved
     assert a.position.tolist() == [[12.0, 2.0]]
 
-    for bad in (0, -1, slice(0, 2), np.array([True, False, True])):   # each one picks/reorders entities
+    for bad in (0, -1, slice(0, 2)):                        # each one picks/reorders entities (masks moved to task 51)
         with pytest.raises(TypeError):
             qr.position[bad]
 

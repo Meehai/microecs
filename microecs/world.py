@@ -44,17 +44,20 @@ class World:
                 self.component_to_field_names[c].append(f.name)
                 self.component_to_shapes[c].append(field_shape := f.metadata["shape"])
                 self.component_to_dtypes[c].append(field_dtype := f.metadata["dtype"])
-                self.component_to_defaults[c].append(field_default := f.metadata["default"])
 
-                if f.name in self.field_to_component:
-                    raise ValueError(f"Duplicate field '{c.__name__}/{f.name}': {self.field_to_component[f.name]}")
-                self.field_to_component[f.name] = c
-
-                if field_default is not None:
+                # This allows defaults to be passed as lists/tuples if they are properly broadcastable
+                if (field_default := f.metadata["default"]) is not None:
+                    if not isinstance(field_default, np.ndarray):
+                        field_default = np.broadcast_to(np.asarray(field_default, field_dtype), field_shape)
                     if (dt := field_default.dtype) != field_dtype:
                         raise TypeError(f"'{c.__name__}/{f.name}'. Expected dtype: {field_dtype}. Got: {dt}")
                     if (sh := field_default.shape) != field_shape:
                         raise ValueError(f"'{c.__name__}/{f.name}'. Expected shape: {field_shape}. Got: {sh}")
+                self.component_to_defaults[c].append(field_default)
+
+                if f.name in self.field_to_component:
+                    raise ValueError(f"Duplicate field '{c.__name__}/{f.name}': {self.field_to_component[f.name]}")
+                self.field_to_component[f.name] = c
 
         # Entities management
         self._eid_to_pool_ix: dict[EntityId, tuple[Pool, int]] = {}
@@ -75,6 +78,7 @@ class World:
 
     def add_entity(self, components: list[ComponentType], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
+        kwargs = self._convert_components_data(components, **kwargs)
         self._validate_components(components, **kwargs)
         default_kwargs = self._defaults_for(components, **kwargs)
         self._last_id += 1
@@ -265,6 +269,24 @@ class World:
         if extra := set(kwargs) - expected:
             raise ValueError(f"Extra fields: {extra}; expected {expected}")
 
+    def _convert_components_data(self, components: list[ComponentType], **kwargs) -> dict[str, np.ndarray]:
+        """This allows components data to be passed as convertible (e.g. tuple->ndarray or even numpy broadcasting).
+        Unknown kwargs are passed through untouched so the "Extra fields" validation can still fire on them."""
+        res = dict(kwargs)
+        for c in components:
+            for name, dtype, shape in zip(self.component_to_field_names[c], self.component_to_dtypes[c],
+                                          self.component_to_shapes[c]):
+                if name not in kwargs:
+                    continue
+
+                if (data := kwargs.get(name)) is None and dtype != "object":
+                    raise TypeError(f"'{c.__name__}/{name}': None is not a valid {dtype} value")
+                # If data is given as ndarray, then use it as-is (user provided). Otherwise, convert it to shape/dtype
+                res[name] = data
+                if not isinstance(data, np.ndarray):
+                    res[name] = np.broadcast_to(np.asarray(data, dtype=dtype), shape=shape)
+        return res
+
     def _defaults_for(self, components: list[ComponentType], **kwargs) -> dict[str, np.ndarray]:
         """Defaults for omitted fields. Assumes already validated. No mutation of `kwargs` (data) is done."""
         res = {}
@@ -287,7 +309,7 @@ class World:
         key = 0
         for c in components:
             if c not in self.component_types:
-                raise ValueError(f"c '{c.__name__}' not in {self.component_names}")
+                raise ValueError(f"'{c.__name__}' not in {self.component_names}")
             key |= self.component_to_bit[c]
         return key
 

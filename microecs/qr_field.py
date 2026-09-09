@@ -45,6 +45,34 @@ class QRField(np.lib.mixins.NDArrayOperatorsMixin):
             results.append(part_result)
         return QRField(results)
 
+    def _row_level_mask(self, key) -> list[np.ndarray] | None:
+        """Per-part row masks for `qr.f[mask]` (task 51), or None if `key` is not a boolean mask.
+
+        Accepted (all equal to numpy's entity-ROW selection, `qr.f.numpy()[mask]`):
+        - a bool ndarray of shape `(n,)` or `(n, 1)` -- the `(n, 1)` form (natural for `qr.f == x`
+          comparisons on a `(1,)` field) is squeezed to the entity axis. numpy's own `(n, 1)` boolean
+          indexing is elementwise-flattening, so here the `(n, 1)` form is an ENTITY mask;
+        - a bool QRField, e.g. `qr.velocity[:, 0] > 3` -- coerced via `.numpy()`.
+
+        Returns one bool mask slice per pool, aligned with `self.parts` (gather: `part[mask]`; scatter:
+        `part[mask] = chunk` with `len(chunk) == mask.sum()`). Raises ValueError on a wrong length or
+        ndim. Returns None for everything else -- including non-bool dtypes -- so a non-mask key falls
+        through to the `_selects_axis0` guard and keeps its TypeError (a non-bool "mask" is user error,
+        not a mask)."""
+        if isinstance(key, QRField):
+            key = key.numpy()
+        if not isinstance(key, np.ndarray) or key.dtype != bool:
+            return None
+        if key.shape == (len(self), 1):
+            key = key[:, 0]
+        if key.shape != (len(self), ):
+            raise ValueError(f"mask {key.shape} does not match {self.len} entities (field shape {self.shape})")
+        res, i = [], 0
+        for part in self.parts:
+            res.append(key[i:i + len(part)])
+            i += len(part)
+        return res
+
     @staticmethod
     def _selects_axis0(key) -> bool:
         """Does this key select on the entity axis (axis 0)? Only the leading index is examined; anything
@@ -52,12 +80,15 @@ class QRField(np.lib.mixins.NDArrayOperatorsMixin):
         matters because a QRField spans several pools (acts contiguous, isn't), so a key that picks,
         reorders or strides entities has no per-pool meaning.
 
-        raises:  [0]   [-1]   [0:2]   [::2]   [mask]   [[0, 2]]   [0, 1]   [None]   [()]
-        ok:      [:]   [...]   [:, 0]   [:, 1:3]   [..., None]   [:, 0, 2]
+        raises:  [0]   [-1]   [0:2]   [::2]   [[0, 2]]   [0, 1]   [None]   [()]
+        ok:      [:]   [...]   [:, 0]   [:, 1:3]   [..., None]   [:, 0, 2]   [mask] (via _row_level_mask)
 
         - `[0:2]` / `[::2]` are slices but drop entities. Only `slice(None)` is whole.
         - `[None]` prepends an axis *before* the entity axis; `[()]` is rejected conservatively.
         - `[0, 1]` leads with an int, so it is one entity's component, not all entities'.
+        - `[mask]`: a boolean entity-row mask HAS per-pool meaning, so both `__getitem__` and
+          `__setitem__` intercept it via `_row_level_mask` BEFORE this guard (task 51) -- this guard
+          itself never sees a mask.
         """
         if isinstance(key, tuple) and key:
             key = key[0]
@@ -82,6 +113,19 @@ class QRField(np.lib.mixins.NDArrayOperatorsMixin):
 
     # qr.position = <field | scalar | per-entity broadcast>   -> scatter through the views
     def __setitem__(self, key, value):
+        # qr.f[mask] = v: numpy-parity scatter into the masked rows (task 51)
+        if (mask_parts := self._row_level_mask(key)) is not None:
+            if isinstance(value, QRField):
+                value = value[key]
+            items_per_part = [x.sum() for x in mask_parts] # e.g. [[False, True], [True, True, True]] -> [1, 3]
+            value_broadcasted = np.broadcast_to(value, (sum(items_per_part), *self.shape[1:])) # (sum([1,3]) = 4, *nf)
+            i = 0
+            # then, distribute parts of value_broadcasted to each of this field's parts
+            for part, len_mask, mask_part in zip(self.parts, items_per_part, mask_parts):
+                part[mask_part] = value_broadcasted[i:i+len_mask]
+                i += len_mask
+            return
+
         if QRField._selects_axis0(key):
             raise TypeError(f"Only batch writes are supported, e.g. `qr.attr = xxx` or `qr.attr[:, k] = xxx` "
                             f"({key=} selects entities, which crosses pools). "
@@ -100,6 +144,12 @@ class QRField(np.lib.mixins.NDArrayOperatorsMixin):
             v[:] = chunk
 
     def __getitem__(self, key):
+        # qr.f[mask]: numpy-parity gather of the masked rows (task 51)
+        if (mask_parts := self._row_level_mask(key)) is not None:
+            # no dtype= kwarg: every part already shares the field's dtype (one component field across
+            # pools), so concatenate infers it -- object-dtype fields included
+            return np.concatenate([part[mask] for part, mask in zip(self.parts, mask_parts)])
+
         if QRField._selects_axis0(key):
             raise TypeError(("Only batch updates are supported, e.g. `qr.attr=xxx` or `qr.attr[:, k]=xxx`. Use "
                             ".numpy() for a proper array. For entity-level ops use `world.get_entity(eid).attr=xxx`"))

@@ -1798,13 +1798,32 @@ def test_add_entity_missing_required_field_crashes_eagerly():
     assert len(world._command_buffer) == 0
 
 
-def test_add_entity_rejects_a_non_ndarray_field():
-    """Field values are np.ndarray, full stop -- a list that merely looks array-like is refused at the call. Pools
-    are typed columns, so a list would be silently coerced (or worse, stored as object) at commit."""
+def test_add_entity_converts_array_like_fields():
+    """Array-like values (lists/tuples/scalars/strings) are converted to the field's dtype/shape at the call;
+    ndarrays are still taken as-is and validated strictly."""
+    world = World(components=[HasPosition, HasColorDefault])
+
+    eid = world.add_entity((HasPosition,), position=[1.0, 2.0])   # list -> float32 (2,)
+    eid2 = world.add_entity((HasColorDefault,), color=7)          # int scalar broadcast -> int32 (3,)
+    world.update()
+
+    pos = world.get_entity(eid).position
+    assert pos.dtype == np.float32 and pos.shape == (2,)
+    assert np.array_equal(pos, np.array([1.0, 2.0], "float32"))
+
+    color = world.get_entity(eid2).color
+    assert color.dtype == np.int32 and color.shape == (3,)
+    assert np.array_equal(color, np.array([7, 7, 7], "int32"))
+
+
+def test_add_entity_rejects_non_convertible_and_bad_shape():
+    """The tolerance is dtype/shape conversion, not garbage: non-convertible data and lists that cannot be
+    broadcast to the field shape still raise at the call (before any entity is staged)."""
     world = World(components=[HasPosition])
 
-    with pytest.raises(TypeError):
-        world.add_entity((HasPosition,), position=[1.0, 2.0])   # a list, not an ndarray
+    for bad in ({"x": 1.0}, [1.0, 2.0, 3.0]):   # dict not convertible; (3,) cannot broadcast to (2,)
+        with pytest.raises((TypeError, ValueError)):
+            world.add_entity((HasPosition,), position=bad)
 
     assert list(world.live_entities) == []
     assert len(world._command_buffer) == 0

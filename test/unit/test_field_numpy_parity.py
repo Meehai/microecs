@@ -9,8 +9,9 @@ Three buckets, all pinned here:
 1. PARITY  -- elementwise/broadcast/feature-axis ops match numpy 1:1 (incl. matching its errors).
 2. FOOTGUN -- explicit pool-crossing ops (cumsum/sort over axis 0) differ from numpy on purpose;
               the user opted in. Pinned so the divergence stays a deliberate, visible choice.
-3. RAISES  -- entity-axis fancy/range/bool indexing, partial entity writes, and ndarray
-              methods/attrs are unsupported and raise (never silently wrong).
+3. RAISES  -- entity-axis fancy/range indexing, partial entity writes, and ndarray
+              methods/attrs are unsupported and raise (never silently wrong). Entity-axis
+              BOOLEAN masks are now supported -- see test_field_bool_mask.py.
 """
 from dataclasses import field
 import numpy as np
@@ -186,23 +187,23 @@ def test_sort_axis0_diverges_when_pools_interleave():
     -1,                                # qr.f[-1] -- a negative single entity
     slice(2, 4),                       # qr.f[2:4] -- entity range
     slice(None, None, 2),              # qr.f[::2] -- looks whole, but strides past entities
-    np.array([1, 0, 1, 0, 1], bool),   # qr.f[mask]
     [0, 2, 4],                         # qr.f[[...]] fancy
 ])
 def test_entity_axis_read_indexing_raises(indexer):
-    """SELECTING on the entity axis is off-limits: a bare int (task 16), a sub-range, a stride, a mask or fancy all
+    """SELECTING on the entity axis is off-limits: a bare int (task 16), a sub-range, a stride or fancy all
     cross pools, so they raise TypeError instead of returning a partial view. Per-entity access is
     `world.get_entity(qr.entity_ids[i])`; iteration is `zip(qr.f, ...)`.
 
     Deliberately NOT here: `[:]` and `[...]` KEEP every entity, so they read the whole field (task 33). This list
     used to include `slice(None)` -- that was the pre-task-33 asymmetry written down as if intended, when in fact
-    `qr.f[:] = v` worked while `qr.f[:]` and `qr.f[:] += 1` raised. `[::2]` guards the near-miss."""
+    `qr.f[:] = v` worked while `qr.f[:]` and `qr.f[:] += 1` raised. `[::2]` guards the near-miss.
+    Boolean masks are also deliberately NOT here: task 51 gives them numpy gather/scatter semantics."""
     _, qr = _multipool_velocity()
     with pytest.raises(TypeError):
         qr.velocity[indexer]
 
 
-@pytest.mark.parametrize("indexer", [slice(2, 4), np.array([1, 0, 1, 0, 1], bool)])
+@pytest.mark.parametrize("indexer", [slice(2, 4)])
 def test_entity_axis_partial_write_raises(indexer):
     _, qr = _multipool_velocity()
     with pytest.raises(TypeError):

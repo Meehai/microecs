@@ -193,7 +193,7 @@ def test_set_data_writes_a_zero_dim_field():
 
 
 def test_set_data_nonfinite_accepted():
-    """Schema, not values: NaN/Inf into a matching float field is accepted (finiteness is robosim's #167)."""
+    """Schema, not values: NaN/Inf into a matching float field is accepted (finiteness is robosim's #160)."""
     world, eid = _world_a()
 
     world.get_entity(eid).set_data(a=np.array([np.nan, np.inf], "float32"))

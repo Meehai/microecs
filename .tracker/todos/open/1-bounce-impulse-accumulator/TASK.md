@@ -3,9 +3,11 @@
 **Created**: 2026-06-02
 **Priority**: 1
 
+**Scope**: the engine's **example app** (`examples/02-moving-colliding-balls.py` / `03-serialization.py`) — not robosim (its collision response is tracked separately in robosim tasks #147/#188), not engine core.
+
 ## Why
 
-`WallBounceSystem` and `CollisionBounceSystem` (`main.py`) both flip velocity on
+`WallBounceSystem` and `CollisionBounceSystem` (now `examples/02-moving-colliding-balls.py`, mirrored in `examples/03-serialization.py` — the live examples) both flip velocity on
 **overlap** instead of on **approach**. Two bugs fall out of that:
 
 1. **Sticky/jitter at walls.** `velocity = where(overlap, -velocity, velocity)`

@@ -32,8 +32,8 @@ N-sweep, verified crossover + copy-boundary mechanism; corrected the efficiency 
 numbers; competitor status re-verified — no material drift since June)
 **Prev update**: 2026-06-05 (refocused on the vectorized + Python-interop niche; added GPU batch-ECS, JAX,
 and dataframe-ABM clusters; turned "ideas" into a ranked borrow list)
-[task 44]: ../todos/done/44-spawn-path-validates-twice/TASK.md
-[task 49]: ../todos/done/49-churn-headroom-beyond-44/TASK.md
+[task 44]: ../todos/closed/44-spawn-path-validates-twice/TASK.md
+[task 49]: ../todos/closed/49-churn-headroom-beyond-44/TASK.md
 
 **Type**: Reference / competitive analysis
 **Scope**: Assess microecs (efficient? good? nice?), then compare **only against projects in the same domain**:
@@ -78,7 +78,7 @@ Three mechanism findings carry the analysis:
    spawn+despawn pair (12.6 µs): storage work (SoA insert + the archetype pop-swap everyone blames) was 43%, while
    **validation was 32% — and half of it ran twice**, because `World.add_entity` validated and then
    `CommandBuffer.append` validated the same command again. **Reclaimed 2026-07-27**
-   ([task 44](../todos/done/44-spawn-path-validates-twice/TASK.md)): the pair is 26% cheaper, w5 improved 25–57%
+   ([task 44](../todos/closed/44-spawn-path-validates-twice/TASK.md)): the pair is 26% cheaper, w5 improved 25–57%
    against the whole field, and microecs now beats EnTT and snecs on churn at N=5,000. The weak spot was
    bookkeeping, not architecture — and what remains of it is now the storage work (52% of a pair), per [task 49].
 
@@ -111,7 +111,7 @@ Three mechanism findings carry the analysis:
   its numpy layer.
 - **Ideas evaluated** (Part 5/6): optional/OR, masked soft-delete, and group-by/reduction were **reviewed
   2026-07-15 and set aside** — each is derivable at user-code level or a bad trade for a query-first lib
-  (rationale in Part 6). The **low-N `Field` overhead** ([task 26](../todos/done/26-low-n-field-overhead/TASK.md),
+  (rationale in Part 6). The **low-N `Field` overhead** ([task 26](../todos/closed/26-low-n-field-overhead/TASK.md),
   robosim's 500-UAV driver) is now **shipped/done** — `_QRArray` single-pool fast path + cache + lazy cumsum,
   crossover moved ~10k→~1.5–3k; an optional **batch-over-worlds** axis (from Madrona) stays a roadmap candidate.
 
@@ -158,7 +158,7 @@ mesa-frames (Polars columns) all store one array per field. microecs is on the c
 - **~~The spawn path validates twice~~ — FIXED 2026-07-27** (found 2026-07-26): `World.add_entity` ran
   `_validate_components` + `_defaults_for`, then `CommandBuffer.append` ran both again on the same command.
   **2.0 µs/spawn redundant — 34% of `add_entity`, 20% of a full spawn** — the dominant term in w5 churn,
-  microecs' worst workload. [Task 44](../todos/done/44-spawn-path-validates-twice/TASK.md) landed it as a
+  microecs' worst workload. [Task 44](../todos/closed/44-spawn-path-validates-twice/TASK.md) landed it as a
   one-owner-per-verb rule (the world gates spawns, `append` gates the component verbs): **1.97× on `add_entity`,
   26% off a churn pair.** It was a *bug-shaped* inefficiency, not an inherent tax — which is exactly why it
   was worth ~3× its own estimate.
@@ -401,7 +401,7 @@ than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity a
 - **Honest framing to publish:** **bulk numeric updates at scale = huge win; sub-crossover-N or per-entity-scalar
   logic = loss.** vectorization is a large-N bet (MJX says the same: "10× slower than C MuJoCo for a *single* scene").
 
-[task 44]: ../todos/done/44-spawn-path-validates-twice/TASK.md
+[task 44]: ../todos/closed/44-spawn-path-validates-twice/TASK.md
 
 ---
 
@@ -495,13 +495,13 @@ than Unity's ECB (no "remember to use the buffer" footgun). Validated by Unity a
    (a) `_locate` spends ~89 of its 144 ns on `fields_set.issuperset([name])` where `name in fields_set` is 40 ns
    — a single-name fast path is ~15% of every entity read; (b) `set_data(f=v)` is now **slower** than `e.f = v`
    for the identical effect, so the docs must stop implying `set_data` is the cheap path.
-4. ✅ **Low-N `QueryResult`/`Field` overhead** — **DONE ([task 26](../todos/done/26-low-n-field-overhead/TASK.md),
+4. ✅ **Low-N `QueryResult`/`Field` overhead** — **DONE ([task 26](../todos/closed/26-low-n-field-overhead/TASK.md),
    2026-07-15).** microecs *used to* lose the 500–10k band to xecs on fixed per-op `Field`-allocation overhead.
    Fixed with (a) `_QRArray` — a single-pool query returns a thin `np.ndarray` subclass (native-C `+`/`*`, no
    per-op `QRField`), (b) a per-field `QRField` cache, (c) lazy `cumsum`. Result: microecs now beats xecs across
    the whole 200–20k band on columnar, crossover moved ~10k→~1.5–3k (Part 8 re-run), and the 500-UAV robosim
    driver is met with huge headroom (N=500 ≈ 5µs/frame vs the 16.6ms budget). Archived benchmark:
-   `.tracker/todos/done/26-low-n-field-overhead/` (`run.py`, `bench.txt`).
+   `.tracker/todos/closed/26-low-n-field-overhead/` (`run.py`, `bench.txt`).
 
 ### Evaluated candidates (from Part 5)
 
@@ -546,8 +546,8 @@ it is that **a Rust ECS and a C++ ECS both lose to it in Python**, for the same 
 boundary crossing). That is a claim about the *language*, not about microecs' cleverness, and it is the most
 transferable thing in this document.
 
-1. ✅ **[task 8](../todos/done/8-query-exclusion-none-of/TASK.md)** — query exclusion. **Done.**
-2. ✅ **[task 9](../todos/done/9-tag-components/TASK.md)** — tag components. **Done.**
+1. ✅ **[task 8](../todos/closed/8-query-exclusion-none-of/TASK.md)** — query exclusion. **Done.**
+2. ✅ **[task 9](../todos/closed/9-tag-components/TASK.md)** — tag components. **Done.**
 3. **README "Comparison / positioning" section** — *(not filed)* use the positioning paragraph above; name the
    real peers (xecs, manifoldx) + the adjacent clusters (Madrona, JAX ABM, mesa-frames); the cross-pool view as
    the headline. Fold in the Part 8 crossover chart + both boundary mechanisms (xecs' copy, entt/flecs' crossing).
@@ -558,12 +558,12 @@ transferable thing in this document.
    `examples/05-benchmark-workloads/` (README, `results.json`, `FINDINGS.md`, `probes/`). *Not yet done:*
    mesa-frames (Polars) and manifoldx (per-archetype) baselines — worthwhile future additions, and manifoldx is
    the one that would test the cross-archetype claim head-on.
-5. ✅ **[Task 44](../todos/done/44-spawn-path-validates-twice/TASK.md) — kill the duplicate spawn-path validation.**
+5. ✅ **[Task 44](../todos/closed/44-spawn-path-validates-twice/TASK.md) — kill the duplicate spawn-path validation.**
    **DONE 2026-07-27** (`3ba0e76`), filed 2026-07-26. Was billed as "the single largest measured win available";
    it delivered ~3× its estimate: `add_entity` **1.97×**, a churn pair **26% cheaper**, w5 **+21–35% against the
    field at every N**, and it **flipped w5 @100k from EnTT to microecs** — the first structural cell microecs has
    won. Next on that workload: [task 49] (storage is now 52% of a pair).
-6. **Entity-path polish** — *(not filed; recorded in [task 36](../todos/done/36-optimize-entity-read-write-path/TASK.md))*
+6. **Entity-path polish** — *(not filed; recorded in [task 36](../todos/closed/36-optimize-entity-read-write-path/TASK.md))*
    `_locate` single-name fast path (~15% of every entity read) and the `set_data` vs `e.f = v` cost inversion.
    Task 36 closed this question as "cost accepted" under `#29`'s design; `#42` changed that design, so the
    re-measured numbers live there.
@@ -743,7 +743,7 @@ reorders rows) — so a *churning* world with per-id edits is genuinely hard.
 read-modify-write **2018**. Two consequences: (a) ~89 ns of `_locate`'s 144 is `fields_set.issuperset([name])`
 where `name in fields_set` costs 40 — a single-name fast path is ~15% of every entity read; (b) **`set_data(f=v)`
 is now slower than `e.f = v`** (610 vs 471) for the identical effect, so `#29`-era advice to prefer `set_data` no
-longer matches the cost. Both recorded on [task 36](../todos/done/36-optimize-entity-read-write-path/TASK.md).
+longer matches the cost. Both recorded on [task 36](../todos/closed/36-optimize-entity-read-write-path/TASK.md).
 
 ### P4 — churn was a validation cost, not a pop-swap cost (found here, fixed by #44)
 

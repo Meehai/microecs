@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).parents[2]
-PAGES = {"example-1-hello-world.md": "01-hello-world.py",
-         "example-2-moving-colliding-balls.md": "02-moving-colliding-balls.py",
-         "example-3-serialization.md": "03-serialization.py"}
+# pages live in docs/source/<Group>/; the menu path is derived from the directory tree.
+PAGES = {"Examples & Tutorials/example-1-hello-world.md": "01-hello-world.py",
+         "Examples & Tutorials/example-2-moving-colliding-balls.md": "02-moving-colliding-balls.py",
+         "Examples & Tutorials/example-3-serialization.md": "03-serialization.py"}
 
 def _full_code_block(md_text: str) -> str:
     """the python fenced block under the `## Full code` heading of a docs page"""
