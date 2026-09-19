@@ -3,7 +3,7 @@
 03-serialization. Showcases how one can implement serialization of all entities on top of microecs
 Usage: ./03-serialization.py [--state_path STATE.JSON] [--n_objects N]
 Keybinds:
-- F5 to store sthe state
+- F5 to store the state
 - F6 to load the state
 """
 from typing import Callable, Any
