@@ -1,9 +1,9 @@
 # 2. Moving & Colliding Balls
 
-[`examples/02-moving-colliding-balls.py`](examples/02-moving-colliding-balls.py) picks up where [Hello World](example-1-hello-world.md) left off: the balls now **move**, **bounce off the walls**, and turn red on contact — all driven by a fixed-timestep physics loop. Run it:
+[`examples/02-motion-and-collision.py`](examples/02-motion-and-collision.py) picks up where [Hello World](example-1-hello-world.md) left off: the balls now **move**, **bounce off the walls**, and turn red on contact — all driven by a fixed-timestep physics loop. Run it:
 
 ```bash
-python examples/02-moving-colliding-balls.py --n_objects 10
+python examples/02-motion-and-collision.py --n_objects 10
 ```
 
 Two new components carry the extra state (`HasColor` from Hello World is dropped — the renderer just picks red/black from `is_colliding`):

@@ -309,5 +309,5 @@ if __name__ == "__main__":
 
 ## Next
 
-- [Moving & Colliding Balls](example-2-moving-colliding-balls.md) — adds velocity, wall bounce, and a fixed-`dt` physics clock.
+- [Moving & Colliding Balls](example-2-motion-and-collision.md) — adds velocity, wall bounce, and a fixed-`dt` physics clock.
 - [Serialization (save & load)](example-3-serialization.md) — save/load the whole world to JSON via `to_dict`.

@@ -96,3 +96,7 @@ no per-tick component churn, no event queue.
 - `main.py`: `WallBounceSystem`, `CollisionBounceSystem`, `MotionSystem`.
 - Mirrors robosim's "collisions as events" direction
   (robosim task 125 / plan 9) but kept SoA-batched and queue-free.
+- Applied downstream in robosim: **robosim #194** (additive `external_force` — the accumulator buffer as
+  a component field, consumed by `PhysicsSystem`) and **robosim #195** (a single apply-stage system for
+  plugin events). The "more producers (forces, drag)" case from Out of scope did appear, and the
+  accumulator shape still won for forces — the event bus stays for commands only.

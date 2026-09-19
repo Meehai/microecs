@@ -111,7 +111,7 @@ def _build(n):
 
 
 def _paths(world, objs):
-    """The four spellings of `pos += vel*dt`, mirroring examples/04-benchmark-ecs-vs-oop.py exactly."""
+    """The four spellings of `pos += vel*dt`, mirroring test/benchmarks/ecs-vs-oop.py exactly."""
     qr = world.query(HasPos, HasVel)
     ids = [int(x) for x in qr.entity_ids]
 

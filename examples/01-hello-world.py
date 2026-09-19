@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""01-hello-world.py The basic hello world for ECS. Creates some static balls. You can add some with the mouse."""
+"""01-hello-world. The basic hello world for ECS. Creates some static balls. You can add some with the mouse."""
 from typing import Callable
 from argparse import ArgumentParser, Namespace
 import random
@@ -22,7 +22,7 @@ class HasPosition2D(Component):
     position: np.ndarray = f32((2, ))
 
 class HasColor(Component):
-    color: np.ndarray = i32((4, ), default=np.array(rl.BLACK, dtype="int32"))
+    color: np.ndarray = i32((4, ), default=rl.BLACK)
 
 # systems
 
@@ -58,16 +58,14 @@ def main(args: Namespace):
     for _ in range(args.n_objects):
         radius = random.randint(5, 20)
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
-        world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
-                         radius=np.array([radius], "float32"),)
+        world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=position, radius=radius)
 
     while not rl.WindowShouldClose():
         world.update()
         if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
             radius = random.randint(5, 20)
             position = rl.GetMousePosition().x, rl.GetMousePosition().y
-            world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=np.array(position, "float32"),
-                             radius=np.array([radius], "float32"),)
+            world.add_entity(components=(HasRadius, HasPosition2D, HasColor), position=position, radius=radius)
 
         _ = [system(world=world) for system in update_systems]
 

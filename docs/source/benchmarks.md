@@ -4,7 +4,7 @@ Two benchmarks: microecs against plain OOP (why vectorize at all), and microecs 
 
 ## Benchmark 1: microecs vs OOP on a simple physics step
 
-We run the same physics step `pos += vel*dt` over N=100k entities split across 2 pools in various ways (ECS or OOP). All methods are verified to produce the identical result. Reproduce with `python examples/04-benchmark-ecs-vs-oop.py` (it prints `{mode: avg_seconds_per_step}`).
+We run the same physics step `pos += vel*dt` over N=100k entities split across 2 pools in various ways (ECS or OOP). All methods are verified to produce the identical result. Reproduce with `python test/benchmarks/ecs-vs-oop.py` (it prints `{mode: avg_seconds_per_step}`).
 
 | pattern | ns/entity | vs OOP-scalar |
 |---|---:|---:|
@@ -83,7 +83,7 @@ Not one workload — **seven** × **seven** libraries × an N-sweep (200 → 1,0
 verified against a float64 reference. The field spans all three ways to build an ECS reachable from
 Python: numpy-vectorized (microecs), a native core with a native columnar store (xecs), a native core
 with per-entity Python components (**EnTT**, **flecs**), and pure Python (esper, snecs, ecs-pattern).
-Full setup, fairness notes, and raw data in `examples/05-benchmark-workloads/` (one folder per workload;
+Full setup, fairness notes, and raw data in `test/benchmarks/workloads-vs-other-libraries/` (one folder per workload;
 `FINDINGS.md` has every number; run `./run_benchmark.sh` to regenerate). Environment: numpy 2.5.1,
 Python 3.12; times are min-over-reps of the mean over 30 frames, GC off. Run 2026-07-27 (microecs with
 **#44 + #49** merged); baseline run 2026-07-26 (`975097c`, neither change).
@@ -267,7 +267,7 @@ Five things to take from the three experiments:
    arithmetic *in numpy anyway* (`view.x * dt` returns an ndarray) and `.numpy()` is a **copy**, so
    every columnar op copies buffers out of Rust and back (~4–11× raw numpy). microecs mutates the pool
    arrays **in place, zero-copy** — it wins *because it has no FFI boundary*. (Confirmed in
-   `examples/05-benchmark-workloads/probes/`.)
+   `test/benchmarks/workloads-vs-other-libraries/probes/`.)
 3. **The structural workloads were paying per-entity Python, not archetype layout.** w5 churn used to be
    microecs' weakest workload at every N (0.08× ecs-pattern at 200, 0.82× EnTT at 100k). Splitting one
    spawn+despawn pair showed why: the **storage** work — SoA insert plus the archetype pop-swap usually

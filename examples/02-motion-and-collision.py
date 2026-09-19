@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""02-motion-and-collision. Creates some moving balls that can collide with each other or with the walls."""
 from typing import Callable
 from argparse import ArgumentParser, Namespace
 import random
@@ -104,8 +105,7 @@ class CollisionDetectionSystem:
 
 def _spawn_circle(world: World, position: Point2D, radius: float, velocity: Point2D):
     world.add_entity(components=(HasRadius, HasPosition2D, HasMotion2D, HasCollision),
-                     position=np.array(position, "float32"), velocity=np.array(velocity, "float32"),
-                     radius=np.array([radius], "float32"), is_colliding=np.zeros((1, ), "bool"))
+                     position=position, velocity=velocity, radius=radius, is_colliding=False)
 
 def main(args: Namespace):
     rl.InitWindow(800, 800, b"Entity Component Style + SoA (batched)")

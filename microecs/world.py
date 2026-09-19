@@ -10,6 +10,8 @@ from .entity import Entity, ENTITY_RESERVED_NAMES
 from .pool import Pool, POOL_RESERVED_NAMES
 from .command_buffer import CommandBuffer, Command, CommandType
 
+WORLD_RESERVED_NAMES = {"check_extra", "component", "components", "strict"}
+
 class World:
     """
     Generic container for pools of components. Newly added components are assigned a unique id and go in a pool
@@ -181,7 +183,8 @@ class World:
         pool_index = pool.add_entity(entity_data=entity_data)
         self._eid_to_pool_ix[entity_id] = (pool, pool_index)
         self._pool_ids.setdefault(pool, []).append(entity_id)
-        assert len(self._pool_ids[pool]) == len(pool), (pool, len(self._pool_ids[pool]), len(pool))
+        if len(self._pool_ids[pool]) != len(pool):
+            raise ValueError(pool, len(self._pool_ids[pool]), len(pool))
 
     def _remove_from_pool(self, entity_id: EntityId):
         """removes the entity from the pool w/o any internal data copying, like _pop_from_pool"""
@@ -221,7 +224,8 @@ class World:
     def _do_remove_component(self, entity_id: EntityId, component: ComponentType):
         entity_data, components = self._pop_from_pool(entity_id)
         for _field in self.component_to_field_names[component]:
-            assert _field in entity_data, f"Field {component}/{_field} not in components: {components} ({entity_id=})"
+            if _field not in entity_data:
+                raise ValueError(f"Field {component}/{_field} not in components: {components} ({entity_id=})")
             entity_data.pop(_field)
         new_components = [c for c in components if c != component]
         self._add_to_pool(entity_id, components=new_components, entity_data=entity_data)
@@ -314,7 +318,7 @@ class World:
         return key
 
     def _check_components(self, components: list[ComponentType]):
-        reserved_names = ENTITY_RESERVED_NAMES | POOL_RESERVED_NAMES | QUERY_RESULT_RESERVED_NAMES
+        reserved = ENTITY_RESERVED_NAMES | POOL_RESERVED_NAMES | QUERY_RESULT_RESERVED_NAMES | WORLD_RESERVED_NAMES
         dtypes = {"float32", "int32", "bool", "object"}
         expected_meta = {*self._default_metadata, *self.extra_metadata}
 
@@ -326,8 +330,8 @@ class World:
             for f in fields(c):
                 if hints[f.name] is not np.ndarray:
                     raise TypeError(f"Field '{c.__name__}/{f.name}' not an array: {f}")
-                if f.name in reserved_names:
-                    raise ValueError(f"Field '{c.__name__}/{f.name}' in {reserved_names}")
+                if f.name in reserved:
+                    raise ValueError(f"Field '{c.__name__}/{f.name}' in {reserved}")
                 if f.metadata.keys() != expected_meta:
                     raise ValueError(f"Field '{c.__name__}/{f.name}'\n{list(f.metadata.keys())}\nvs\n{expected_meta}\n"
                                       "Perhaps missing World(extra_metadata=[...])?")

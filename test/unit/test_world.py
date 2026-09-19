@@ -1131,25 +1131,11 @@ def test_world_reserved_name_guard_survives_python_dash_o():
 # are already rejected, but only incidentally (they happen to be Pool / Entity attrs).
 
 _WORLD_KWARG_NAMES = ["check_extra", "component", "components", "strict"]
-@pytest.mark.xfail(strict=True, reason="task 35: World's internal kwarg names not reserved yet")
 @pytest.mark.parametrize("name", _WORLD_KWARG_NAMES)
 def test_world_rejects_field_name_colliding_with_its_own_kwargs(name):
     """A field named like one of World's own **kwargs-taking parameters must be refused at construction."""
     with pytest.raises(_REJECTED, match=name):
         World(components=[_component_with_field(name)])
-
-
-@pytest.mark.parametrize("name", _WORLD_KWARG_NAMES)
-def test_world_kwarg_name_clash_is_currently_a_confusing_late_typeerror(name):
-    """Pins the CURRENT bad behaviour so task 35 has a measured before/after: World() accepts the component and
-    add_entity dies with a TypeError about a *parameter*. Delete this test when the guard lands (the xfail above
-    flips green and construction never reaches add_entity)."""
-    world = World(components=[_component_with_field(name)])          # accepted today -- that is the bug
-
-    # "...for argument 'component'" vs "...for keyword argument 'strict'" depending on the shadowed parameter
-    with pytest.raises(TypeError, match="got multiple values for"):
-        world.add_entity((world.component_types.copy().pop(),), **{name: np.array([1.0], "float32")})
-
 
 def test_object_field_holds_python_string_and_compares_by_equality():
     """The sanctioned replacement for the removed str dtype: store a python string in a dtype='object'

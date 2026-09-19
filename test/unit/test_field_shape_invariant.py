@@ -185,12 +185,12 @@ def test_op_breaking_entity_axis_raises():
     world.update()
 
     qr = world.query(HasVelocity)                            # spans 2 pools -> QRField
-    with pytest.raises(AssertionError):                      # axis=0 -> (2,), pool B rows (1) mismatch -> guard
+    with pytest.raises(ValueError):                      # axis=0 -> (2,), pool B rows (1) mismatch -> guard
         np.sum(qr.velocity, axis=0)
     # NOTE for dev: a full reduction yields a numpy scalar, so `len(part_result)` (qr_field.py)
-    # raises TypeError ("no len()") instead of a clean AssertionError. Guard `ndim >= 1` in
+    # raises TypeError ("no len()"), guard `ndim >= 1` in
     # _apply_fn_on_parts for a better message; widen/adjust this raises() if you do.
-    with pytest.raises((AssertionError, TypeError)):
+    with pytest.raises(TypeError):
         np.sum(qr.velocity)
 
 

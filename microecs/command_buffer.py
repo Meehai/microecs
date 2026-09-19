@@ -87,7 +87,8 @@ class CommandBuffer:
             world._validate_component(component, strict=True, check_extra=True, **fk)
 
             components = self._get_entity_components(entity_id)
-            assert len(components) > 0, f"guaranteed to be >0 {entity_id} {components}"
+            if len(components) == 0:
+                raise ValueError(f"guaranteed to be >0 {entity_id} {components}")
             has_component = self._entity_has_buffered_component(entity_id, component, existing_components=components)
             if has_component:
                 raise ValueError(f"Component: {component} either added twice or exists already (id: {entity_id})")
@@ -99,7 +100,8 @@ class CommandBuffer:
                 raise ValueError(f"Unknown component: {component} not in world components {world.component_types}")
 
             components = self._get_entity_components(entity_id)
-            assert len(components) > 0, f"guaranteed to be >0 {entity_id} {components}"
+            if len(components) == 0:
+                raise ValueError(f"guaranteed to be >0 {entity_id} {components}")
             has_component = self._entity_has_buffered_component(entity_id, component, existing_components=components)
             if not has_component:
                 raise ValueError(f"Component: {component} either removed twice or doesn't exist (id: {entity_id})")

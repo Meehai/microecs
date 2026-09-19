@@ -13,7 +13,8 @@ ComponentType = type[Component]
 
 # helper functions to build components and fields
 
-zeros = object() # special object so we can instantiate with e.g. f32(..., default=zeros)
+class zeros: # pylint: disable=all
+    """special object so we can instantiate with e.g. f32(..., default=zeros)"""
 
 def _make_field(dtype: str, shape: tuple[int, ...], default: Any = None, **extra) -> Field:
     if default is zeros:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-03-serialization.py - Showcase how one can implement serialization of all entities on top of microecs
+03-serialization. Showcases how one can implement serialization of all entities on top of microecs
 Usage: ./03-serialization.py [--state_path STATE.JSON] [--n_objects N]
 Keybinds:
 - F5 to store sthe state
@@ -53,12 +53,10 @@ def add_entity(world: World, color: "rl.Color", radius: list[float], position: P
                velocity: Point2D | None = None, custom: bool = False):
     """spawns a new entity in the world given some parameters"""
     components = [HasRadius, HasColor, HasPosition2D]
-    data = {"position": np.array(position, "float32"), "color": np.array(color, dtype="int32"),
-            "radius": np.array(radius, "float32")}
+    data = {"position": position, "color": color, "radius": radius}
     if velocity is not None:
         components.append(HasMotion2D)
-        data["velocity"] = np.array(velocity, "float32")
-        data["magnitude"] = np.zeros((1, ), "float32") # dummy 0 at start, as it's continuously updated in the main loop
+        data |= {"velocity": velocity, "magnitude": 0} # dummy 0 at start, as it's continuously updated in the main loop
     if custom is True:
         components.append(HasCustom)
     world.add_entity(components=components, **data)
@@ -105,7 +103,7 @@ def create_init_world(n_objects: int, scene_size: tuple[int, int]) -> World:
         position = random.randint(radius, scene_size[0] - radius), random.randint(radius, scene_size[1] - radius)
         velocity = (100 * random.random() * 2 - 1, 100 * random.random() * 2 - 1) if random.random() < 0.3 else None
         custom = random.random() < 0.5 # just a custom attribute that's only sometimes there.
-        add_entity(world, color=rl.BLACK, radius=[radius], position=position, velocity=velocity, custom=custom)
+        add_entity(world, color=rl.BLACK, radius=radius, position=position, velocity=velocity, custom=custom)
     return world
 
 def main(args: Namespace):

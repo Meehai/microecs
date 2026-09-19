@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Standalone benchmark: ECS (microecs) vs OOP, same physics step computed 8 ways.
 
-Intended home: examples/04-benchmark-ecs-vs-oop.py (kept under test/manual/ per project rules
-that route benchmarks here; the dev promotes it to examples/ with a single `mv`).
+Lives in test/benchmarks/ with the library benchmarks (benchmarks are tests; examples stay
+runnable tutorials).
 
 Every mode applies the SAME step -- pos += vel*dt over N entities, the same number of times,
 from the same seed -- so they all produce the SAME result (asserted in main via an
 order-independent fingerprint). We report the average wall-time per step, in seconds.
 
-Run:    python test/manual/perf/bench_ecs_vs_oop.py
+Run:    python test/benchmarks/ecs-vs-oop.py
 Output: {mode: avg_seconds_per_step}
 """
 import time

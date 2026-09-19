@@ -8,7 +8,7 @@ python examples/03-serialization.py --n_objects 10
 
 microecs has **no** save/load feature. It gives you one primitive — `entity.to_dict()` — and this page builds a full save/load on top of it, one step at a time. Nothing below is skipped; by the last step you have the whole thing.
 
-The world we save is [Moving & Colliding Balls](example-2-moving-colliding-balls.md) with two extra twists, and both are the interesting part: some balls **move and some are static** (different archetypes), and one field is **derived** (recomputed every frame, so saving it would be a lie).
+The world we save is [Moving & Colliding Balls](example-2-motion-and-collision.md) with two extra twists, and both are the interesting part: some balls **move and some are static** (different archetypes), and one field is **derived** (recomputed every frame, so saving it would be a lie).
 
 ## Step 1 — say which fields are worth saving
 
@@ -632,4 +632,4 @@ if __name__ == "__main__":
 
 - [Primitives](<docs/source/primitives.md>) — `World(extra_metadata=[...])`, archetypes and pools, `QueryResult` lifetimes.
 - [Systems & Per-Entity Iteration](<docs/source/systems.md>) — why `to_dict` is a per-entity loop and everything else is not.
-- [Moving & Colliding Balls](example-2-moving-colliding-balls.md) — the world this one saves.
+- [Moving & Colliding Balls](example-2-motion-and-collision.md) — the world this one saves.

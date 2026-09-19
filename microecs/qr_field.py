@@ -41,7 +41,8 @@ class QRField(np.lib.mixins.NDArrayOperatorsMixin):
             part_result: QRField = fn(*pool_args, **kwargs)
             # we expect f(arr(N, ...)) -> arr(N, ...) where N = number of items in the pool
             # for e.g. np.linalg.norm(velocity, axis=1) should do (N, 2) -> (N, 1) so the first axis is preserved
-            assert len(part_result) == part.shape[0], f"Result: {part_result.shape} vs {part.shape}"
+            if len(part_result) != part.shape[0]:
+                raise ValueError(f"Result: {part_result.shape} vs {part.shape}")
             results.append(part_result)
         return QRField(results)
 
@@ -100,8 +101,9 @@ class QRField(np.lib.mixins.NDArrayOperatorsMixin):
             return NotImplemented
         if out is None:
             return self._apply_fn_on_parts(ufunc, inputs, **kwargs)
+        if len(out) != 1 or not isinstance(out[0], QRField):
+            raise TypeError(out)
 
-        assert len(out) == 1 and isinstance(out[0], QRField), out
         for i in range(len(self.parts)):
             pool_args = [self._chunk(x, i) for x in inputs]
             ufunc(*pool_args, out=out[0].parts[i], **kwargs)
