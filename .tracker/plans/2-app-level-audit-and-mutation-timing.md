@@ -5,11 +5,11 @@
 **Re-run**: 2026-07-26 against `b6d2192` (v0.8.2). Every number below was re-measured on that commit;
 nothing here is inherited from the first pass. The library was **846 LoC**, 459 unit+integration tests green
 (8 xfail, all deliberate), pylint 10.00.
-**Re-scored**: 2026-07-27 against `3748416` (v0.8.3) — after [#44](../todos/closed/44-spawn-path-validates-twice/TASK.md),
-[#45](../todos/closed/45-entity-accessor-cost-and-recursion/TASK.md),
-[#46](../todos/closed/46-in-place-is-the-floor-idiom/TASK.md),
-[#47](../todos/closed/47-lazy-entity-ids/TASK.md) and
-[#49](../todos/closed/49-churn-headroom-beyond-44/TASK.md) landed. **894 LoC**, 500 tests green (8 xfail),
+**Re-scored**: 2026-07-27 against `3748416` (v0.8.3) — after [#44](../tasks/closed/44-spawn-path-validates-twice/TASK.md),
+[#45](../tasks/closed/45-entity-accessor-cost-and-recursion/TASK.md),
+[#46](../tasks/closed/46-in-place-is-the-floor-idiom/TASK.md),
+[#47](../tasks/closed/47-lazy-entity-ids/TASK.md) and
+[#49](../tasks/closed/49-churn-headroom-beyond-44/TASK.md) landed. **894 LoC**, 500 tests green (8 xfail),
 pylint 10.00. The scorecard (Part 6) gained a third measured column; the findings below carry per-finding
 status updates where one of those tasks moved them. **One finding regressed** (4, by #45) — see Appendix A.
 **Scope**: Build a throwaway 2D space shooter on microecs, on purpose, to (a) find corner cases a probe
@@ -103,7 +103,7 @@ The ergonomic headline. None of them is app logic:
 
 | helper | why it is needed | finding |
 |---|---|---|
-| `f32(shape, default)` | a bare field decl is 90 chars of ceremony for "two floats" | now [#50](../todos/closed/50-field-declaration-helpers/TASK.md) |
+| `f32(shape, default)` | a bare field decl is 90 chars of ceremony for "two floats" | now [#50](../tasks/closed/50-field-declaration-helpers/TASK.md) |
 | `join(dst_ids, src_ids, col)` | the only join key is `entity_ids` and there is no gather | 2 |
 | `kill_all(world, eids)` | a bare `for` loop: there is no batch despawn | minor |
 
@@ -146,12 +146,12 @@ original text, because *why* a trap existed is the part worth re-reading before 
 |---|---|---|---|
 | 2 | `has_component()` cannot see the command buffer | ergonomics | not filed |
 | 4 | a dangling `Entity`: read and write phrase the same state differently | error quality | **regressed 07-27** by #45 (Appendix A) |
-| 6b | the removal leak is exactly "the last row of a surviving pool" | lifetime | sharpens [#40](../todos/open/40-object-dtype-lifetimes/TASK.md) |
-| 7 | reductions work at 1 archetype, raise at 2 | contract | extends [#37](../todos/open/37-qrarray-qrfield-one-contract/TASK.md)/[#38](../todos/open/38-array-function-honour-check/TASK.md) |
+| 6b | the removal leak is exactly "the last row of a surviving pool" | lifetime | sharpens [#40](../tasks/open/40-object-dtype-lifetimes/TASK.md) |
+| 7 | reductions work at 1 archetype, raise at 2 | contract | extends [#37](../tasks/open/37-qrarray-qrfield-one-contract/TASK.md)/[#38](../tasks/open/38-array-function-honour-check/TASK.md) |
 | 9b | removing the last component reaches the state `add_entity` forbids | state machine | not filed — needs a decision, not a check |
-| 12 | an emptied archetype is deleted and rebuilt from scratch | perf/design | **half closed** by [#49](../todos/closed/49-churn-headroom-beyond-44/TASK.md) (same-tick only) |
-| 13 | a cold query is O(entities), and the cache never survives a tick | perf | **first half closed** by [#47](../todos/closed/47-lazy-entity-ids/TASK.md); now a NOTE |
-| 14 | a mid-tick `update()` voids the queries already taken | perf/correctness | game-shaped [#27](../todos/open/27-stale-queryresult-guard/TASK.md) |
+| 12 | an emptied archetype is deleted and rebuilt from scratch | perf/design | **half closed** by [#49](../tasks/closed/49-churn-headroom-beyond-44/TASK.md) (same-tick only) |
+| 13 | a cold query is O(entities), and the cache never survives a tick | perf | **first half closed** by [#47](../tasks/closed/47-lazy-entity-ids/TASK.md); now a NOTE |
+| 14 | a mid-tick `update()` voids the queries already taken | perf/correctness | game-shaped [#27](../tasks/open/27-stale-queryresult-guard/TASK.md) |
 
 Seven again, but two rows moved and they moved in opposite directions: 13 went out (closed) and 4 came back
 (regressed). 12 is the interesting middle — see its section for what "half closed" bought.
@@ -317,7 +317,7 @@ tick, at the end.
 
 ## Part 3 — Structural #1: a query has no lifetime
 
-> **Status 2026-07-27: item 1 shipped as [#47](../todos/closed/47-lazy-entity-ids/TASK.md), item 2 still open.**
+> **Status 2026-07-27: item 1 shipped as [#47](../tasks/closed/47-lazy-entity-ids/TASK.md), item 2 still open.**
 > The forecast below said "263 µs → ~5 µs at N=10k"; measured **5.1 µs**. Prediction and outcome agreeing to
 > one significant figure is the part worth trusting — the model of where the time went was right. Item 2
 > (refresh-not-clear) is now the whole of this Part, and it is what subsumes #27 and finding 14.
@@ -378,7 +378,7 @@ elsewhere. Plus finding 7: reductions are a third failing class beyond #38's two
 #37 asks "how do we keep #26's perf win *and* one contract". Suggestion: **do not make `QRField` fast — make
 `_QRArray` narrow.** Override `__getitem__`/`__setitem__` on `_QRArray` to enforce the same axis-0 predicate
 (`QRField._selects_axis0`, already written and tested by
-[#33](../todos/closed/33-qrfield-one-key-predicate/TASK.md)), and add the array-protocol guards so reductions
+[#33](../tasks/closed/33-qrfield-one-key-predicate/TASK.md)), and add the array-protocol guards so reductions
 are rejected identically. The fast path stays a real ndarray in memory layout and in every batch op; only the
 entity-axis surface is closed. Both branches then behave identically, and #26's win survives untouched.
 
@@ -443,7 +443,7 @@ Overall **~6.5 → ~8 → ~8.5 → ~9**.
     vs `oop-scalar` (#45);
   - the shooter's heavy run **0.71 → 0.558 ms/tick** at identical entity and pool counts;
   - microecs now **wins all seven benchmark workloads at N=100k**, structural ones included, a first.
-  Not 9: finding 12's across-tick pool churn, [#48](../todos/open/48-qrfield-low-n-fixed-cost/TASK.md)'s
+  Not 9: finding 12's across-tick pool churn, [#48](../tasks/open/48-qrfield-low-n-fixed-cost/TASK.md)'s
   low-N `QRField` cost, and a cache that still dies every tick (cheaply — Part 3.2).
 - **Error messages 7.5 → 7** — the one axis that went **down**, and the reason to re-measure at all. #45
   inlined the row-less check into `Entity.__getattr__`/`__setattr__` for speed, so the read path grew its own
@@ -512,7 +512,7 @@ Ranked, and only what is still open. Ids are this plan's findings unless a `#` s
 | 3 | **Close 9b** | S | an `assert` on a reachable path *and* a decision — forbid removing the last component, or accept the empty archetype. Not both |
 | 4 | **Refresh-not-clear queries** (Part 3.2) | M | subsumes #27 and finding 14. Now purely a correctness item: with #47 in, the cache rebuild is ~5 µs, so the perf argument for it is gone |
 | 5 | **One contract for `qr.field`** (Part 4) | M | concrete resolution for open P1 #37 + #38, including finding 7's reductions |
-| 6 | **Field-declaration helpers** ([#50](../todos/closed/50-field-declaration-helpers/TASK.md)) | S | filed 07-27. Pure sugar, ~15 LoC, no new code path — and 11 files in this repo already wrote it themselves |
+| 6 | **Field-declaration helpers** ([#50](../tasks/closed/50-field-declaration-helpers/TASK.md)) | S | filed 07-27. Pure sugar, ~15 LoC, no new code path — and 11 files in this repo already wrote it themselves |
 | 7 | **Pool reuse** (12) | S | design smell, halved by #49 (same-tick blink is free now); what is left is the across-tick case, ~3.7 ms / 3.3 MiB across a chaos run |
 | 8 | **Docs: object fields are an escape hatch** (6) | S | name the one rule they opt out of: nothing can check what you stored |
 | 9 | **#47's two leftovers** | XS | `__repr__` → `len(self)` (1907 µs at N=100k today), and put the dropped id/pool-agreement assert in the property |
@@ -530,9 +530,9 @@ written: **#47** (was item 1) and **#50**.
 
 The eight findings that were live when this audit opened and are not any more, each with its original text
 plus what changed. Kept because *why* a trap existed is the part worth re-reading before re-introducing it.
-All eight closed on 2026-07-26: six with [#42](../todos/closed/42-set-data-eager-again/TASK.md) and its
+All eight closed on 2026-07-26: six with [#42](../tasks/closed/42-set-data-eager-again/TASK.md) and its
 `_locate` follow-up, two with
-[#43](../todos/closed/43-duplicate-components-and-idempotent-remove/TASK.md). **One (4) came back on 07-27** —
+[#43](../tasks/closed/43-duplicate-components-and-idempotent-remove/TASK.md). **One (4) came back on 07-27** —
 the case for keeping this appendix, made by the appendix itself.
 
 | # | finding | closed by |
@@ -586,7 +586,7 @@ damage(e, 3); damage(e, 4); world.update()      # health 10 -> 6.0, not 3.0
 
 Reads are eager (committed state), writes are buffered, so the second `set_data` reads the **pre-tick** value
 and overwrites the first command. Silent. This is the general form of
-[#1](../todos/open/1-bounce-impulse-accumulator/TASK.md)'s "flipping is non-composable": *any* accumulator
+[#1](../tasks/open/1-bounce-impulse-accumulator/TASK.md)'s "flipping is non-composable": *any* accumulator
 written through `Entity` keeps only the last contribution. Worst with physics substeps (one system running
 twice per frame) and with two systems that both damage. This was the symptom of Appendix B's structural item,
 not an isolated bug.
@@ -613,11 +613,11 @@ qr.health = np.array([[1.5]])        # accepted, silently cast
 qr.color  = 3.9                      # int32 field -> stored [3,3,3,3], no warning
 ```
 
-[#28](../todos/closed/28-queryresult-setattr-validate/TASK.md) made `QueryResult.__setattr__` validate *names*;
+[#28](../tasks/closed/28-queryresult-setattr-validate/TASK.md) made `QueryResult.__setattr__` validate *names*;
 dtypes fall through to numpy's unsafe casting. Whether the batch path *should* validate is a real call
 (per-write dtype checks cost something in the hot path, and silent casting is what a numpy user expects). But
 the two halves should not disagree in **silence** —
-[#20](../todos/closed/20-add-entity-eager-dtype-crash/TASK.md) exists because a silent shape surprise was
+[#20](../tasks/closed/20-add-entity-eager-dtype-crash/TASK.md) exists because a silent shape surprise was
 judged unacceptable on the other path.
 
 > **Resolved by #42 — and the other way round than this finding assumed.** The entity path was loosened to
@@ -724,7 +724,7 @@ the buffer resolves the ordering, *keep this working*.
 # Appendix B — the mutation-timing decision (this plan's old Part 3)
 
 Kept in full because it is the argument #42 was built on, and
-[#42's task](../todos/closed/42-set-data-eager-again/TASK.md) cites "Plan 2 Part 3" by name.
+[#42's task](../tasks/closed/42-set-data-eager-again/TASK.md) cites "Plan 2 Part 3" by name.
 
 > **Decided and shipped 2026-07-26 as #42.** Accepted, and taken one step further than proposed: the
 > read-only row view went too, so `e.field = v` / `e.field[:] = v` came back and `set_data` became the
@@ -743,8 +743,8 @@ Buffering a *data* write buys nothing. `pool.data[f][ix] = v` moves no rows and 
 path proved it: `qr.position = ...` wrote straight into pool memory, eagerly, and nobody complained.
 
 And deferral did not buy the thing deferral usually buys — snapshot / simultaneity semantics — because
-`update()` is deliberately **not atomic** ([#22](../todos/closed/22-fully-eager-staging/TASK.md)), staged values
-are **references, not snapshots** ([#39](../todos/open/39-staged-writes-snapshot/TASK.md)), and the batch path
+`update()` is deliberately **not atomic** ([#22](../tasks/closed/22-fully-eager-staging/TASK.md)), staged values
+are **references, not snapshots** ([#39](../tasks/open/39-staged-writes-snapshot/TASK.md)), and the batch path
 was already order-dependent.
 
 **So the cost of deferral was paid and the benefit was not collected.** That was the structural defect: not
@@ -789,15 +789,15 @@ middle**, and it did not.
 | date | what | effect on this plan |
 |---|---|---|
 | 2026-07-25 | audit run: shooter + 18 probes + fuzzer | 15 findings, 2 structural items, scorecard ~6.5 |
-| 2026-07-26 | [#36](../todos/closed/36-optimize-entity-read-write-path/TASK.md) closed | the #29 read tax accepted — then made moot by #42 |
-| 2026-07-26 | [#42](../todos/closed/42-set-data-eager-again/TASK.md) shipped | Appendix B's decision; findings 5, 8, 15 fixed, 6 restated |
+| 2026-07-26 | [#36](../tasks/closed/36-optimize-entity-read-write-path/TASK.md) closed | the #29 read tax accepted — then made moot by #42 |
+| 2026-07-26 | [#42](../tasks/closed/42-set-data-eager-again/TASK.md) shipped | Appendix B's decision; findings 5, 8, 15 fixed, 6 restated |
 | 2026-07-26 | `_locate` follow-up (untracked, 4 lines on #42) | findings 1 and 4 fixed |
-| 2026-07-26 | [#43](../todos/closed/43-duplicate-components-and-idempotent-remove/TASK.md) shipped | findings 9 and 3 fixed; the shooter's `Reaper` deleted |
+| 2026-07-26 | [#43](../tasks/closed/43-duplicate-components-and-idempotent-remove/TASK.md) shipped | findings 9 and 3 fixed; the shooter's `Reaper` deleted |
 | 2026-07-26 | plan re-run against `b6d2192` | 7 FINDING / 9 OK / 2 NOTE; scorecard ~8; this rewrite |
-| 2026-07-27 | [#45](../todos/closed/45-entity-accessor-cost-and-recursion/TASK.md) + [#46](../todos/closed/46-in-place-is-the-floor-idiom/TASK.md) shipped | entity read/write 1.7×; **finding 4 half-regressed** (a second message) |
-| 2026-07-27 | [#47](../todos/closed/47-lazy-entity-ids/TASK.md) shipped | Part 3.1; finding 13's first half closed, probe 13 → NOTE |
-| 2026-07-27 | [#44](../todos/closed/44-spawn-path-validates-twice/TASK.md) + [#49](../todos/closed/49-churn-headroom-beyond-44/TASK.md) shipped | churn pair 1.92×; finding 12 half closed (same-tick blink) |
-| 2026-07-27 | [#50](../todos/closed/50-field-declaration-helpers/TASK.md) filed | Part 1's `f32` helper row finally has an id |
+| 2026-07-27 | [#45](../tasks/closed/45-entity-accessor-cost-and-recursion/TASK.md) + [#46](../tasks/closed/46-in-place-is-the-floor-idiom/TASK.md) shipped | entity read/write 1.7×; **finding 4 half-regressed** (a second message) |
+| 2026-07-27 | [#47](../tasks/closed/47-lazy-entity-ids/TASK.md) shipped | Part 3.1; finding 13's first half closed, probe 13 → NOTE |
+| 2026-07-27 | [#44](../tasks/closed/44-spawn-path-validates-twice/TASK.md) + [#49](../tasks/closed/49-churn-headroom-beyond-44/TASK.md) shipped | churn pair 1.92×; finding 12 half closed (same-tick blink) |
+| 2026-07-27 | [#50](../tasks/closed/50-field-declaration-helpers/TASK.md) filed | Part 1's `f32` helper row finally has an id |
 | 2026-07-27 | re-score against `3748416` | 7 FINDING / 8 OK / 3 NOTE; scorecard **~8.5**; Part 6 + per-finding updates |
 
 Two evidence-side repairs were needed for the 07-26 re-run, and three more for 07-27 (listed at the end of
