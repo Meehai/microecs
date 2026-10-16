@@ -16,23 +16,22 @@ at two layers, that these tests pin:
    while keeping N (e.g. np.sort(..., axis=0)) is NOT detectable per-pool and is documented as
    user error — see test_sort_axis0_is_documented_per_pool_footgun.
 """
-from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import World, Component, QRField
+from microecs import World, Component, QRField, f32
 
 
 class HasPose(Component):  # 2D field: the (4,4) the contract is written around
-    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32", "default": None})
+    pose: np.ndarray = f32((4, 4))
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2,))
 
 
 class HasScale(Component):  # 0-d field: feature shape () -> field is (N,)
-    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32", "default": None})
+    scale: np.ndarray = f32(())
 
 
 def _pose(v: float) -> np.ndarray:

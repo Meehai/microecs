@@ -3,18 +3,18 @@
 Entity is a LIVE view of one row, not a snapshot: every attribute access re-resolves (pool, row) from the id,
 so it stays correct across pool changes (swap-remove, archetype migration).
 
-**One rule (#42): a STRUCTURAL change is buffered, a DATA write is EAGER.** Not "Entity is buffered,
-QueryResult is eager" (#29) -- the line is drawn at what the write does, not at which object you hold:
+**One rule: a STRUCTURAL change is buffered, a DATA write is EAGER.** Not "Entity is buffered,
+QueryResult is eager" -- the line is drawn at what the write does, not at which object you hold:
 
   * `e.field = v`, `e.field[:] = v`, `e.field += v`, `e.set_data(f=v)`  -> land in the pool NOW
   * `e.add_component(...)`, `e.remove_component(...)`, `world.{add,remove}_entity(...)` -> at `world.update()`
 
 Moving a row between pools invalidates iteration in flight, so structure must be staged. `pool.data[f][ix] = v`
-moves nothing and invalidates nothing, so staging it bought nothing -- and it cost: a read-modify-write silently
-kept only the last contribution (`damage(3); damage(4)` left 6), a read could not see its own write, and every
-read paid `setflags(write=False)` (491 vs 227 ns/op) to police an idiom that is legal again.
+moves nothing and invalidates nothing, so staging it buys nothing -- and it would cost: a read-modify-write
+silently keeps only the last contribution (`damage(3); damage(4)` leaves 6), a read cannot see its own write, and
+every read pays `setflags(write=False)` (491 vs 227 ns/op) to police a legal idiom.
 
-A write goes where the row is NOW and consults the command buffer never (dev's call, 2026-07-26). Two corollaries
+A write goes where the row is NOW and consults the command buffer never. Two corollaries
 pinned below: a not-yet-committed spawn refuses writes exactly as it refuses reads, and a field whose component is
 only *pending* has no column yet, so writing it raises.
 
@@ -28,44 +28,43 @@ Issues these pin:
   (4) internal attrs   -- Entity's own instance attrs must all be in the __setattr__ allowlist, or the class
                           cannot even be constructed once __setattr__ starts routing field writes.
 """
-from dataclasses import field
 import copy
 import json
 import pickle
 import numpy as np
 import pytest
 
-from microecs import World, Component, Entity
+from microecs import World, Component, Entity, f32, obj
 from microecs.entity import _ENTITY_INTERNAL_ATTRS, ENTITY_RESERVED_NAMES
 
 
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2,))
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2,))
 
 
-class HasHealth(Component):  # the accumulator field: read-modify-write must compose (#1, plan 2 finding 5)
-    health: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+class HasHealth(Component):  # the accumulator field: read-modify-write must compose
+    health: np.ndarray = f32((1,))
 
 
 class HasLabel(Component):  # object dtype: an arbitrary python object per entity (-> to_dict uses .item())
-    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
+    label: np.ndarray = obj((1,))
 
 
 class HasScale(Component):  # 0-d array field: exactly one scalar per entity (shape ())
-    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32", "default": None})
+    scale: np.ndarray = f32(())
 
 
 class HasPose(Component):   # (4, 4) field: the sliced read AND the sliced write (e.pose[0:3, 3]) must work
-    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32", "default": None})
+    pose: np.ndarray = f32((4, 4))
 
 
 class HasSerial(Component):  # two fields; the 'serializable' extra-metadata drives to_dict's filter
-    keep: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": True, "default": None})
-    drop: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "serializable": False, "default": None})
+    keep: np.ndarray = f32((1,), serializable=True)
+    drop: np.ndarray = f32((1,), serializable=False)
 
 
 def _world_with_one(position=(1.0, 2.0)):
@@ -85,10 +84,9 @@ def _row(world: World, entity_id: int, name: str) -> np.ndarray:
 # --- construction: the __setattr__ allowlist must cover Entity's own attrs -----------------------------------------
 # __setattr__ routes a field name to the pool and Entity's own attrs to super(); everything else raises. So
 # __init__ itself goes through the guard. Any instance attr __init__ sets that is missing from the allowlist makes
-# Entity unconstructable -> get_entity raises for every entity in the world (#29's defect 1: 95 failures). The
+# Entity unconstructable -> get_entity raises for every entity in the world (95 failures). The
 # allowlist must also feed ENTITY_RESERVED_NAMES, else a component field could be named like an internal attr and
-# shadow it. #42 is likely to change WHICH attrs those are (a `_world` back-ref for validation) -- these tests do
-# not care about the names, only that the set and the allowlist agree.
+# shadow it. These tests do not care about the names, only that the set and the allowlist agree.
 
 def test_entity_can_be_constructed_at_all():
     """get_entity must build the view: every attr __init__ assigns is in the __setattr__ allowlist."""
@@ -129,10 +127,10 @@ def test_entity_reads_field_components_and_fields():
 
 
 def test_entity_read_hands_back_a_writable_view_of_the_pool():
-    """#42 deletes the read-only guard: the row is a WRITABLE view into pool memory, not a frozen copy.
+    """No read-only guard: the row is a WRITABLE view into pool memory, not a frozen copy.
 
-    This is the whole read tax (`isinstance` + `setflags(write=False)` on every field read, 491 vs 227 ns/op).
-    It existed to police `e.field[:] = v`, which is legal again -- so the guard has nothing left to buy."""
+    A guard would be the whole read tax (`isinstance` + `setflags(write=False)` on every field read, 491 vs 227
+    ns/op) to police `e.field[:] = v`, which is legal -- so it has nothing to buy."""
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
@@ -175,10 +173,9 @@ def test_entity_read_is_a_live_view_not_a_copy():
     np.testing.assert_array_equal(e.position, [7.0, 7.0])
 
 
-# --- eager data write: every idiom lands in the pool NOW: issue (1) ------------------------------------------------
-# All four of these used to raise (#29). They are the pre-#29 idioms, back on purpose: a data write moves no row,
-# so there is nothing to stage. Each test asserts the POOL changed (not just the view) and that the command buffer
-# stayed empty -- there is no SET_DATA command any more.
+# --- eager data write: every idiom lands in the pool NOW ----------------------------------------------------------
+# A data write moves no row, so there is nothing to stage. Each test asserts the POOL changed (not just the view)
+# and that the command buffer stayed empty -- there is no SET_DATA command.
 
 def test_entity_attribute_write_lands_in_the_pool_immediately():
     """`e.field = v`: validate, then `pool.data[f][ix] = v`. No update() needed, nothing staged."""
@@ -215,7 +212,7 @@ def test_entity_write_never_rebinds_the_pool_column():
 
 
 def test_entity_attribute_write_copies_the_value_it_is_given():
-    """The write lands in the pre-allocated row, so mutating the source afterwards must not leak in (#39)."""
+    """The write lands in the pre-allocated row, so mutating the source afterwards must not leak in."""
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
@@ -227,7 +224,7 @@ def test_entity_attribute_write_copies_the_value_it_is_given():
 
 
 def test_entity_slice_write_lands_immediately():
-    """`e.field[:] = v` -- the in-place idiom the read-only view used to forbid."""
+    """`e.field[:] = v` -- the in-place idiom."""
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
@@ -298,7 +295,7 @@ def test_entity_zero_dim_field_write_lands_immediately():
 
 
 # --- what the eager write buys: composability and read-your-own-write ---------------------------------------------
-# These are the tests #29 could not pass. They are the reason #42 exists -- not the microseconds.
+# A buffered data write fails both. They are the reason writes are eager -- not the microseconds.
 
 def test_entity_read_your_own_write_within_one_tick():
     """No update() in between: the next read sees the value just written."""
@@ -307,14 +304,14 @@ def test_entity_read_your_own_write_within_one_tick():
 
     e.position = np.array([9.0, 8.0], "float32")
 
-    np.testing.assert_array_equal(e.position, [9.0, 8.0])       # under #29 this was still [1.0, 2.0]
+    np.testing.assert_array_equal(e.position, [9.0, 8.0])       # a buffered write would read [1.0, 2.0]
 
 
 def test_entity_read_modify_write_composes_within_one_tick():
     """Two independent read-modify-writes on one field in one tick BOTH count: damage(3); damage(4) -> 3, not 6.
 
-    This is plan 2 finding 5 (silent lost updates) and #1's bounce-impulse accumulator. Under #29 the reads were
-    eager and the writes buffered, so both calls read 10 and the second staged command overwrote the first."""
+    Silent lost updates otherwise: with eager reads and buffered writes both calls read 10 and the second staged
+    command overwrites the first. A bounce-impulse accumulator needs exactly this to compose."""
     world = World([HasHealth])
     eid = world.add_entity((HasHealth,), health=np.array([10.0], "float32"))
     world.update()
@@ -367,8 +364,8 @@ def test_entity_write_is_visible_to_a_batch_read_modify_write():
 def test_data_only_tick_keeps_the_query_cache_alive():
     """A data write does not stage a command, so update() has nothing to commit and the query cache SURVIVES.
 
-    Under #29 every set_data made the buffer non-empty, so update() dropped every cached query -- a data-only
-    tick invalidated queries that structurally could not have changed (#36 fix 2, now moot by construction)."""
+    A staged data write would make the buffer non-empty, so update() would drop every cached query -- a data-only
+    tick invalidating queries that structurally cannot have changed."""
     world, eid = _world_with_one()
     qr = world.query(HasPosition)
 
@@ -396,13 +393,13 @@ def test_entity_write_does_not_disturb_staged_structural_commands():
 
 
 # --- what a write ACCEPTS: numpy's rules, the same ones `qr.field = v` follows --------------------------------------
-# Dev's call, 2026-07-26: the value does not have to be an ndarray. Anything numpy can turn into the field's dtype
+# The value does not have to be an ndarray. Anything numpy can turn into the field's dtype
 # and broadcast into the field's shape is accepted -- python lists, tuples, scalars, a (1,) fill, a float64 array.
 # That is not a loosening: the BATCH path has always worked this way (`qr.position = 0.0` fills every row; a float64
 # column write truncates silently), so this makes the two write paths one rule instead of two. The parity test below
 # is the real spec; the individual cases just document what that rule means. It costs the "no silent truncation"
-# guarantee (#25) on this path -- `add_entity` / `add_component` remain STRICT, so declaring a row and updating one
-# now differ. Deliberate, and the divergence is pinned in test_world.py.
+# guarantee on this path -- `add_entity` / `add_component` stay STRICT, so declaring a row and updating one
+# differ. Deliberate, and the divergence is pinned in test_world.py.
 
 _ACCEPTED = [
     ("list",            [9.0, 8.0],                          [9.0, 8.0]),
@@ -462,8 +459,8 @@ def test_entity_write_agrees_with_the_batch_write_path(reason, value):
 
 @pytest.mark.parametrize("reason,value", _REJECTED, ids=[r for r, _ in _REJECTED])
 def test_entity_write_rejected_value_leaves_the_pool_untouched(reason, value):
-    """issue (3): what numpy refuses must raise BEFORE the row is touched -- there is no buffer to fall back on
-    any more, so a check that runs after the write would hand the caller an exception over a dirty pool."""
+    """What numpy refuses must raise BEFORE the row is touched -- there is no buffer to fall back on,
+    so a check that runs after the write would hand the caller an exception over a dirty pool."""
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
@@ -488,7 +485,7 @@ def test_entity_write_object_field_takes_a_bare_python_object():
 _UNKNOWN_WRITES = [("no component's field", "bogus"), ("a field this entity lacks", "velocity")]
 @pytest.mark.parametrize("reason,name", _UNKNOWN_WRITES, ids=[r for r, _ in _UNKNOWN_WRITES])
 def test_entity_write_unknown_field_raises_naming_the_valid_fields(reason, name):
-    """issue (2): the error names the offending field AND this entity's fields -- plan 2 finding 15. It must
+    """The error names the offending field AND this entity's fields. It must
     never land as a silent dead instance attr on the view (which the next read would then happily return)."""
     world, eid = _world_with_one()
     e = world.get_entity(eid)
@@ -527,7 +524,7 @@ def test_entity_zero_dim_field_accumulates_but_cannot_be_sliced():
 
     `+=` works: the scalar is immutable, so numpy makes a NEW one and hands it to __setattr__, which accepts it
     like any other numpy-convertible value. `e.scale[...] = v` cannot work -- a scalar is not subscriptable -- but
-    that is a property of the READ, not of the write path, and it is the same before and after #42."""
+    that is a property of the READ, not of the write path."""
     world = World([HasScale])
     eid = world.add_entity((HasScale,), scale=np.array(2.5, "float32"))
     world.update()
@@ -544,15 +541,14 @@ def test_entity_zero_dim_field_accumulates_but_cannot_be_sliced():
 
 # --- not committed yet: reads and writes agree --------------------------------------------------------------------
 # get_entity returns a handle before update() (the id is live from add_entity), but the row does not exist yet.
-# Dev's call, 2026-07-26: a write raises exactly like a read, rather than patching the staged ADD_ENTITY command.
+# A write raises exactly like a read, rather than patching the staged ADD_ENTITY command.
 # The rule stays "a write goes where the row is" -- with no row, there is nowhere to go.
 
-# Every public entry point that needs a row must fail the SAME way (plan 2 finding 1; landed untracked as the
-# `_locate` follow-up to #42 -- do not read the old "#43" here, that number is a different task now). Four used
-# to index `_eid_to_pool_ix` directly and raised a bare `KeyError: <id>` -- a number with no context, and
-# reachable without any stale handle, because `add_entity` publishes the id in `world.live_entities` (a public
-# dict) before the row exists. Routing `get_components` / `get_fields` through `_locate` fixed all four
-# (`has_component` and `to_dict` call through them). Note the nesting that creates: `_locate`'s error message
+# Every public entry point that needs a row must fail the SAME way, through `_locate` -- never a bare
+# `KeyError: <id>` from indexing `_eid_to_pool_ix` directly, a number with no context. It is reachable without any
+# stale handle, because `add_entity` publishes the id in `world.live_entities` (a public dict) before the row
+# exists. `get_components` / `get_fields` route through `_locate` (`has_component` and `to_dict` call through
+# them). Note the nesting that creates: `_locate`'s error message
 # calls `get_components()`, which calls `_locate()` -- safe ONLY because `names=[]` can never fail the field
 # check. If that message ever grows a call that can fail, this becomes infinite recursion.
 
@@ -601,10 +597,9 @@ def test_entity_without_a_row_raises_attributeerror_everywhere(entry, state):
     assert str(eid) in str(exc.value)          # names the entity, so the message is actionable
 
 
-# The two states get the SAME message, on purpose (plan 2 finding 4, closed 2026-07-26). The proposal was to
-# branch on `live_entities` and say "not committed yet" vs "removed"; the dev's call was one sentence that is
-# true either way, with the `update()` advice made conditional. The old message asserted "not committed yet"
-# as fact, which is a lie to a despawned handle -- that is what got fixed. Which of the two states you are in
+# The two states get the SAME message, on purpose: one sentence that is true either way, with the `update()`
+# advice made conditional -- "not committed yet" as fact would be a lie to a despawned handle. Which of the two
+# states you are in
 # is something the caller already knows, so there is no behaviour left here to test beyond the parametrized
 # case above; the rest is wording, and a test that pins wording is a test that breaks on a reword.
 
@@ -686,7 +681,7 @@ def test_entity_view_is_live_across_archetype_migration():
 
 def test_entity_write_to_a_field_added_this_tick_raises_until_update():
     """The other half of the rule: the component is only PENDING, so its column does not exist yet and the write
-    has nowhere to land. A write never consults the command buffer (dev's call) -- so it raises, and the same
+    has nowhere to land. A write never consults the command buffer -- so it raises, and the same
     write succeeds one update() later."""
     world = World(components=[HasPosition, HasVelocity])
     eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
@@ -725,7 +720,7 @@ def test_entity_write_to_a_field_pending_removal_lands_then_is_dropped():
 # --- stale handle across remove: every op must reject EAGERLY ------------------------------------------------------
 # A handle held BEFORE remove_entity goes stale once the id is despawned. get_entity guards a *fresh* lookup (a dead
 # id raises there), but a *stale* handle bypasses that path. Structural ops through it are rejected by the single
-# gate in CommandBuffer.append (appending a command for a non-live id raises). A DATA write has no gate any more --
+# gate in CommandBuffer.append (appending a command for a non-live id raises). A DATA write has no gate --
 # the row is already gone from _eid_to_pool_ix, so resolution itself must refuse it.
 
 def test_stale_handle_add_component_after_remove_rejects_eagerly():
@@ -769,7 +764,7 @@ def test_stale_handle_data_write_after_committed_remove_raises():
 
 
 def test_stale_handle_data_write_before_the_remove_commits_cannot_corrupt_a_neighbour():
-    """While the despawn is only STAGED the row still exists, and #42 puts no gate on the data path -- so the
+    """While the despawn is only STAGED the row still exists, and there is no gate on the data path -- so the
     write may well land in the doomed row. Either way the invariant is the same: it touches nothing but that row,
     so the entity that swap-removes into the slot still carries its own value afterwards."""
     world = World([HasPosition])
@@ -789,12 +784,12 @@ def test_stale_handle_data_write_before_the_remove_commits_cannot_corrupt_a_neig
 
 
 def test_stashed_row_view_across_update_is_the_documented_hole():
-    """#42's one accepted loss, pinned so it stays visible instead of silent.
+    """Eager writes' one accepted loss, pinned so it stays visible instead of silent.
 
     A read hands back a writable view into pool memory, so a view STASHED across an `update()` writes into
-    whatever row now sits at that index -- here B's, after B swap-removes into A's slot. This is the pre-#29
-    status quo robosim ran on for months, and it is the same rule queries already have (#27): **do not hold a
-    view across `update()`**. If a future guard ever makes this raise, delete this test -- the guarantee is back."""
+    whatever row now sits at that index -- here B's, after B swap-removes into A's slot. This is the same rule
+    queries have: **do not hold a view across `update()`**. If a future guard ever makes this raise, delete this
+    test -- the guarantee holds then."""
     world = World([HasPosition])
     a = world.add_entity((HasPosition,), position=np.array([1.0, 1.0], "float32"))   # row 0
     b = world.add_entity((HasPosition,), position=np.array([2.0, 2.0], "float32"))   # row 1
@@ -869,7 +864,7 @@ def test_to_dict_without_filter_dumps_even_non_serializable_fields():
 
 def test_to_dict_reflects_the_write_immediately():
     """to_dict reads the live row and writes are eager, so a dump taken right after a write already shows it --
-    no update() in between (under #29 the dump showed the previous tick's value)."""
+    no update() in between."""
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
@@ -878,22 +873,22 @@ def test_to_dict_reflects_the_write_immediately():
     assert e.to_dict()["data"]["position"] == [7.0, 8.0]
 
 
-# --- copy / pickle: an Entity is a handle, not a value (#45 C3) ----------------------------------------------------
+# --- copy / pickle: an Entity is a handle, not a value ------------------------------------------------------------
 # An Entity means "row ix of pool p RIGHT NOW". Its internals are a world-owned dict and the world's command buffer,
 # so a shallow copy aliases the whole world and a deep copy clones it -- neither is what "a copy of this entity"
 # should mean. to_dict() is. So both are refused, via __reduce__ ON THE CLASS.
 #
-# It has to be a class-level dunder, and the two failure modes it replaces are why:
-#   * copy/deepcopy went into INFINITE RECURSION. copy._reconstruct builds the instance with cls.__new__(cls) -- no
+# It has to be a class-level dunder, and the two failure modes without it are why:
+#   * copy/deepcopy go into INFINITE RECURSION. copy._reconstruct builds the instance with cls.__new__(cls) -- no
 #     __init__, so no _eid_to_pool_ix on it. Probing a missing internal hits __getattr__, which reads
 #     self._eid_to_pool_ix, also missing -> __getattr__ again, forever. Pool and QueryResult each dodge this with a
-#     self.__dict__.get(...) guard inside their own dunders; Entity cannot afford one (+45 ns on EVERY field touch,
-#     #45), and __reduce__ costs nothing because a field touch never looks that name up.
-#   * pickle.dumps SUCCEEDED (py3.12: object.__getstate__ just hands over the instance dict, nothing probes a
+#     self.__dict__.get(...) guard inside their own dunders; Entity cannot afford one (+45 ns on EVERY field touch),
+#     and __reduce__ costs nothing because a field touch never looks that name up.
+#   * pickle.dumps SUCCEEDS (py3.12: object.__getstate__ just hands over the instance dict, nothing probes a
 #     missing attr) -- quietly serializing _eid_to_pool_ix, i.e. every pool in the world, into "one entity". The
 #     silent version is the worse bug of the two; TypeError is the fix for both.
-# Regression note: the guard is only real if it is a method OF Entity. Nested one level too deep inside __setattr__
-# it is a throwaway local -- copy still recursed, and every write paid to build the function object. Hence a
+# The guard is only real if it is a method OF Entity. Nested one level too deep inside __setattr__ it is a
+# throwaway local -- copy still recurses, and every write pays to build the function object. Hence a
 # behaviour assertion here rather than a hasattr() check.
 
 @pytest.mark.parametrize("op", [copy.copy, copy.deepcopy, pickle.dumps], ids=["copy", "deepcopy", "pickle"])

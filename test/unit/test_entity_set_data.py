@@ -1,48 +1,45 @@
-"""Entity-facing spec for `set_data(**fields)` — the multi-field TRANSACTION over the eager write (microecs #42).
-
-`set_data` used to be the *only* entity write path, and it was buffered (#29). Both halves changed:
+"""Entity-facing spec for `set_data(**fields)` — the multi-field TRANSACTION over the eager write.
 
   * **eager** — it writes straight into the pool, like `e.field = v` and like `qr.field = v`. No `SET_DATA`
-    command, no `world.update()` in between. Data writes land now; only STRUCTURE is staged.
-  * **not the only path** — `e.field = v` is legal again (test_entity.py). What `set_data` still buys, and the
+    command, no `world.update()` in between. Data writes land at the call; only STRUCTURE is staged.
+  * **not the only path** — `e.field = v` is legal too (test_entity.py). What `set_data` buys, and the
     only reason it is not a bare `for k, v in data.items(): setattr(self, k, v)` loop, is the **transaction**:
     N fields across N components, validated ALL FIRST, then written none-or-all.
 
-That validate-first ordering is the whole spec of this file, and it is load-bearing in a way it was not under
-#29: there is no buffer to roll back any more, so if validation ran per field as the loop wrote, a rejected call
-would leave earlier fields already in the pool. Every rejection test below therefore asserts the pool is
+That validate-first ordering is the whole spec of this file, and it is load-bearing: there is no buffer to roll
+back, so if validation ran per field as the loop wrote, a rejected call would leave earlier fields already in
+the pool. Every rejection test below therefore asserts the pool is
 **byte-identical**, not merely that "nothing was staged".
 
-Carried over unchanged from #25: validation is schema-only (dtype + shape, never values), and one bad field
-refuses the whole call. Kept from #29: the signature — field kwargs, no `component` arg (field names are unique
-across components, so a name identifies its component). robosim's three call sites need no change.
+Validation is schema-only (dtype + shape, never values), and one bad field refuses the whole call. The
+signature is field kwargs, no `component` arg (field names are unique across components, so a name identifies
+its component).
 """
-from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import World, Component
+from microecs import World, Component, f32, obj
 
 
 class HasA(Component):
-    a: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    a: np.ndarray = f32((2,))
 
 
 class HasB(Component):                       # a second component -> cross-component set_data in one call
-    b: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    b: np.ndarray = f32((2,))
 
 
 class HasPair(Component):                    # two fields of the SAME component -> the intra-component transaction
-    x: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
-    y: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    x: np.ndarray = f32((2,))
+    y: np.ndarray = f32((2,))
 
 
 class HasLabel(Component):                   # object dtype: an arbitrary python object per entity
-    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
+    label: np.ndarray = obj((1,))
 
 
 class HasScale(Component):                   # 0-d field: exactly one scalar per entity
-    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32", "default": None})
+    scale: np.ndarray = f32(())
 
 
 def _world_a(a=(1.0, 2.0)):
@@ -78,7 +75,7 @@ def _row(world: World, entity_id: int, name: str) -> np.ndarray:
 # --- eager: it writes the pool, and stages nothing -----------------------------------------------------------------
 
 def test_set_data_writes_immediately_and_stages_nothing():
-    """The headline of #42: the value is in the pool when the call returns. No command, no update() needed."""
+    """The headline: the value is in the pool when the call returns. No command, no update() needed."""
     world, eid = _world_a()
 
     assert world.get_entity(eid).set_data(a=np.array([9.0, 8.0], "float32")) is None    # succeeds -> returns None
@@ -88,7 +85,7 @@ def test_set_data_writes_immediately_and_stages_nothing():
 
 
 def test_set_data_is_readable_by_the_caller_that_wrote_it():
-    """Read-your-own-write, the property #29 could not offer: the next read is the value just written."""
+    """Read-your-own-write: the next read is the value just written."""
     world, eid = _world_a()
     e = world.get_entity(eid)
 
@@ -98,7 +95,7 @@ def test_set_data_is_readable_by_the_caller_that_wrote_it():
 
 
 def test_set_data_composes_with_a_later_write_to_the_same_field():
-    """Two writes to one field in one tick both count, in call order -- no silent lost update (finding 5)."""
+    """Two writes to one field in one tick both count, in call order -- no silent lost update."""
     world, eid = _world_a()
     e = world.get_entity(eid)
 
@@ -149,15 +146,15 @@ def test_set_data_empty_call_is_a_noop():
     np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])
 
 
-def test_set_data_no_longer_exposes_set_component_data():
-    """The old name stays gone: #29 replaced set_component_data(component, data) and #42 keeps that signature."""
+def test_set_data_has_no_set_component_data():
+    """There is no set_component_data(component, data): `set_data(**fields)` is the only spelling."""
     world, eid = _world_a()
 
     assert not hasattr(world.get_entity(eid), "set_component_data")
 
 
 def test_set_data_copies_the_value_it_is_given():
-    """Numeric write lands in the pre-allocated pool row: mutating the source afterwards must not leak in (#39)."""
+    """Numeric write lands in the pre-allocated pool row: mutating the source afterwards must not leak in."""
     world, eid = _world_a()
 
     src = np.array([5.0, 6.0], "float32")
@@ -193,7 +190,7 @@ def test_set_data_writes_a_zero_dim_field():
 
 
 def test_set_data_nonfinite_accepted():
-    """Schema, not values: NaN/Inf into a matching float field is accepted (finiteness is robosim's #160)."""
+    """Schema, not values: NaN/Inf into a matching float field is accepted (finiteness is robosim's job)."""
     world, eid = _world_a()
 
     world.get_entity(eid).set_data(a=np.array([np.nan, np.inf], "float32"))
@@ -214,7 +211,7 @@ _ACCEPTED = [
 ]
 @pytest.mark.parametrize("reason,value,expected", _ACCEPTED, ids=[r for r, _, _ in _ACCEPTED])
 def test_set_data_accepts_whatever_numpy_accepts(reason, value, expected):
-    """No ndarray required (dev's call, 2026-07-26): converted to the field's dtype, broadcast into its shape."""
+    """No ndarray required: converted to the field's dtype, broadcast into its shape."""
     world, eid = _world_a()
 
     world.get_entity(eid).set_data(a=value)
@@ -250,7 +247,7 @@ def test_set_data_not_broadcastable_rejected():
 
 
 # --- all-or-nothing across the WHOLE call -------------------------------------------------------------------------
-# The one guarantee that has no buffer to fall back on now (#42): validate EVERY field, then write. A per-field
+# The one guarantee that has no buffer to fall back on: validate EVERY field, then write. A per-field
 # "validate this one, write this one" loop passes every test above and fails every test below.
 
 _BAD = [
@@ -363,7 +360,7 @@ def test_set_data_targets_the_correct_row_after_swap_remove():
 
 
 def test_set_data_before_the_spawn_is_committed_rejects():
-    """No row yet -> nowhere to write, so it raises exactly like a read does (dev's call, 2026-07-26). Spawn data
+    """No row yet -> nowhere to write, so it raises exactly like a read does. Spawn data
     belongs in add_entity's kwargs; the entity is writable from the next update() on."""
     world = World([HasA])
     eid = world.add_entity((HasA,), a=np.array([1.0, 2.0], "float32"))     # not committed
@@ -399,7 +396,7 @@ def test_set_data_on_a_field_added_this_tick_rejects_until_update():
 
 def test_set_data_on_a_field_pending_removal_lands_then_is_dropped():
     """Mirror case: remove_component(B) is staged but B's column is still live, so the write lands NOW -- and
-    update() then drops the component and its data. (Under #29 this call was refused by the projection gate.)"""
+    update() then drops the component and its data."""
     world, eid = _world_ab()
     e = world.get_entity(eid)
 

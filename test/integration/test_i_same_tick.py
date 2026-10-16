@@ -8,22 +8,21 @@ re-running is idempotent). Self-contained: own components/systems, no cross-file
 These cover the cases that WORK. The fatal "operate on an entity removed earlier this tick" cases live
 in test/unit/test_world.py as eager-validation specs (they should fail at the call, not at commit).
 """
-from dataclasses import field
 import numpy as np
 
-from microecs import World, Component
+from microecs import World, Component, f32
 
 
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2,))
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2,))
 
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+    radius: np.ndarray = f32((1,))
 
 class SpawnSystem:
     """Spawns one entity, recording its eager id into `sink` so later systems can act on it this tick."""

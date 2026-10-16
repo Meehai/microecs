@@ -5,25 +5,24 @@
 the velocities are Field (per-pool views). Per-pool dispatch splits the full-N mask into per-pool chunks
 (like a Field), so the WallBounce idiom works through a real World query that matches two pools.
 """
-from dataclasses import field
 import numpy as np
 
-from microecs import World, Component
+from microecs import World, Component, f32, i32
 
 class HasPosition2D(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2,))
 
 
 class HasMotion2D(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2,))
 
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+    radius: np.ndarray = f32((1,))
 
 
 class HasColor(Component):
-    color: np.ndarray = field(metadata={"shape": (4,), "dtype": "int32", "default": None})
+    color: np.ndarray = i32((4,))
 
 
 class WallBounceSystem:

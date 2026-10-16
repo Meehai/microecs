@@ -82,7 +82,7 @@ def test_pop_returns_independent_copy():
 
 
 def test_pop_oob_raises():
-    """pop_entity delegates the bounds check to remove_entity, so it rejects the same way (task 34)."""
+    """pop_entity delegates the bounds check to remove_entity, so it rejects the same way."""
     pool = _pool_pos_vel()
     pool.add_entity({"position": np.array([1.0, 2.0], "float32"), "velocity": np.zeros(2, "float32")})
     with pytest.raises(IndexError, match="OOB"):
@@ -124,8 +124,8 @@ def test_add_missing_field_raises():
 
 
 def test_add_wrong_shape_raises():
-    """#49 item 2 turned the pool's three per-field asserts into one `raise ValueError`, so this is a raise
-    that survives `python -O` now, not an assert. The message must name the field and both expectations."""
+    """The pool's shape check is one `raise ValueError`, so it survives `python -O`; not an assert. The message
+    must name the field and both expectations."""
     pool = _pool_pos_vel()
     with pytest.raises(ValueError, match="position"):
         pool.add_entity({
@@ -156,7 +156,7 @@ def test_add_bad_field_error_message_reports_both_dtype_and_shape():
 
 
 def test_remove_oob_raises():
-    """An out-of-bounds index is caller error on a public method, so it's a real `raise` (task 34), not an
+    """An out-of-bounds index is caller error on a public method, so it's a real `raise`, not an
     assert `python -O` would strip. Measured with the check removed (test/manual/34-assert-sweep): the call
     succeeds, a never-live row gets written and `size` goes to -1, after which `len(pool)` itself blows up --
     a corrupt pool complaining somewhere else entirely. Once per removal, so the check is not hot."""
@@ -230,7 +230,7 @@ def test_internal_attrs_cover_every_init_attribute():
     """_POOL_INTERNAL_ATTRS must be EXACTLY the attrs __init__ creates. Unlike Entity/QueryResult, nothing inside
     Pool reads it at runtime (__setattr__ guards via the data dict), so a new attr left out of it breaks nothing
     here -- it silently drops out of POOL_RESERVED_NAMES and a component may then be named after it. This is the
-    only thing standing between that and a shadowed field. `fields_set` (task 15 part B) is why it exists."""
+    only thing standing between that and a shadowed field."""
     pool = _pool_pos_vel()
 
     assert set(vars(pool)) == _POOL_INTERNAL_ATTRS
@@ -263,7 +263,7 @@ def test_object_dtype_pop_returns_same_object():
 
 
 def test_fields_set_mirrors_fields_for_o1_membership():
-    """task 15 part B: Pool exposes fields_set (a set) alongside the ordered fields list, so membership checks
+    """Pool exposes fields_set (a set) alongside the ordered fields list, so membership checks
     (used on the per-entity Entity path) are O(1). It must hold exactly the same names as the ordered list."""
     pool = _pool_pos_vel()
     assert pool.fields_set == set(pool.fields)                     # same names, set form

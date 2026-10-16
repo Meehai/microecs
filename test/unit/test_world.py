@@ -16,8 +16,8 @@ twice) is rejected at the SECOND call, before the poisoning command reaches the 
 dtype / shape / missing-required are checked at the call too, mirroring add_entity (world.py:69 already
 runs _check_components_against_pool eagerly), so no field-data error reaches commit either.
 
-add_entity is the template: it is fully eager (world.py:78) and, since task 44, it is the SOLE validator of
-a spawn -- CommandBuffer.append used to repeat the same pass and no longer does. add_component /
+add_entity is the template: it is fully eager (world.py:78) and it is the SOLE validator of a spawn --
+CommandBuffer.append does not repeat the pass. add_component /
 remove_component have no such single owner (Entity queues a bare command), so for them append IS the gate.
 Those buffer-level unit tests live in test_command_buffer.py; the eager-id-tracking tests below exercise the
 same staging model through the Entity/World API.
@@ -32,7 +32,7 @@ import numpy as np
 import pytest
 
 import microecs
-from microecs import World, Component
+from microecs import World, Component, f32, i32, obj
 from microecs.command_buffer import CommandType
 from microecs.query_result import QUERY_RESULT_RESERVED_NAMES
 from microecs.entity import ENTITY_RESERVED_NAMES
@@ -40,24 +40,24 @@ from microecs.pool import POOL_RESERVED_NAMES
 
 
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2,))
 
 
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2,))
 
 
 class HasRadius(Component):
-    radius: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+    radius: np.ndarray = f32((1,))
 
 
 class HasBox(Component):  # two fields, to exercise multi-field merge/ordering across migrations
-    lo: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
-    hi: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    lo: np.ndarray = f32((2,))
+    hi: np.ndarray = f32((2,))
 
 
 class HasLabel(Component):  # object-dtype field: holds one arbitrary Python object per entity
-    label: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
+    label: np.ndarray = obj((1,))
 
 
 class Frozen(Component):  # zero-field tag: a marker with no data, queried/filtered on as an archetype bit
@@ -65,11 +65,11 @@ class Frozen(Component):  # zero-field tag: a marker with no data, queried/filte
 
 
 class HasScale(Component):  # 0-d array field: exactly one scalar per entity (shape ())
-    scale: np.ndarray = field(metadata={"shape": (), "dtype": "float32", "default": None})
+    scale: np.ndarray = f32(())
 
 
 class HasColorDefault(Component):  # optional field: metadata carries a real default, filled when omitted
-    color: np.ndarray = field(metadata={"shape": (3,), "dtype": "int32", "default": np.array([10, 20, 30], "int32")})
+    color: np.ndarray = i32((3,), default=[10, 20, 30])
 
 
 def test_add_entity_rejects_field_from_an_unrequested_component():
@@ -629,10 +629,10 @@ def test_operate_on_uncommitted_spawn_same_tick():
     np.testing.assert_array_equal(pool.velocity[ix], [3.0, 4.0])
 
 
-# --- task 23 subtask 2: a REJECTED add_entity must not leave bookkeeping behind ------------------------------------
+# --- a REJECTED add_entity must not leave bookkeeping behind ------------------------------------------------------
 # add_entity bumps _last_id and inserts live_entities[id]=None BEFORE the append. That ordering is safe because
-# add_entity validates FIRST -- a bad spawn raises before any bookkeeping happens. Task 44 settled which side owns
-# that validation, and it chose this one, so the ordering is now load-bearing rather than incidental: append does
+# add_entity validates FIRST -- a bad spawn raises before any bookkeeping happens. add_entity owns
+# that validation, so the ordering is load-bearing rather than incidental: append does
 # nothing for ADD_ENTITY but the liveness check, which add_entity has just satisfied by construction. Move the
 # validation out of add_entity without also moving the two mutations after the append, and a rejected spawn burns
 # an id and leaks a dangling live_entities entry -- `world.get_entity(that_id)` hands back an entity that will
@@ -661,9 +661,9 @@ def test_rejected_add_entity_leaves_no_live_entity_and_nothing_staged():
     assert len(world.pools) == 0                            # and nothing materialized
 
 
-# --- task 43 subtask 2 (landed): remove_entity is idempotent WITHIN A TICK ------------------------------------------
+# --- remove_entity is idempotent WITHIN A TICK ---------------------------------------------------------------------
 # A kill is decided by several systems in one tick (damage, TTL, out-of-bounds), so an already-dead id is a NO-OP
-# REQUEST, not a programming error -- it used to raise, and every app wrote the same kill-set helper to avoid it.
+# REQUEST, not a programming error -- raising would make every app write the same kill-set helper to avoid it.
 # "No-op" means staging NOTHING: two REMOVE_ENTITY commands for one id would blow up at commit on
 # _eid_to_pool_ix.pop (world.py:169), so the guard sits in World.remove_entity, BEFORE the append -- the buffer
 # can only raise or stage, it has no way to say "do nothing".
@@ -810,10 +810,9 @@ def test_spawn_into_archetype_reclaimed_by_earlier_despawn_same_tick():
     """Despawn the last entity of an archetype, then spawn a new one of the SAME archetype, same tick.
     The newcomer must land in a live, queryable pool, not an orphaned one.
 
-    #49 changed HOW this holds, and for the better. Reclamation used to happen inside `_pop_from_pool`, mid-commit:
-    the despawn deleted the pool and the spawn built a brand-new one behind it. It is now a single sweep at the END
-    of update(), so the emptied pool is still there when the spawn arrives and gets REUSED -- see the identity
-    assertion below. Same observable result, one less Pool allocation."""
+    Reclamation is a single sweep at the END of update(), not mid-commit inside `_pop_from_pool`, so the emptied
+    pool is still there when the spawn arrives and gets REUSED -- see the identity assertion below. One less Pool
+    allocation than deleting it and building a brand-new one behind it."""
     world = World(components=[HasPosition])
     old = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))
     world.update()
@@ -870,7 +869,7 @@ def test_an_archetype_left_empty_at_the_end_of_a_tick_is_reclaimed():
     _assert_pool_ids_invariants(world)
 
 
-# --- fully-eager staging (task 178, landed) ----------------------------------------------------------------------
+# --- fully-eager staging -----------------------------------------------------------------------------------------
 # The command buffer is a STAGING area, like git's index: every op is FULLY validated at the call, so only valid
 # commands ever enter it and update() is a pure, infallible apply -- it materializes, it does NOT re-validate or
 # roll back (NOT atomic). Two halves, both eager:
@@ -1009,9 +1008,9 @@ def test_world_accepts_object_dtype_component():
 
 
 def test_world_rejects_str_dtype_component():
-    """`str` is no longer an allowed dtype. numpy strings are fixed-width (<U n) and a pre-allocated pool
+    """`str` is not an allowed dtype. numpy strings are fixed-width (<U n) and a pre-allocated pool
     can't size the width ahead of the data -- writes silently truncate. A field declaring dtype 'str' must
-    fail loud at World construction (where the bad field lives), not corrupt data later. Python strings now
+    fail loud at World construction (where the bad field lives), not corrupt data later. Python strings
     live in dtype='object' (see test_object_field_holds_python_string_and_compares_by_equality)."""
     class HasName(Component):
         name: np.ndarray = field(metadata={"shape": (1,), "dtype": "str", "default": None})
@@ -1031,7 +1030,7 @@ def test_world_rejects_non_dataclass_component():
 
 @pytest.mark.parametrize("bad", ["serializable", ("serializable",), {"serializable"}])
 def test_world_rejects_non_list_extra_metadata(bad):
-    """extra_metadata is a ctor arg -- user input -- so a wrong type is a real `raise` (task 34), not an assert.
+    """extra_metadata is a ctor arg -- user input -- so a wrong type is a real `raise`, not an assert.
     Measured with the assert stripped by -O: a bare str is splatted into single characters and construction dies
     later with `expected_meta = {'i','e','s','z',...}` -- the right rejection for an unreadable reason."""
     with pytest.raises(TypeError):
@@ -1039,12 +1038,12 @@ def test_world_rejects_non_list_extra_metadata(bad):
 
 
 def _two_components_sharing_a_field_name() -> tuple[type[Component], type[Component]]:
-    """Two components declaring the SAME field name -- illegal: rejected at World construction (task 23)."""
+    """Two components declaring the SAME field name -- illegal: rejected at World construction."""
     class HasFoo(Component):
-        payload: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+        payload: np.ndarray = f32((1,))
 
     class HasBar(Component):
-        payload: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})  # same name!
+        payload: np.ndarray = f32((1,))  # same name!
 
     return HasFoo, HasBar
 
@@ -1053,11 +1052,10 @@ def test_world_rejects_duplicate_field_name_across_components():
     """Two components may not declare the SAME field name, rejected at construction -- earliest and loudest.
 
     A pool merges fields by name and query() sums field names across components, so a clash would silently
-    alias two components' data. It is also what makes `entity.set_data(**fields)` well-defined (#29): the
+    alias two components' data. It is also what makes `entity.set_data(**fields)` well-defined: the
     field name alone must identify its component, via world.field_to_component.
 
-    This used to be caught only late, inside update()'s field-dict merge ("Duplicate keys") -- reachable
-    because World() accepted the clash. With the construction guard that path is now unreachable through the
+    With the construction guard, update()'s field-dict merge ("Duplicate keys") is unreachable through the
     public API, so the merge check in _do_add_component is pure defence-in-depth and has no test of its own."""
     HasFoo, HasBar = _two_components_sharing_a_field_name()
 
@@ -1070,19 +1068,19 @@ def test_world_rejects_duplicate_field_name_across_components():
 # checks the allow-list BEFORE the data-field branch, so `qr.entity_ids = v` replaces the id array instead of
 # scattering, and len()/repr()/id lookups then read the written value. World._check_components (world.py:264) is the
 # one gate: ENTITY_RESERVED_NAMES | POOL_RESERVED_NAMES | QUERY_RESULT_RESERVED_NAMES, each set being that class's
-# instance attrs plus its class dict. Both task-31 gaps are closed -- Pool's names are in the union, and every check
-# is a real `raise`, so `python -O` no longer erases them (pinned below).
+# instance attrs plus its class dict. Pool's names are in the union, and every check is a real `raise`, so
+# `python -O` does not erase them (pinned below).
 
 def _component_with_field(name: str) -> type[Component]:
     """A one-field Component whose field is named `name` (a dataclass field name can't be dynamic in a class body)."""
     return type("HasClash", (Component,), {
         "__annotations__": {name: np.ndarray},
-        name: field(metadata={"shape": (1,), "dtype": "float32", "default": None}),
+        name: f32((1,)),
     })
 
 
 # A field name colliding with a class's own attribute is rejected with ValueError (world.py:277) -- the guard is a
-# real raise, so it survives `python -O` (task 31 gap 2, landed).
+# real raise, so it survives `python -O`.
 _REJECTED = ValueError
 
 
@@ -1098,18 +1096,18 @@ def test_world_rejects_field_name_colliding_with_queryresult_internals(name):
 @pytest.mark.parametrize("name", sorted(POOL_RESERVED_NAMES - QUERY_RESULT_RESERVED_NAMES))
 def test_world_rejects_field_name_colliding_with_pool_reserved_names(name):
     """Same rule for POOL's own names -- attrs (size/data/...) AND methods (add_entity/pop_entity/...), since
-    Pool.__getattr__ only runs after normal lookup fails. These used to slip past World and blow up much later,
-    when the first entity of that archetype commits and Pool rejects at construction -- the late, quiet failure
-    this construction-time check exists to prevent. One union, one gate."""
+    Pool.__getattr__ only runs after normal lookup fails. Past World they would blow up much later, when the
+    first entity of that archetype commits and Pool rejects at construction -- the late, quiet failure this
+    construction-time check exists to prevent. One union, one gate."""
     with pytest.raises(_REJECTED, match=name):
         World(components=[_component_with_field(name)])
 
 
 def test_world_reserved_name_guard_survives_python_dash_o():
     """The guard must survive `python -O`, which strips asserts. A component definition is user input, so it is
-    `raise` territory, not `assert` (asserts are for our own bugs). Before task 31 this was measured broken: under
-    -O, World() accepted a field named `entity_ids` and the first write through a QueryResult silently replaced the
-    id array. Run in a subprocess because -O is decided at interpreter start."""
+    `raise` territory, not `assert` (asserts are for our own bugs). As an assert, under -O World() would accept a
+    field named `entity_ids` and the first write through a QueryResult would silently replace the id array. Run in
+    a subprocess because -O is decided at interpreter start."""
     script = ("import numpy as np\n"
               "from dataclasses import field\n"
               "from microecs import World, Component\n"
@@ -1123,7 +1121,7 @@ def test_world_reserved_name_guard_survives_python_dash_o():
     assert res.returncode != 0, f"-O accepted a field named 'entity_ids'\nstdout: {res.stdout}\nstderr: {res.stderr}"
 
 
-# --- task 35: World's own kwarg names are a fourth collidable surface ----------------------------------------------
+# --- World's own kwarg names are a fourth collidable surface -------------------------------------------------------
 # The union above covers the three CLASSES' attrs+methods. It misses the keyword-PARAMETER names of the World
 # methods that take field data as **kwargs, so `**kwargs` shadows the parameter. These four pass World() and only
 # die at the first add_entity, with an internal "got multiple values for argument" TypeError that names a parameter
@@ -1142,7 +1140,7 @@ def test_object_field_holds_python_string_and_compares_by_equality():
     field. The full string is kept (no <U width cap, no truncation) and string `==` on the pool column
     works -- element-wise and vectorised."""
     class HasKind(Component):  # e.g. a 'component_kind' tag stored as a string-in-object
-        kind: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
+        kind: np.ndarray = obj((1,))
 
     world = World(components=[HasKind])
     a = world.add_entity(components=(HasKind,), kind=np.array(["enemy"], dtype=object))             # idx 0
@@ -1274,7 +1272,7 @@ def test_get_entity_unknown_id_raises():
         world.get_entity(123)
 
 
-# --- lazy Entity allocation + cache (task 15, part A) ------------------------------------------------------------
+# --- lazy Entity allocation + cache -------------------------------------------------------------------------------
 # live_entities does two jobs: a liveness registry (id present == live) and an Entity cache. The Entity object is
 # NOT built at add_entity (a pure-vectorised sim that never calls get_entity pays zero Entity objects); it is built
 # on the FIRST get_entity and cached (same object thereafter), and evicted at remove_entity. These pin that.
@@ -1398,13 +1396,12 @@ def test_pool_ids_stay_aligned_through_random_churn():
     assert len(world.live_entities) > 0                            # sanity: the churn left a populated world
 
 
-# --- #49 item 1: the two despawn paths must not drift ---------------------------------------------------------------
-# Dropping the discarded copy added `_remove_from_pool` beside `_pop_from_pool`. The refactor kept the duplication
-# small on purpose -- hoisting empty-pool reclamation into a single sweep at the end of update() took the biggest
-# shared block out of both -- but they still carry the same pop-swap and id-repointing, and differ only in whether
-# the row is copied out first. update() sends REMOVE_ENTITY to the no-copy one and component migration to the
-# copying one, so a fix applied to one and not the other silently desyncs half the churn paths. Nothing else
-# compares them directly, so this does.
+# --- the two despawn paths must not drift -------------------------------------------------------------------------
+# `_remove_from_pool` (no copy) sits beside `_pop_from_pool`. The duplication is small on purpose -- empty-pool
+# reclamation is a single sweep at the end of update(), out of both -- but they still carry the same pop-swap and
+# id-repointing, and differ only in whether the row is copied out first. update() sends REMOVE_ENTITY to the no-copy
+# one and component migration to the copying one, so a fix applied to one and not the other silently desyncs half
+# the churn paths. Nothing else compares them directly, so this does.
 
 
 def _world_shape(world: World) -> dict:
@@ -1443,7 +1440,7 @@ def test_the_two_despawn_paths_leave_identical_world_state(victims):
 
 def test_the_last_despawn_in_a_world_leaves_no_bookkeeping_behind():
     """Drain the world entirely through the no-copy path: every map must end empty. Neither despawn path reclaims
-    pools any more -- the end-of-update sweep does -- so this pins that the sweep covers the no-copy path too, and
+    pools -- the end-of-update sweep does -- so this pins that the sweep covers the no-copy path too, and
     that nothing is left dangling in `pool_to_components` / `_pool_ids` / `_eid_to_pool_ix`."""
     world = World(components=[HasPosition, HasVelocity])
     eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
@@ -1640,7 +1637,7 @@ def test_world_rejects_component_field_named_like_a_queryresult_attribute(reserv
     """A component whose field is named like a QueryResult attribute must be rejected at world creation, rather
     than be silently shadowed when queried."""
     bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
-                                      reserved: field(metadata={"shape": (2,), "dtype": "float32", "default": None})})
+                                      reserved: f32((2,))})
     with pytest.raises(_REJECTED):
         World(components=[bad])
 
@@ -1656,7 +1653,7 @@ def test_world_rejects_component_field_named_like_an_entity_attribute(reserved):
     """A component whose field is named like an Entity attribute/method must be rejected at world creation,
     rather than be silently shadowed when read/written through get_entity."""
     bad = type("Bad", (Component,), {"__annotations__": {reserved: np.ndarray},
-                                      reserved: field(metadata={"shape": (2,), "dtype": "float32", "default": None})})
+                                      reserved: f32((2,))})
     with pytest.raises(_REJECTED):
         World(components=[bad])
 
@@ -1671,10 +1668,10 @@ def test_extra_metadata_required_strictly_on_every_field():
     of which 2 raise: a required key missing, OR an undeclared extra key present.
     """
     class Plain(Component):    # field carries only the always-required keys
-        a: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+        a: np.ndarray = f32((2,))
 
     class Serial(Component):   # same field, plus the extra "serializable" key
-        b: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "serializable": True, "default": None})
+        b: np.ndarray = f32((2,), serializable=True)
 
     World([Plain])                                          # ok: {shape,dtype} == {shape,dtype}
     World([Serial], extra_metadata=["serializable"])  # ok: {shape,dtype,ser} == {shape,dtype,ser}
@@ -1747,10 +1744,10 @@ def test_zero_dim_array_field_roundtrips():
 
 
 def test_add_entity_wrong_dtype_crashes_eagerly():
-    """A field declared float32 must reject an int32 array *at the add_entity call* (see task 170).
+    """A field declared float32 must reject an int32 array *at the add_entity call*.
 
-    Field-name validation is eager (bad name crashes at the call) and, since task 170, dtype is too:
-    _check_components_against_pool now validates dtype against component metadata, so a wrong dtype
+    Field-name validation is eager (bad name crashes at the call) and dtype is too:
+    _check_components_against_pool validates dtype against component metadata, so a wrong dtype
     crashes at the call instead of slipping through to pool.add_entity at world.update()."""
     world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
 
@@ -1760,10 +1757,10 @@ def test_add_entity_wrong_dtype_crashes_eagerly():
 
 
 def test_add_entity_wrong_shape_crashes_eagerly():
-    """A field declared shape (1,) must reject a (2,) array *at the add_entity call* (see task 170).
+    """A field declared shape (1,) must reject a (2,) array *at the add_entity call*.
 
     Companion to test_add_entity_wrong_dtype_crashes_eagerly: shape is the other half of the same guard.
-    Since task 170, _check_components_against_pool validates shape against component metadata, so a wrong
+    _check_components_against_pool validates shape against component metadata, so a wrong
     shape crashes at the call instead of slipping through to pool.add_entity at world.update()."""
     world = World(components=[HasRadius])  # HasRadius.radius is shape (1,) dtype float32
 
@@ -1815,16 +1812,15 @@ def test_add_entity_rejects_non_convertible_and_bad_shape():
     assert len(world._command_buffer) == 0
 
 
-# --- task 44 (landed): the spawn path validates ONCE ----------------------------------------------------------------
-# add_entity ran _validate_components + _defaults_for, then CommandBuffer.append ran BOTH again on the same args --
-# a superset-check of the check that had just happened, whose _defaults_for could only return {}. ~2.0 us/spawn:
-# 34% of add_entity, 20% of a full spawn, 16% of a spawn+despawn pair, landing on w5 churn (the one workload
-# microecs loses at every N). Fixed by giving the verb ONE owner: World.add_entity validates, and append -- whose
-# only ADD_ENTITY producer is world.py:82 -- stages it verbatim.
+# --- the spawn path validates ONCE ----------------------------------------------------------------------------------
+# The verb has ONE owner: World.add_entity runs _validate_components + _defaults_for, and append -- whose only
+# ADD_ENTITY producer is world.py:82 -- stages it verbatim. A second pass would be a superset-check of the check that
+# just happened, whose _defaults_for could only return {}: ~2.0 us/spawn, 34% of add_entity, 20% of a full spawn,
+# 16% of a spawn+despawn pair, landing on w5 churn (the one workload microecs loses at every N).
 #
-# These two are the regression guard, and they catch BOTH directions: a re-added pass in append (the bug that was
-# removed) and a second pass anywhere else on the spawn path. Everything else about the change is invisible, which
-# is exactly why a plain behaviour test cannot protect it -- the counter is the test.
+# These two catch BOTH directions: a pass added in append and a second pass anywhere else on the spawn path. The
+# extra pass is invisible otherwise, which is exactly why a plain behaviour test cannot protect it -- the counter is
+# the test.
 
 
 def _count_calls(world, method_name):
@@ -1842,7 +1838,7 @@ def _count_calls(world, method_name):
 
 
 def test_spawn_validates_exactly_once():
-    """One spawn, one validation pass. The whole point of task 44."""
+    """One spawn, one validation pass."""
     world = World([HasPosition])
     calls = _count_calls(world, "_validate_components")
 
@@ -1878,12 +1874,12 @@ def test_rejected_spawn_validates_exactly_once_too():
     assert len(calls) == 1
 
 
-# --- task 43 subtask 1 (landed): duplicate components at spawn ------------------------------------------------------
-# _validate_components de-duped into a set for its checks, then _get_entity_pool iterated the LIST -- so a dup
-# built pool.fields == ['position', 'position']: every add/remove/realloc did that column twice, forever, and
-# to_dict() reported the malformed component list back out. The archetype key is a bitmask, so the FIRST caller's
-# argument list decided the pool's shape: later well-formed spawns of the same archetype landed in the bad pool.
-# Closed by one `len(cs) != len(components)` raise (world.py:232), beside the empty/unknown checks.
+# --- duplicate components at spawn ---------------------------------------------------------------------------------
+# _validate_components de-dupes into a set for its checks, while _get_entity_pool iterates the LIST -- so an
+# accepted dup would build pool.fields == ['position', 'position']: every add/remove/realloc doing that column
+# twice, forever, and to_dict() reporting the malformed component list back out. The archetype key is a bitmask, so
+# the FIRST caller's argument list decides the pool's shape: later well-formed spawns of the same archetype would
+# land in the bad pool. One `len(cs) != len(components)` raise (world.py:232), beside the empty/unknown checks.
 
 
 def test_add_entity_rejects_duplicate_components():
@@ -1926,7 +1922,7 @@ def test_query_with_a_repeated_component_is_harmless():
     np.testing.assert_array_equal(world.query(HasPosition, HasPosition).position.numpy(), [[1.0, 2.0]])
 
 
-# --- default metadata (task 171): omitted fields fall back to the component's declared default ---
+# --- default metadata: omitted fields fall back to the component's declared default ---
 
 def test_add_entity_fills_default_when_field_omitted():
     """Omitting a field whose metadata declares a (non-None) default fills it with that default."""
@@ -1964,14 +1960,14 @@ def test_default_and_explicit_coexist_per_row():
 
 
 def test_component_default_wrong_dtype_rejected():
-    """A default whose dtype mismatches the declared dtype is rejected (see task 171).
+    """A default whose dtype mismatches the declared dtype is rejected.
 
     Filling a default runs it through the same dtype check as an explicit value, so an int32 default for
     a float32 field raises TypeError -- at World() construction if validated there, else when the default
     is filled at the add_entity call. (Assumes the same raise-TypeError convention as the explicit-value
     dtype check; tighten if the construction-time guard chooses a different exception.)"""
     class BadDtypeDefault(Component):
-        x: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": np.zeros((1,), "int32")})
+        x: np.ndarray = f32((1,), default=np.zeros((1,), "int32"))
 
     with pytest.raises(TypeError):
         world = World([BadDtypeDefault])
@@ -1979,13 +1975,13 @@ def test_component_default_wrong_dtype_rejected():
 
 
 def test_component_default_wrong_shape_rejected():
-    """A default whose shape mismatches the declared shape is rejected (see task 171).
+    """A default whose shape mismatches the declared shape is rejected.
 
     Companion to test_component_default_wrong_dtype_rejected: a (2,) default for a (1,) field raises
     ValueError -- at World() construction if validated there, else when the default is filled at the
     add_entity call."""
     class BadShapeDefault(Component):
-        x: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": np.zeros((2,), "float32")})
+        x: np.ndarray = f32((1,), default=np.zeros((2,), "float32"))
 
     with pytest.raises(ValueError):
         world = World([BadShapeDefault])
@@ -1993,7 +1989,7 @@ def test_component_default_wrong_shape_rejected():
 
 
 def test_add_component_fills_default_when_field_omitted():
-    """add_component fills a defaulted field that's omitted, exactly like add_entity (see task 171)."""
+    """add_component fills a defaulted field that's omitted, exactly like add_entity."""
     world = World([HasPosition, HasColorDefault])
     eid = world.add_entity((HasPosition,), position=np.array([1, 2], "float32"))
     world.update()
@@ -2019,11 +2015,11 @@ def test_add_component_explicit_value_overrides_default():
     np.testing.assert_array_equal(pool.color[0], np.array([1, 2, 3], "int32"))
 
 
-# --- field -> component map: what makes entity.set_data(**fields) possible (microecs #29) -------------------------
+# --- field -> component map: what makes entity.set_data(**fields) possible ----------------------------------------
 # set_data takes field names, no component arg, so the World must be able to answer "which component owns field
 # 'pose'?". That lookup is world.field_to_component, built at __init__ and keyed by field NAME. It is only
 # well-defined if names are unique across components -- so a duplicate name is rejected at world creation
-# (microecs #23). Two things to pin: the map is keyed by str (not by dataclasses.Field, which hashes by identity
+# Two things to pin: the map is keyed by str (not by dataclasses.Field, which hashes by identity
 # and would make both the lookup and the duplicate check silently useless), and the duplicate actually raises.
 
 def test_field_to_component_is_keyed_by_field_name():
@@ -2038,8 +2034,8 @@ def test_field_to_component_is_keyed_by_field_name():
 
 def test_field_to_component_resolves_the_name_entity_set_data_passes():
     """The map is the resolution set_data does: a field name reaches the component that owns it -- which is how
-    one call can span several components and still validate each field against the right schema (#42: the write
-    itself is eager, so the proof is the value in the pool, no longer a SET_DATA command carrying the type)."""
+    one call can span several components and still validate each field against the right schema (the write
+    itself is eager, so the proof is the value in the pool)."""
     world = World([HasPosition, HasVelocity])
     eid = world.add_entity((HasPosition, HasVelocity),
                            position=np.array([1, 2], "float32"), velocity=np.array([3, 4], "float32"))
@@ -2058,15 +2054,15 @@ def test_world_accepts_the_same_component_field_names_in_separate_worlds():
     World([HasPosition, HasBox])                                        # no leakage between worlds
 
 
-# --- task 41: a failed update() must not brick the world ------------------------------------------------------------
-# update() is deliberately NOT atomic (#22), which is a choice about *partial application* -- not a licence to leave
+# --- a failed update() must not brick the world ---------------------------------------------------------------------
+# update() is deliberately NOT atomic, which is a choice about *partial application* -- not a licence to leave
 # the buffer unusable. Today a mid-loop failure leaves it intact, with `args["components"]` already popped off the
 # command that was being applied, so EVERY later update() raises `KeyError: 'components'`. The world is bricked, and
 # the error names a dict key rather than the cause. An app that logs-and-continues (any server loop) spins on it.
 #
-# The trigger below is public API, not a monkeypatch: #39's aliasing. add_entity holds YOUR array by reference, so a
-# resize after staging slips a shape past the validation that already approved it. #39 (snapshot staged writes) is
-# what removes the trigger; task 41 is what stops the failure from being permanent -- both are wanted.
+# The trigger below is public API, not a monkeypatch: aliasing. add_entity holds YOUR array by reference, so a
+# resize after staging slips a shape past the validation that already approved it. Snapshotting staged writes would
+# remove the trigger; a buffer that survives the failure stops it from being permanent -- both are wanted.
 # Note the failure is the same under `python -O`: the tripped guard is an assert, but numpy's broadcast raises
 # anyway, hence the (AssertionError, ValueError) pair.
 
@@ -2088,7 +2084,7 @@ def test_failed_update_propagates_the_original_error():
         world.update()
 
 
-@pytest.mark.xfail(strict=True, reason="task 41: the buffer survives a failed update(), commands and all")
+@pytest.mark.xfail(strict=True, reason="the buffer survives a failed update(), commands and all")
 def test_failed_update_leaves_an_empty_buffer():
     """A buffer that outlives its own failed commit is a buffer whose commands may apply twice."""
     world = World(components=[HasPosition, HasVelocity])
@@ -2099,7 +2095,7 @@ def test_failed_update_leaves_an_empty_buffer():
     assert len(world._command_buffer) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="task 41: the popped `components` key bricks every later update()")
+@pytest.mark.xfail(strict=True, reason="the popped `components` key bricks every later update()")
 def test_update_after_a_failed_update_is_a_clean_noop():
     """The headline. One bad frame must cost one frame -- not the world. Today the second update() raises
     `KeyError: 'components'`, and so does the third, and every one after it."""
@@ -2114,7 +2110,7 @@ def test_update_after_a_failed_update_is_a_clean_noop():
     assert len(world._command_buffer) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="task 41: _cache is only dropped after the loop, so a partial apply keeps it")
+@pytest.mark.xfail(strict=True, reason="_cache is only dropped after the loop, so a partial apply keeps it")
 def test_failed_update_drops_the_query_cache():
     """A partial apply moved rows, so every cached QueryResult is suspect -- whether or not the loop finished."""
     world = World(components=[HasPosition, HasVelocity])

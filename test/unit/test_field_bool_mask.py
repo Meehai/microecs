@@ -1,9 +1,9 @@
-"""Unit tests for `qr.field[mask]` boolean-mask reads & writes (task 51).
+"""Unit tests for `qr.field[mask]` boolean-mask reads & writes.
 
 The whole contract is numpy parity: `qr.field[mask]` must behave exactly like
 `qr.field.numpy()[mask]` for READS (gather: one copy) and WRITES (scatter into the pool rows) --
-for single-pool queries (`_QRArray`, plain ndarray views -- works today) and for multi-pool
-queries (`QRField`, the entity-axis bool mask branch that this task adds).
+for single-pool queries (`_QRArray`, plain ndarray views) and for multi-pool
+queries (`QRField`, the entity-axis bool mask branch).
 
 Pins beyond parity:
 
@@ -16,35 +16,34 @@ Pins beyond parity:
 - exception types pinned: non-bool dtype -> TypeError, wrong length -> ValueError,
   wrong value shape -> ValueError.
 """
-from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import World, Component
+from microecs import World, Component, f32, i32, obj, boolf
 
 
 class HasVel(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2,))
 
 
 class HasAcc(Component):
-    acceleration: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    acceleration: np.ndarray = f32((2,))
 
 
 class HasCount(Component):
-    count: np.ndarray = field(metadata={"shape": (1,), "dtype": "int32", "default": None})
+    count: np.ndarray = i32((1,))
 
 
 class HasFlag(Component):
-    flag: np.ndarray = field(metadata={"shape": (1,), "dtype": "bool", "default": None})
+    flag: np.ndarray = boolf((1,))
 
 
 class HasName(Component):
-    name: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
+    name: np.ndarray = obj((1,))
 
 
 class HasTag(Component):  # forces a second archetype/pool for the HasVel query
-    tag: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+    tag: np.ndarray = f32((1,))
 
 
 # row values (two pools: 2 rows without HasTag + 3 rows with HasTag)
@@ -86,7 +85,7 @@ def test_read_mask_matches_numpy_multipool(mask):
 
 
 def test_read_mask_matches_numpy_single_pool():
-    """Single-pool queries return an ndarray view -> masks already work (regression pin)."""
+    """Single-pool queries return an ndarray view -> masks work as plain numpy."""
     _, qr = _world(multipool=False)
     assert np.array_equal(qr.velocity[MASK5], qr.velocity.numpy()[MASK5])
 

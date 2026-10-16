@@ -5,20 +5,19 @@ robosim drives cameras one entity at a time:
     qr = world.query(HasPose, HasFPV)
     for i in range(len(qr)):
         cam, pose = qr.fpv_camera[i].item(), qr.pose[i]
-        cam.set_position(position=pose[0:3, 3], up=pose[0:3, 1],
+        cam.set_pose(position=pose[0:3, 3], up=pose[0:3, 1],
                          target=pose[0:3, 3] + pose[0:3, 2])
 
 `fpv_camera` is an object-dtype component -- a camera you call methods on -- so the work can't be vectorised;
 it's a genuine per-entity loop. These tests drive it over a query that spans two archetypes, both ways: by
 iterating the fields (`zip(qr.fpv_camera, qr.pose)`) and by id (`world.get_entity(qr.entity_ids[i])`), with
-each `pose` a real (4, 4) view sliced by column. (Task 16 removed the old `qr.pose[i]` int-index spelling;
-random per-entity access now goes through `get_entity`.)
+each `pose` a real (4, 4) view sliced by column. `qr.pose[i]` int-indexing is not allowed; random per-entity
+access goes through `get_entity`.
 """
-from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import World, Component
+from microecs import World, Component, f32, obj
 
 class FakeCamera:
     """Stand-in for robosim's camera: records the last set_position call so the test can read it back."""
@@ -26,20 +25,20 @@ class FakeCamera:
         self.name = name
         self.seen: tuple | None = None
 
-    def set_position(self, position, up, target):
+    def set_pose(self, position, up, target):
         self.seen = (position.tolist(), up.tolist(), target.tolist())
 
 
 class HasFPV(Component):  # object-dtype: each entity carries a camera OBJECT, methods called one by one
-    fpv_camera: np.ndarray = field(metadata={"shape": (), "dtype": "object", "default": None})
+    fpv_camera: np.ndarray = obj(())
 
 
 class HasPose(Component):  # a 4x4 rigid transform; columns are right/up/forward, last column is translation
-    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32", "default": None})
+    pose: np.ndarray = f32((4, 4))
 
 
 class HasName(Component):  # only here to force a SECOND archetype so the query spans two pools
-    name: np.ndarray = field(metadata={"shape": (), "dtype": "object", "default": None})
+    name: np.ndarray = obj(())
 
 
 def _pose(rot3x3: list[list[float]], translation: list[float]) -> np.ndarray:
@@ -62,7 +61,7 @@ class FPVCameraSystem:
     def __call__(self, world: World):
         qr = world.query(HasPose, HasFPV)
         for cam, pose in zip(qr.fpv_camera, qr.pose):
-            cam.item().set_position(position=pose[0:3, 3], up=pose[0:3, 1],
+            cam.item().set_pose(position=pose[0:3, 3], up=pose[0:3, 1],
                                     target=pose[0:3, 3] + pose[0:3, 2])
 
 
@@ -110,14 +109,14 @@ def test_object_component_unwraps_with_item_during_iteration():
 
 
 def test_fpv_camera_per_entity_read_via_get_entity():
-    """robosim's per-entity read after task 16: the old `qr.pose[i]` int-index is forbidden (raises TypeError);
+    """robosim's per-entity read: a `qr.pose[i]` int-index is forbidden (raises TypeError);
     the entity is fetched by id with `world.get_entity(qr.entity_ids[i])`, which gives the same (4, 4) pose view
     and the same camera object, out of whichever pool the entity lives in."""
     world, cam_a, _ = _world_with_two_cameras()
     qr = world.query(HasPose, HasFPV)
 
     with pytest.raises(TypeError):
-        qr.pose[0]                                          # the old indexed spelling is gone
+        qr.pose[0]                                          # the indexed spelling is forbidden
 
     e0 = world.get_entity(int(qr.entity_ids[0]))           # entity 0, by id
     assert e0.pose.shape == (4, 4)

@@ -9,26 +9,24 @@ or raise the required-KeyError if default is None.
 """
 import numpy as np
 import pytest
-from dataclasses import field
 
-from microecs import World, Component
+from microecs import World, Component, f32, i32, obj, zeros
 
 
 class HasPosition(Component):
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2,))
 
 
 class HasTag(Component):
-    tag: np.ndarray = field(metadata={"shape": (1,), "dtype": "object", "default": None})
+    tag: np.ndarray = obj((1,))
 
 
 class HasLevel(Component):
-    level: np.ndarray = field(metadata={"shape": (1,), "dtype": "int32", "default": None})
+    level: np.ndarray = i32((1,))
 
 
 class HasVelDefault(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32",
-                                           "default": np.zeros(2, "float32")})
+    velocity: np.ndarray = f32((2,), default=zeros)
 
 
 def test_array_like_values_converted():

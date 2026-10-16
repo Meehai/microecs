@@ -1,4 +1,4 @@
-image: python:3.12-bullseye
+image: python:3.12-bookworm
 
 workflow:
   rules:

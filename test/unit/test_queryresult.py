@@ -6,16 +6,15 @@ the test pins QueryResult's own behaviour, nothing else.
 """
 import copy
 import pickle
-from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import Pool, Component, QRField
+from microecs import Pool, Component, QRField, f32
 from microecs.query_result import QueryResult, _QR_INTERNAL_ATTRS
 
 
 class HasPosition(Component):  # owns the `position` field the pools below carry
-    position: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    position: np.ndarray = f32((2,))
 
 
 def _pool_with(n: int) -> Pool:
@@ -94,8 +93,8 @@ def _query(pools: list[Pool], *fields: str, entity_ids: list[int] = None) -> Que
     """A QueryResult over `pools` for the named fields, carrying their (test-fixed) shapes and dtypes. `entity_ids`
     default to 0..N-1 in pool-by-pool row order (World hands out the real ids; here any pool-aligned ids do).
 
-    QueryResult no longer takes a prebuilt id array: `entity_ids` is a lazy property over a {pool: [ids]} map (#47),
-    because materialising it was 98% of a cold query. So the helper slices the flat list into per-pool chunks and
+    QueryResult takes no prebuilt id array: `entity_ids` is a lazy property over a {pool: [ids]} map, because
+    materialising it is 98% of a cold query. So the helper slices the flat list into per-pool chunks and
     callers keep passing a flat one -- the pool-by-pool ordering the map implies is the same ordering they assert on.
     """
     ids = list(range(sum(len(p) for p in pools))) if entity_ids is None else list(entity_ids)
@@ -196,12 +195,12 @@ def test_inplace_op_with_full_n_raw_operand_splits_across_pools():
 
 def test_unsupported_ops_are_rejected():
     """Operations with no per-pool meaning raise instead of returning a wrong result: a cross-pool reduction
-    (np.sum) raises. (A masked write `qr.velocity[mask] = 0` USED to be here; task 51 gave masks numpy
-    gather/scatter semantics — see test_field_bool_mask.py.)
+    (np.sum) raises. (Masked writes `qr.velocity[mask] = 0` have numpy gather/scatter semantics — see
+    test_field_bool_mask.py.)
 
-    Note: the whitelist in __array_function__ was removed -- any numpy func now runs per-pool and is policed by
-    the `len(result) == rows` guard in _apply_fn_on_parts. A full reduction yields a scalar, so that guard's
-    `len(...)` raises TypeError today (not the old NotImplemented->TypeError). A clean AssertionError would need
+    Note: __array_function__ has no whitelist -- any numpy func runs per-pool and is policed by the
+    `len(result) == rows` guard in _apply_fn_on_parts. A full reduction yields a scalar, so that guard's
+    `len(...)` raises TypeError. A clean AssertionError would need
     an `ndim >= 1` guard -- see test_field_shape_invariant.py::test_op_breaking_entity_axis_raises."""
     qr = _query([_moving_pool(2, [1.0, 0.0]), _moving_pool(3, [0.0, 2.0])], "position", "velocity")
 
@@ -330,7 +329,7 @@ def test_ellipsis_indexing_reshapes_a_mask_to_broadcast_over_a_higher_rank_field
 def test_entity_axis_index_stays_rejected():
     """The whole entity axis is off-limits for SELECTORS: a bare int (`qr.position[i]`) or a slice
     (`qr.position[0:1]`) single out / cross entities, which spans pools, so they raise TypeError. Boolean
-    MASKS are the exception (task 51): `qr.position[mask]` gathers/scatters with numpy parity — see
+    MASKS are the exception: `qr.position[mask]` gathers/scatters with numpy parity — see
     test_field_bool_mask.py. Per-entity access goes through `world.get_entity(qr.entity_ids[i])`;
     iteration through `zip(qr.position, ...)`."""
     qr = _query([_drawable_pool([([0.0, 0.0], 5.0)]), _drawable_pool([([1.0, 1.0], 6.0)])],
@@ -343,7 +342,7 @@ def test_entity_axis_index_stays_rejected():
 
 
 def test_single_entity_int_index_is_forbidden():
-    """A bare-int entity index is gone (task 16) FOR A MULTI-POOL query: `qr.position[i]` raises TypeError for
+    """No bare-int entity index FOR A MULTI-POOL query: `qr.position[i]` raises TypeError for
     ANY int (in-range, negative, out-of-range) because it would cross pools. Per-entity access is
     `world.get_entity(qr.entity_ids[i])`, iteration is `zip(qr.position, ...)`. NOTE: a SINGLE-pool query is a
     raw ndarray (_QRArray), so int indexing there is plain numpy -- the guard is a QRField (multi-pool) feature."""
@@ -363,16 +362,15 @@ def test_single_entity_int_index_is_forbidden():
     assert _query([_pos_pool([[7.0, 7.0]])], "position").position[0].tolist() == [7.0, 7.0]
 
 
-# --- both dunders now ask ONE question about the key (task 33) ------------------------------------------------------
-# They used to each spell out "is the entity axis untouched?" and disagreed: __setitem__ accepted a bare slice(None),
-# __getitem__ accepted Ellipsis or a TUPLE leading with `:` -- but never a bare slice(None). Python desugars
-# `x[k] += v` into __getitem__(k) -> op -> __setitem__(k, ...), so the read half rejected the exact key the write half
-# allowed: `qr.f[:] = v` worked, `qr.f[:] += 1` raised, and `qr.f[...]` -- the identical thing to numpy -- worked.
-# `QRField._selects_axis0` is now the single predicate both call (qr_field.py:86, :104), so they cannot drift again.
+# --- both dunders ask ONE question about the key -------------------------------------------------------------------
+# Python desugars `x[k] += v` into __getitem__(k) -> op -> __setitem__(k, ...), so if the read and write halves judge
+# "is the entity axis untouched?" differently, `qr.f[:] = v` works while `qr.f[:] += 1` raises -- and `qr.f[...]`,
+# the identical thing to numpy, works. `QRField._selects_axis0` is the single predicate both call (qr_field.py:86,
+# :104), so they cannot drift.
 
 def test_qr_field_whole_slice_read_returns_the_whole_field():
     """Reading `qr.f[:]` must hand back every entity: it selects nothing, so it crosses no pool boundary. Pinned
-    against `qr.f[...]`, which means the same to numpy and already works -- the two must not disagree."""
+    against `qr.f[...]`, which means the same to numpy -- the two must not disagree."""
     qr = _query([_pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])], "position")
 
     assert qr.position[:].numpy().tolist() == qr.position[...].numpy().tolist()
@@ -380,9 +378,9 @@ def test_qr_field_whole_slice_read_returns_the_whole_field():
 
 
 def test_qr_field_whole_slice_augmented_write_scatters():
-    """`qr.f[:] += 1` must write through both pools -- the user-visible symptom of the old split: the write half took
-    `[:]`, but Python reads first, so the whole statement died on the read. The taught form (`qr.f += 1`) and the
-    single-axis form (`qr.f[:, k] += 1`) always worked -- see the control test below."""
+    """`qr.f[:] += 1` must write through both pools -- Python reads first, so a read half that rejects `[:]` kills
+    the whole statement. The taught form (`qr.f += 1`) and the single-axis form (`qr.f[:, k] += 1`) are the
+    controls -- see the control test below."""
     a, b = _pos_pool([[1.0, 1.0]]), _pos_pool([[2.0, 2.0], [3.0, 3.0]])
     qr = _query([a, b], "position")
 
@@ -422,7 +420,7 @@ def test_qr_field_whole_field_keys_that_work_and_selections_that_must_not():
     qr.position += 1                                    # the taught form -> __setattr__, no __getitem__ involved
     assert a.position.tolist() == [[12.0, 2.0]]
 
-    for bad in (0, -1, slice(0, 2)):                        # each one picks/reorders entities (masks moved to task 51)
+    for bad in (0, -1, slice(0, 2)):                        # each one picks/reorders entities (masks: elsewhere)
         with pytest.raises(TypeError):
             qr.position[bad]
 
@@ -661,13 +659,13 @@ def test_assigning_a_field_scatters_like_a_recarray():
         qr.position = np.array([1.0, 2.0, 3.0], "float32")
 
 
-# --- the __setattr__ name guard (task 28): unknown names raise, queried fields still scatter -----------------------
-# `qr.postion = v` (typo) used to fall through to super().__setattr__: the write "succeeded", created a dead instance
-# attr, changed no data, raised nothing -- while the READ half raised. Entity guards both (entity.py:85-91), so the
-# asymmetry was the bug. The guard (query_result.py:51-57) closed it; the tests below pin both halves.
+# --- the __setattr__ name guard: unknown names raise, queried fields still scatter ---------------------------------
+# Without it `qr.postion = v` (typo) falls through to super().__setattr__: the write "succeeds", creates a dead
+# instance attr, changes no data, raises nothing -- while the READ half raises. Entity guards both (entity.py:85-91);
+# so does QueryResult (query_result.py:51-57). The tests below pin both halves.
 
 def test_qr_unknown_attribute_read_raises_named_error():
-    """The READ half already holds: an unknown name raises AttributeError naming it and the valid field set. Pins
+    """The READ half: an unknown name raises AttributeError naming it and the valid field set. Pins
     the contract the write half must mirror."""
     qr = _query([_pos_pool([[1.0, 1.0]])], "position")
 
@@ -764,11 +762,11 @@ def test_qr_write_on_uninitialised_instance_is_rejected_not_silently_allowed():
 
 
 # --- neither dunder may reach its own state through normal attribute lookup -----------------------------------------
-# Both used to: __getattr__'s message interpolated `self.fields`, and __setattr__'s guard read `self._data`. On an
-# instance whose __dict__ lacks them, those lookups miss, __getattr__ runs again, and the stack blows -- an ordinary
+# If __getattr__'s message interpolated `self.fields`, or __setattr__'s guard read `self._data`, then on an instance
+# whose __dict__ lacks them those lookups miss, __getattr__ runs again, and the stack blows -- an ordinary
 # AttributeError path becomes RecursionError. Not exotic: copy/deepcopy/pickle.loads build their target with
-# cls.__new__(cls) and immediately probe it (`hasattr(y, "__setstate__")`), so all three died. Both now go through
-# self.__dict__.get(...) (query_result.py:40-41, :58-59); these tests pin that they stay that way.
+# cls.__new__(cls) and immediately probe it (`hasattr(y, "__setstate__")`). Both go through self.__dict__.get(...)
+# (query_result.py:40-41, :58-59); these tests pin that they stay that way.
 
 def test_qr_read_on_uninitialised_instance_raises_attributeerror_not_recursion():
     """A read on an instance with no __init__ state raises a plain AttributeError naming the attr, and hasattr
@@ -785,7 +783,7 @@ def test_qr_read_on_uninitialised_instance_raises_attributeerror_not_recursion()
 def test_qr_survives_copy_and_pickle(op):
     """copy/deepcopy/pickle each build the target with __new__ and then probe it, so a recursing error path kills
     them outright. Pins that the result comes out intact. This is the user-facing symptom, not a promise about
-    snapshot semantics -- a copied QueryResult still goes stale on the next structural change (task 27)."""
+    snapshot semantics -- a copied QueryResult still goes stale on the next structural change."""
     qr = _query([_pos_pool([[1.0, 2.0]])], "position")
 
     out = op(qr)
@@ -838,7 +836,7 @@ def test_repr_renders_and_reports_entity_count():
     assert "5" in text                          # total entities across the two pools
 
 
-# --- the identity short-circuit in QueryResult.__setattr__ (#46) ---------------------------------------------------
+# --- the identity short-circuit in QueryResult.__setattr__ --------------------------------------------------------
 # `qr.f += x` hands __setattr__ the very object it is about to write into, so the write is skipped. The risk is a
 # SILENTLY dropped write, not an exception -- so pin both sides: it fires where it should, and not where it must not.
 # Both surfaces: 1 pool yields an _QRArray, 2+ a QRField, with different __setitem__.
@@ -865,14 +863,14 @@ def test_setattr_from_another_field_still_copies(n_pools):
     assert [r.tolist() for p in pools for r in p.position] == [[10.0, 20.0], [30.0, 40.0]] * n_pools
 
 
-# --- entity_ids is lazy (#47) --------------------------------------------------------------------------------------
+# --- entity_ids is lazy --------------------------------------------------------------------------------------------
 # Materialising the id column is O(entities) -- 98% of a cold query at N=10k -- and the query cache is dropped on any
-# tick with a structural change, so it was being rebuilt forever for systems that never read it. It is a property now.
+# tick with a structural change, so an eager column is rebuilt forever for systems that never read it.
 # The laziness is the feature, so it is pinned: anything that quietly touches `entity_ids` puts the cost straight back.
 
 @pytest.mark.parametrize("n_pools", [1, 2])
 def test_entity_ids_is_not_built_until_it_is_read(n_pools):
-    """Reading fields and asking for len() must not materialise the id column -- that is the whole point of #47."""
+    """Reading fields and asking for len() must not materialise the id column -- the whole point of the laziness."""
     qr = _query([_pool_with(3) for _ in range(n_pools)], "position")
 
     qr.position

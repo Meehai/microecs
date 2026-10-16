@@ -13,23 +13,22 @@ Three buckets, all pinned here:
               methods/attrs are unsupported and raise (never silently wrong). Entity-axis
               BOOLEAN masks are now supported -- see test_field_bool_mask.py.
 """
-from dataclasses import field
 import numpy as np
 import pytest
 
-from microecs import World, Component, QRField
+from microecs import World, Component, QRField, f32
 
 
 class HasVel(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2,), "dtype": "float32", "default": None})
+    velocity: np.ndarray = f32((2,))
 
 
 class HasTag(Component):  # forces a second archetype/pool for the velocity query
-    tag: np.ndarray = field(metadata={"shape": (1,), "dtype": "float32", "default": None})
+    tag: np.ndarray = f32((1,))
 
 
 class HasPose(Component):
-    pose: np.ndarray = field(metadata={"shape": (4, 4), "dtype": "float32", "default": None})
+    pose: np.ndarray = f32((4, 4))
 
 
 def _multipool_velocity():
@@ -182,7 +181,7 @@ def test_sort_axis0_diverges_when_pools_interleave():
 # --- bucket 3: restricted surface raises (never silently wrong) ---
 
 @pytest.mark.parametrize("indexer", [
-    0,                                 # qr.f[i]  -- a single entity (task 16: now forbidden too)
+    0,                                 # qr.f[i]  -- a single entity
     4,                                 # qr.f[i]  -- a single entity spanning into the second pool
     -1,                                # qr.f[-1] -- a negative single entity
     slice(2, 4),                       # qr.f[2:4] -- entity range
@@ -190,14 +189,13 @@ def test_sort_axis0_diverges_when_pools_interleave():
     [0, 2, 4],                         # qr.f[[...]] fancy
 ])
 def test_entity_axis_read_indexing_raises(indexer):
-    """SELECTING on the entity axis is off-limits: a bare int (task 16), a sub-range, a stride or fancy all
+    """SELECTING on the entity axis is off-limits: a bare int, a sub-range, a stride or fancy all
     cross pools, so they raise TypeError instead of returning a partial view. Per-entity access is
     `world.get_entity(qr.entity_ids[i])`; iteration is `zip(qr.f, ...)`.
 
-    Deliberately NOT here: `[:]` and `[...]` KEEP every entity, so they read the whole field (task 33). This list
-    used to include `slice(None)` -- that was the pre-task-33 asymmetry written down as if intended, when in fact
-    `qr.f[:] = v` worked while `qr.f[:]` and `qr.f[:] += 1` raised. `[::2]` guards the near-miss.
-    Boolean masks are also deliberately NOT here: task 51 gives them numpy gather/scatter semantics."""
+    Deliberately NOT here: `[:]` and `[...]` KEEP every entity, so they read the whole field, the same as
+    `qr.f[:] = v` and `qr.f[:] += 1`. `[::2]` guards the near-miss.
+    Boolean masks are also deliberately NOT here: they have numpy gather/scatter semantics."""
     _, qr = _multipool_velocity()
     with pytest.raises(TypeError):
         qr.velocity[indexer]
