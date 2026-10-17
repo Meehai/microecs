@@ -22,12 +22,13 @@ test_and_run:
     - python examples/01-hello-world.py --help
     - pytest test
 
-pages:                                # GitLab Pages: themed pdoc site (README home + docs/source/*.md prose + microecs/ API)
+pages:                                # GitLab Pages: opdoc site (README home + docs/source/*.md prose + microecs/ API)
   before_script:
     - pip install -e ".[dev]"
+    - pip install opdoc
     - export PYTHONPATH="$PYTHONPATH:."
   script:
-    - bash docs/build_docs.sh public  # must output to public/ for Pages to serve it
+    - opdoc docs/ public --repo-slug meehai/microecs --repo-branch master --site-title "microecs documentation"
   artifacts:
     paths:
       - public

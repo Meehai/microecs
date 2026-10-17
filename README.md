@@ -17,8 +17,8 @@ python examples/01-hello-world.py                 # run the basic hello world ex
 ```
 
 Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/) — built by
-[`docs/build_docs.sh`](docs/build_docs.sh) (pdoc; no sphinx/config). Build locally with
-`bash docs/build_docs.sh` and open the printed `file://` link.
+[`opdoc`](https://pypi.org/project/opdoc/). Build locally with
+`pip install opdoc && opdoc docs/ public` and open `public/index.html`.
 
 ## Simple example
 
