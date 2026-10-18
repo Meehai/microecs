@@ -4,27 +4,34 @@ Environment: numpy 2.5.1, Python 3.12.12, Linux x86_64. Times = min-over-reps of
 GC off. Every cell verified against a float64 reference. Full data in `results.json` (regenerate with
 `./run_benchmark.sh`).
 
-**Run: 2026-07-27c**, microecs at the merge of **#44 + #49** (branch `optimize-49` merged with master).
-**Prev runs, both single-change and both superseded by this one:** 07-27a `3ba0e76` (#44 alone) and 07-27b
-`3c16d06` (#49 alone). They were developed on branches off the same base, so each was measured against the
-same 07-26 baseline `975097c` — an honest one-change-at-a-time pair, but neither described shipped code.
-**This run does.**
+**Run: 2026-10-18**, microecs `b49b28d` (0.8.6). **Prev run:** 2026-07-27c, `6fc0d21` (merge of #44 + #49).
+No adapter needed changes: every microecs change since was additive or internal.
 
-What is in it: **#44** made `World.add_entity` the sole validator of a spawn (`CommandBuffer.append` used to
-repeat the same pass). **#49** made the pool's per-field dtype/shape check a single cheap `raise` instead of
-three asserts including an `np.issubdtype`, gave `Pool.add_entity` a dict instead of `**kwargs`, dropped a row
-copy the despawn path threw away, and moved empty-pool reclamation to one sweep at the end of `update()`.
+What is in it, perf-relevant: **#50** (`_convert_components_data`: array-like field data is converted at the
+call, a per-field Python pass on every `add_entity`/`add_component`), **#39** (staged writes snapshot the
+caller's arrays: `CommandBuffer.append` now `.copy()`s every ndarray arg, so the value at the call is what
+lands), **#53** (repeat `remove_component` in one tick is a no-op). Not perf-relevant: #51 `qr.f[mask]`,
+world reserved names, assert→raise, #55 test formalism.
 
 **Field: seven libraries**, i.e. all three ways to build an ECS you can drive from Python — numpy-vectorized
 (microecs), native core + native columnar store (xecs), native core handing back Python component
 objects (entt = C++ EnTT, flecs = C flecs), and pure Python (esper, snecs, ecs-pattern).
 
-**Headline: the two structural workloads halved, and microecs now wins every workload at N=100k.** Normalized
-to the field: **w5 churn −50.2%**, **w7 migrate −30.4%**, everything else mixed-sign single digits (drift).
-The two changes **compound almost exactly** — #44 alone was −28% on w5 and #49 alone −29%, and
-0.72 × 0.71 = 0.51 against the −50% measured here — because they cut *different halves* of the path: #44 the
-buffered `add_entity`, #49 the commit. Churn at 100k went from 0.82× EnTT to **1.65×**; migration, which
-neither change targeted, went from 0.77× to **1.01×** and is now microecs' from N=1k up.
+**Headline: spawning is ~25% dearer, everything else is flat, and the winner map did not move.** In-process
+A/B old tree vs new tree (`test/manual/bench-compare/ab_versions.py`, ABBA, median of 4): **w5 churn step
++24–31%**, **spawn (`build`) +17–32% on every workload**, w7 migrate step +5–16%, columnar steps (w1/w4/w6)
+0.92–1.14 (noise). The cost is the two new per-spawn passes: of a ~6.3 µs `add_entity`, **#50's conversion
+is ~860 ns (14%) and #39's snapshot copy ~680 ns (11%)** (`spawn_split.py`). microecs still wins all seven
+workloads at 100k; the churn lead over EnTT there shrank **1.65× → 1.33×**.
+
+**Update — #56 landed (`befc0f5`), w5/w7 extrapolated, not re-swept.** #56 folds conversion + the one snapshot
+copy into `World._validate_component`'s per-field loop (`np.array` for array-likes, `.copy()` for ndarrays) and
+deletes `_convert_components_data` and `append`'s copy loop. An in-process A/B of microecs alone, published
+`b49b28d` vs `befc0f5` (`ab_versions.py`, ABBA, median of 4, all five N), gives step ratios **w5 0.80–0.93
+(median 0.91)** and **w7 0.92–1.02 (median 0.93)**; `build` (= N × `add_entity`) 0.78–0.95 on every workload.
+The w1 control step (never calls `add_entity`) wandered 0.92–1.18, so per-cell ratios are ±15% noise: the
+microecs w5/w7 cells below are the measured cells × the **per-workload median**. Columnar workloads don't spawn
+in `step`, so they are unchanged. Result: churn lead at 100k **1.47× EnTT**, winner map unchanged.
 
 **Fairness note (SoA vs SoA):** w4/w6 give microecs the SAME columnar scatter idiom xecs gets
 (`col[rows] -= DMG`) — both are columnar SoA libs, so both batch. The naive `get_entity(id)` loop is
@@ -36,88 +43,88 @@ quantified separately as "the trap" (probe P3), never used in the hot path. The 
 ### w1 physics (columnar integrate)
 | lib | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| microecs | 0.0129 | 0.0144 | **0.0201** | **0.0329** | **0.1591** |
-| xecs | **0.0117** | **0.0129** | 0.0301 | 0.1034 | 0.4938 |
-| entt | 0.0432 | 0.2615 | 1.3205 | 5.2238 | 29.0960 |
-| flecs | 0.1255 | 0.7117 | 3.3429 | 14.8654 | 86.4460 |
-| esper | 0.0159 | 0.0708 | 0.4855 | 1.9524 | 11.3919 |
-| snecs | 0.0463 | 0.2535 | 1.3586 | 5.6937 | 29.5094 |
-| ecs-pattern | 0.0229 | 0.1075 | 0.4910 | 2.0790 | 11.6986 |
+| microecs | 0.0116 | 0.0128 | **0.0174** | **0.0260** | **0.1347** |
+| xecs | **0.0092** | **0.0122** | 0.0292 | 0.0960 | 0.4408 |
+| entt | 0.0451 | 0.2187 | 1.0755 | 4.2729 | 22.1092 |
+| flecs | 0.1112 | 0.6112 | 2.9617 | 12.3264 | 73.6852 |
+| esper | 0.0142 | 0.0731 | 0.3664 | 1.6098 | 9.9049 |
+| snecs | 0.0440 | 0.2153 | 1.0798 | 4.4921 | 25.7404 |
+| ecs-pattern | 0.0232 | 0.0916 | 0.4354 | 1.7544 | 9.7056 |
 
 ### w1 physics — columnar TAIL, ns/entity (microecs vs xecs)
 | N | 100k | 200k | 500k | 1M |
 |---|--:|--:|--:|--:|
-| microecs | **1.70** | **1.62** | **1.72** | **2.66** |
-| xecs | 4.26 | 5.34 | 5.42 | 5.72 |
+| microecs | **1.35** | **1.42** | **1.57** | **2.67** |
+| xecs | 4.41 | 4.34 | 4.76 | 5.07 |
 
-xecs is flat at ~4.3–5.7 ns/e everywhere; microecs falls to ~1.7 ns/e as fixed overhead amortizes.
-**Crossover ≈ N=1.5–3k.** (w2 bounce tail, same shape: microecs 4.0→6.9 ns/e vs xecs 9.6→12.0 over
-100k→1M.)
+xecs is flat at ~4.3–5.1 ns/e everywhere; microecs falls to ~1.4 ns/e as fixed overhead amortizes.
+**Crossover ≈ N=1.5–3k.** (w2 bounce tail, same shape: microecs 3.6→6.7 ns/e vs xecs 8.3→11.2 over
+200k→1M.)
 
 ### w2 bounce (integrate + np.where wall reflection)
 | lib | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| microecs | 0.0230 | 0.0368 | **0.0447** | **0.0908** | **0.3764** |
-| xecs | **0.0175** | **0.0255** | 0.0574 | 0.1654 | 0.9907 |
-| entt | 0.0701 | 0.4307 | 2.1330 | 8.5357 | 45.0544 |
-| flecs | 0.1719 | 0.9513 | 5.9022 | 24.4903 | 137.0127 |
-| esper | 0.0288 | 0.1308 | 0.7882 | 3.3169 | 19.6163 |
-| snecs | 0.0840 | 0.3870 | 2.1689 | 9.2710 | 49.5531 |
-| ecs-pattern | 0.0415 | 0.1601 | 0.8171 | 3.3918 | 19.3317 |
+| microecs | 0.0258 | 0.0307 | **0.0401** | **0.0727** | **0.3339** |
+| xecs | **0.0166** | **0.0229** | 0.0537 | 0.1748 | 0.8586 |
+| entt | 0.0759 | 0.3589 | 1.7408 | 6.9935 | 37.1397 |
+| flecs | 0.1885 | 0.9898 | 4.7055 | 20.3654 | 113.4302 |
+| esper | 0.0242 | 0.1239 | 0.6168 | 2.5101 | 16.1353 |
+| snecs | 0.0682 | 0.3597 | 1.7941 | 7.5458 | 40.2704 |
+| ecs-pattern | 0.0380 | 0.1547 | 0.7054 | 2.8856 | 15.2448 |
 
 ### w3 ai (per-entity health state machine)
 | lib | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| microecs | 0.0141 | **0.0188** | **0.0354** | **0.0918** | **0.4220** |
-| xecs | 0.0149 | 0.0197 | 0.0430 | 0.1452 | 0.7280 |
-| entt | 0.0304 | 0.1219 | 0.7977 | 3.1872 | 16.2600 |
-| flecs | 0.0736 | 0.3835 | 2.0646 | 8.9095 | 49.1880 |
-| esper | 0.0090 | 0.0386 | 0.2547 | 1.1100 | 7.3280 |
-| snecs | 0.0230 | 0.1303 | 0.8456 | 3.2103 | 17.8096 |
-| ecs-pattern | **0.0089** | 0.0505 | 0.2707 | 1.0834 | 6.0788 |
+| microecs | 0.0127 | **0.0176** | **0.0298** | **0.0775** | **0.3636** |
+| xecs | 0.0130 | 0.0191 | 0.0411 | 0.1287 | 0.5831 |
+| entt | 0.0274 | 0.1308 | 0.6428 | 2.6294 | 12.9486 |
+| flecs | 0.0664 | 0.3663 | 1.7105 | 7.2539 | 39.1100 |
+| esper | **0.0085** | 0.0416 | 0.2144 | 0.8678 | 6.2902 |
+| snecs | 0.0242 | 0.1266 | 0.6541 | 2.6641 | 14.6887 |
+| ecs-pattern | 0.0096 | 0.0488 | 0.2453 | 0.9752 | 5.1687 |
 
 ### w4 random (K=max(16,n//50) distinct hits/frame; SoA libs scatter, AoS libs loop)
 | lib | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| microecs | 0.0015 | 0.0017 | **0.0021** | **0.0034** | **0.0100** |
-| xecs | 0.0028 | 0.0036 | 0.0068 | 0.0202 | 0.0991 |
-| entt | 0.0030 | 0.0034 | 0.0174 | 0.0821 | 1.0334 |
-| flecs | 0.0076 | 0.0104 | 0.0564 | 0.2804 | 2.9838 |
-| esper | 0.0019 | 0.0026 | 0.0140 | 0.1085 | 1.5593 |
-| snecs | 0.0022 | 0.0029 | 0.0155 | 0.1257 | 1.4645 |
-| ecs-pattern | **0.0012** | **0.0015** | 0.0062 | 0.0344 | 0.4493 |
+| microecs | 0.0015 | 0.0017 | **0.0018** | **0.0028** | **0.0083** |
+| xecs | 0.0028 | 0.0036 | 0.0066 | 0.0196 | 0.0941 |
+| entt | 0.0027 | 0.0035 | 0.0168 | 0.0641 | 0.5792 |
+| flecs | 0.0071 | 0.0099 | 0.0498 | 0.2475 | 2.3856 |
+| esper | 0.0018 | 0.0022 | 0.0117 | 0.0684 | 1.0731 |
+| snecs | 0.0020 | 0.0025 | 0.0133 | 0.0962 | 1.1357 |
+| ecs-pattern | **0.0012** | **0.0014** | 0.0060 | 0.0249 | 0.2605 |
 
 ### w5 churn (spawn B + FIFO-despawn B/frame + integrate; B=max(16,n//100))
 | lib | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| microecs | 0.1447 | 0.1638 | 0.5164 | 2.1633 | **11.9196** |
+| microecs | 0.1749 | 0.1687 | 0.4963 | 2.0205 | **10.8858** |
 | xecs | N/A | N/A | N/A | N/A | N/A  (no despawn) |
-| entt | 0.0456 | 0.1693 | 0.8587 | 3.4349 | 19.6309 |
-| flecs | 0.1051 | 0.4483 | 2.3067 | 9.9909 | 58.0529 |
-| esper | 0.0705 | 0.3363 | 1.7842 | 7.3726 | 45.0817 |
-| snecs | 0.0482 | 0.1685 | 0.9013 | 3.7909 | 20.9311 |
-| ecs-pattern | **0.0251** | **0.0748** | **0.3986** | **2.0777** | 20.8042 |
+| entt | 0.0437 | 0.1510 | 0.7219 | 2.9081 | 15.9585 |
+| flecs | 0.1080 | 0.3912 | 1.9498 | 8.1680 | 49.0827 |
+| esper | 0.0718 | 0.2892 | 1.5613 | 6.2943 | 37.9337 |
+| snecs | 0.0462 | 0.1580 | 0.7850 | 3.0418 | 17.2808 |
+| ecs-pattern | **0.0229** | **0.0667** | **0.3514** | **1.7014** | 18.5872 |
 
 ### w6 mixed (physics + ai + K targeted damage, fixed set — a realistic frame)
 | lib | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| microecs | 0.0863 | 0.0964 | 0.1121 | **0.1858** | **0.7296** |
-| xecs | 0.0295 | **0.0381** | **0.0841** | 0.2790 | 1.3489 |
-| entt | 0.0895 | 0.4155 | 2.1793 | 9.0406 | 51.1328 |
-| flecs | 0.2323 | 1.1019 | 5.8218 | 26.7532 | 162.6107 |
-| esper | **0.0292** | 0.1343 | 0.7838 | 3.4410 | 27.9684 |
-| snecs | 0.0809 | 0.3936 | 2.2290 | 9.5694 | 56.5126 |
-| ecs-pattern | 0.0439 | 0.1618 | 0.8053 | 3.7057 | 19.8152 |
+| microecs | 0.0774 | 0.0774 | 0.1022 | **0.1734** | **0.6299** |
+| xecs | 0.0272 | **0.0342** | **0.0796** | 0.2450 | 1.1573 |
+| entt | 0.0774 | 0.3689 | 1.8007 | 7.1567 | 40.9269 |
+| flecs | 0.2039 | 0.9345 | 5.3102 | 21.6903 | 131.3288 |
+| esper | **0.0258** | 0.1203 | 0.6704 | 2.8867 | 23.7649 |
+| snecs | 0.0704 | 0.3438 | 1.8850 | 7.8938 | 48.3183 |
+| ecs-pattern | 0.0391 | 0.1431 | 0.7005 | 2.8673 | 16.7114 |
 
 ### w7 migrate (component add/remove → archetype migration; 2·max(4,n//200) migrations/frame)
 | lib | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| microecs | 0.1058 | **0.1246** | **0.4493** | **2.0889** | **19.2336** |
+| microecs | 0.0940 | **0.1069** | **0.4108** | **1.7757** | **13.6982** |
 | xecs | N/A | N/A | N/A | N/A | N/A  (no component add/remove) |
-| entt | 0.0359 | 0.1597 | 0.8240 | 3.5945 | 19.3569 |
-| flecs | 0.0858 | 0.4296 | 2.1494 | 9.6909 | 58.3754 |
-| esper | 0.0681 | 0.3155 | 1.8331 | 7.9079 | 49.9080 |
-| snecs | **0.0341** | 0.1528 | 0.8721 | 3.7985 | 19.4219 |
+| entt | 0.0320 | 0.1425 | 0.7112 | 2.8342 | 15.1191 |
+| flecs | 0.0759 | 0.3640 | 1.8256 | 8.3166 | 50.1574 |
+| esper | 0.0592 | 0.2802 | 1.4785 | 6.2121 | 42.8056 |
+| snecs | **0.0311** | 0.1410 | 0.7245 | 2.8824 | 16.6167 |
 | ecs-pattern | N/A | N/A | N/A | N/A | N/A  (fixed inheritance-class entities) |
 
 ## Winner map (fastest library)
@@ -125,71 +132,72 @@ xecs is flat at ~4.3–5.7 ns/e everywhere; microecs falls to ~1.7 ns/e as fixed
 workload      N=200        1k          5k          20k        100k
 w1 physics    xecs         xecs        microecs    microecs   microecs
 w2 bounce     xecs         xecs        microecs    microecs   microecs
-w3 ai         ecs-pattern  microecs    microecs    microecs   microecs
+w3 ai         esper        microecs    microecs    microecs   microecs
 w4 random     ecs-pattern  ecs-pattern microecs    microecs   microecs
-w5 churn      ecs-pattern  ecs-pattern ecs-pattern ecs-pattern microecs   <- #44+#49
+w5 churn      ecs-pattern  ecs-pattern ecs-pattern ecs-pattern microecs
 w6 mixed      esper        xecs        xecs        microecs   microecs
-w7 migrate    snecs        microecs    microecs    microecs   microecs   <- #49
+w7 migrate    snecs        microecs    microecs    microecs   microecs
 ```
-**microecs now takes the entire 100k column — all seven workloads — for the first time.** The two structural
-cells are the new ones: w5 churn @100k (entt → microecs) and **every w7 migrate cell from 1k up**, including
-100k where entt had held on. w3 ai @200 flips esper → ecs-pattern, which is a rival-vs-rival tie inside drift
-and says nothing about microecs.
+**Unchanged from 07-27c:** microecs takes the entire 100k column, all seven workloads. The only flip is w3 ai
+@200 (ecs-pattern → esper), a rival-vs-rival tie inside drift that says nothing about microecs.
 
 
 ## microecs / fastest-competitor, and who that competitor is
 `>1` = microecs faster by that factor; `<1` = slower by `1/x`.
 ```
 workload     N=200               1k                  5k                  20k            100k
-w1 physics   0.90 xecs           0.90 xecs           1.50 xecs           3.15 xecs      3.10 xecs
-w2 bounce    0.76 xecs           0.69 xecs           1.28 xecs           1.82 xecs      2.63 xecs
-w3 ai        0.63 ecs-pattern    1.05 xecs           1.21 xecs           1.58 xecs      1.73 xecs
-w4 random    0.82 ecs-pattern    0.90 ecs-pattern    2.91 ecs-pattern    5.95 xecs      9.90 xecs
-w5 churn     0.17 ecs-pattern    0.46 ecs-pattern    0.77 ecs-pattern    0.96 ecs-pat   1.65 entt
-w6 mixed     0.34 esper          0.40 xecs           0.75 xecs           1.50 xecs      1.85 xecs
-w7 migrate   0.32 snecs          1.23 snecs          1.83 entt           1.72 entt      1.01 entt
+w1 physics   0.80 xecs           0.95 xecs           1.68 xecs           3.70 xecs      3.27 xecs
+w2 bounce    0.64 xecs           0.75 xecs           1.34 xecs           2.40 xecs      2.57 xecs
+w3 ai        0.67 esper          1.08 xecs           1.38 xecs           1.66 xecs      1.60 xecs
+w4 random    0.78 ecs-pattern    0.84 ecs-pattern    3.32 ecs-pattern    7.10 xecs      11.31 xecs
+w5 churn     0.13 ecs-pattern    0.40 ecs-pattern    0.71 ecs-pattern    0.84 ecs-pat   1.47 entt
+w6 mixed     0.33 esper          0.44 xecs           0.78 xecs           1.41 xecs      1.84 xecs
+w7 migrate   0.33 snecs          1.32 snecs          1.73 entt           1.60 entt      1.10 entt
 ```
-**The two structural rows are the story.** w5: 0.08→0.11, 0.22→0.30, 0.36→0.49, 0.46→0.66, **0.82→1.25**.
-w7: 0.24→0.31, 0.83→**1.27**, 1.02→**1.69**, 1.07→**1.57**, 0.77→0.96. Every other row is flat within drift.
+(w5/w7 rows: extrapolated after #56, see the update at the top; measured 10-18 values were w5 0.12 / 0.36 /
+0.64 / 0.77 / 1.33 and w7 0.31 / 1.23 / 1.61 / 1.48 / 1.03.)
+
+**w5 churn is the one row that moved, and it moved back.** 07-27c → 10-18: 0.17→0.12, 0.46→0.36, 0.77→0.64,
+0.96→0.77, **1.65→1.33** — the #50 + #39 spawn tax (see the headline). w7 dips at 5k/20k (1.83→1.61,
+1.72→1.48), consistent with the A/B's +5–16% on migration. Every other row is flat within drift.
 The rival on every columnar/branchy/random workload is another **vectorized** library (xecs), never a
 native per-entity one. microecs only loses to a C/C++ engine on the two **structural** workloads.
 
 **Repeatability of the headline cell** (8 reps each, `test/manual/bench-compare/repeat_100k.py`):
 w1@100k microecs 0.1415–0.1694 ms (spread 1.20×), xecs 0.5210–0.5377 (spread 1.03×) → ratio **3.3×
-on medians, 3.7× on mins**. The 2.51× in the table above is that run's min-of-2 for xecs landing low
-(0.4263). Same check on w2@100k: **2.5–2.7×**. Read the columnar-at-100k lead as **~2.5–3.7×**, and
+on medians, 3.7× on mins** (07-27 measurement; this run's min-of-2 gives 3.27×). Same check on w2@100k: **2.5–2.7×**. Read the columnar-at-100k lead as **~2.5–3.7×**, and
 prefer the tail rows (200k–1M) where both libs are stable.
 
 ## ns/entity per frame @ N=100,000 (the large-N regime, all seven)
 | workload | microecs | xecs | entt (C++) | flecs (C) | esper | snecs | ecs-pattern |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| w1 physics | **1.6** | 4.9 | 291.0 | 864.5 | 113.9 | 295.1 | 117.0 |
-| w2 bounce | **3.8** | 9.9 | 450.5 | 1370.1 | 196.2 | 495.5 | 193.3 |
-| w3 ai | **4.2** | 7.3 | 162.6 | 491.9 | 73.3 | 178.1 | 60.8 |
-| w4 random | **0.1** | 1.0 | 10.3 | 29.8 | 15.6 | 14.6 | 4.5 |
-| w5 churn | **119.2** | N/A | 196.3 | 580.5 | 450.8 | 209.3 | 208.0 |
-| w6 mixed | **7.3** | 13.5 | 511.3 | 1626.1 | 279.7 | 565.1 | 198.2 |
-| w7 migrate | **192.3** | N/A | 193.6 | 583.8 | 499.1 | 194.2 | N/A |
+| w1 physics | **1.3** | 4.4 | 221.1 | 736.9 | 99.0 | 257.4 | 97.1 |
+| w2 bounce | **3.3** | 8.6 | 371.4 | 1134.3 | 161.4 | 402.7 | 152.4 |
+| w3 ai | **3.6** | 5.8 | 129.5 | 391.1 | 62.9 | 146.9 | 51.7 |
+| w4 random | **0.1** | 0.9 | 5.8 | 23.9 | 10.7 | 11.4 | 2.6 |
+| w5 churn | **108.9** | N/A | 159.6 | 490.8 | 379.3 | 172.8 | 185.9 |
+| w6 mixed | **6.3** | 11.6 | 409.3 | 1313.3 | 237.6 | 483.2 | 167.1 |
+| w7 migrate | **137.0** | N/A | 151.2 | 501.6 | 428.1 | 166.2 | N/A |
 
 ## Does a native core help? best(entt, flecs) / best(pure python)
 Both groups run **identical Python work per entity** — components are Python objects either way — so
 this isolates the storage engine. `>1` = the native core is **slower**.
 | workload | N=200 | 1k | 5k | 20k | 100k |
 |---|--:|--:|--:|--:|--:|
-| w1 physics | 3.43 | 3.13 | 2.57 | 2.72 | 2.41 |
-| w2 bounce | 3.35 | 3.04 | 2.66 | 2.64 | 2.32 |
-| w3 ai | 3.15 | 3.23 | 3.00 | 2.94 | 2.95 |
-| w4 random | 2.21 | 2.41 | 2.89 | 2.89 | 2.29 |
-| w5 churn | 2.04 | 2.30 | 2.29 | 1.89 | **0.90** |
-| w6 mixed | 3.11 | 2.73 | 2.80 | 2.42 | 2.54 |
-| w7 migrate | 1.12 | **0.94** | **0.92** | **0.97** | **0.90** |
+| w1 physics | 3.17 | 2.99 | 2.94 | 2.65 | 2.28 |
+| w2 bounce | 3.13 | 2.90 | 2.82 | 2.79 | 2.44 |
+| w3 ai | 3.23 | 3.14 | 3.00 | 3.03 | 2.51 |
+| w4 random | 2.22 | 2.53 | 2.79 | 2.58 | 2.22 |
+| w5 churn | 1.91 | 2.26 | 2.05 | 1.71 | **0.92** |
+| w6 mixed | 3.00 | 3.07 | 2.69 | 2.50 | 2.45 |
+| w7 migrate | 1.03 | 1.01 | **0.98** | **0.98** | **0.91** |
 
-A native core costs **~2.3–3.4× on field arithmetic** and only pays off where the work *is* the
+A native core costs **~2.2–3.2× on field arithmetic** and only pays off where the work *is* the
 data-structure operation (churn at 100k, migration). Binding a world-class C++ ECS lands you *behind*
 plain esper on every arithmetic workload — you pay Python's loop **plus** a boundary crossing per
 component access.
 
-**w6 settles which side a real frame lands on: 2.42–3.11×, inside the arithmetic band.** A realistic
+**w6 settles which side a real frame lands on: 2.45–3.07×, inside the arithmetic band.** A realistic
 frame is physics + ai + a few targeted hits, so it is mostly arithmetic — the structural win at 100k
 (w5/w7) does not carry it. Where the native core wins, it wins a small slice of the frame.
 
@@ -296,37 +304,39 @@ What changed and what did not:
   for the same effect, because only the attribute path got cheaper. The "use `set_data`" advice from the
   `#29` era still does not match the cost for the single-field case.
 
-## What changed since the 07-26 baseline — and how it was attributed
+## What changed since 07-27c — and how it was attributed
 
-Two library changes, developed on separate branches and merged for this run: **#44** (single-pass spawn
-validation) and **#49 items 1 + 2** (cheap pool check, no discarded despawn copy, deferred pool reclamation).
-Attribution, in order:
+- **The field is the control, and it says the machine moved.** The six non-microecs libraries changed no
+  code, yet their median shifted **−9% (N=200) to −18% (100k)**. So raw ms deltas are useless here: microecs
+  "got 11–21% faster" on w1 purely because the box did.
+- **Normalized to the field it is too noisy to attribute alone.** w4's microecs `step` is a bare numpy scatter
+  that never calls microecs, yet it moved **+11.5%** vs the field (pure-Python rivals sped up more than numpy
+  did). That is the noise band for this pair of runs, and w5's **+24%** sits at its edge.
+- **So the attribution is an in-process A/B**, old tree `6fc0d21` vs new tree, same adapters, each cell in a
+  fresh subprocess, ABBA order, median of 4 rounds (`test/manual/bench-compare/ab_versions.py`):
 
-- **The field is the control.** Median shift of the **six non-microecs** libraries, 07-26 → now:
-  **+3.2% (N=200), +0.8% (1k), +2.3% (5k), +3.3% (20k), +5.8% (100k)**. They did not change a line, so that
-  is the noise floor for this pair of runs. Any single cell under ~10% means nothing.
-- **Normalized to the field** (microecs ÷ median of the other six, inside each run; negative = improved),
-  mean over N: w1 −3.7%, w2 −3.9%, w3 +3.0%, w4 −5.2%, **w5 −50.2%**, w6 −2.6%, **w7 −30.4%**. Only the two
-  structural workloads clear the band, and they clear it by an order of magnitude.
-- **The two changes compound, and that was checked rather than assumed.** Measured separately against this
-  same baseline: #44 alone −28.2% on w5, #49 alone −29.3%. Multiplying the survivors, 0.72 × 0.71 = 0.51,
-  against the **−50.2%** measured on the merge. They cut different halves of the path — #44 the buffered
-  `add_entity`, #49 the commit — so the near-perfect composition is the expected result, not a coincidence.
-- **w7 migrate's −30% is entirely #49's**, and it was not the goal. Component migration is
-  `_pop_from_pool` → `_add_to_pool`: the *same* two functions churn uses. It was paying the `np.issubdtype`
-  check on every field of the rebuilt row and the `**kwargs` unpack/repack at each call boundary — twice per
-  migration, once out and once in. It also stopped tearing down archetypes that empty and refill in one tick.
-  #44 cannot touch w7 (it never calls `add_entity`), and indeed #44's own run left w7 flat.
-- **Isolated component costs**, in-process A/B: `#44` 1.97× on `add_entity`, 1.42× on a churn pair; `#49`
-  1.13× on a spawn, 1.70× on despawn bookkeeping, 1.20× on a pair; together **1.92× on a pair** (P4).
-- **Confirmed outside the benchmark.** robosim's own physics tick (`test/e2e/perf-physics-tick`, a real
-  simulator, not a workload we wrote) is **2–18% faster on the merge, ~11% on average and biggest where the
-  ECS work dominates** (−16% at 50 robots, −17% at 100); its render tick — draw-bound, no ECS mutation —
-  stayed flat at 0–3%. The flat control next to a gain that concentrates at high N is what separates a real
-  win from machine drift. Note this compares against a stored baseline from another day, so read the shape,
-  not the individual cells; the mid-N cells (−2% at N=3) are inside that noise.
-- **Method note:** a run is discarded if unrelated work runs concurrently — that inflates *every* library by
-  10–30%. All four published runs had an otherwise idle machine.
+| workload | N | step new/old | build new/old |
+|---|--:|--:|--:|
+| w1 physics | 1k / 20k / 100k | 0.92 / 1.14 / 1.01 | 1.21 / 1.25 / 1.25 |
+| w4 random | 1k / 20k / 100k | 1.02 / 1.02 / 0.96 | 1.19 / 1.28 / 1.17 |
+| **w5 churn** | 1k / 20k / 100k | **1.24 / 1.31 / 1.26** | 1.26 / 1.28 / 1.25 |
+| w6 mixed | 1k / 20k / 100k | 0.98 / 1.02 / 1.02 | 1.21 / 1.26 / 1.28 |
+| w7 migrate | 1k / 20k / 100k | 1.08 / 1.16 / 1.05 | 1.22 / 1.32 / 1.26 |
+
+- **Read it as: every spawn is ~25% dearer, nothing else moved.** `build` is N × `add_entity` on every
+  workload, and it is +17–32% everywhere; churn is spawn-bound so its step follows. Columnar steps are flat.
+- **Where the 25% goes** (`test/manual/bench-compare/spawn_split.py`, 2 components / 3 fields, 3 runs):
+  `add_entity` ≈ 6.3 µs; **#50's `_convert_components_data` ≈ 860 ns (14%)** — a Python loop over every
+  field even when all data is already an ndarray and nothing converts; **#39's snapshot copy in
+  `CommandBuffer.append` ≈ 680 ns (11%)** — a dict comprehension `.copy()`ing every ndarray arg. Sum ≈ 1.5 µs ≈
+  the measured delta.
+- **Both are deliberate correctness/ergonomics features, not accidents.** #39 fixes a real aliasing bug (a
+  scratch array reused in a spawn loop committed the last value N times). The cost is the *shape*: two more
+  per-field passes on top of `_validate_components` + `_defaults_for` — exactly the pattern P4 found in July
+  (per-entity Python passes, not storage, dominate a spawn). Fusing convert + snapshot + validate into one
+  per-field pass is the obvious lever; the #49 batch-spawn API (92× ceiling, deferred) remains the big one.
+- **w7 migrate's +5–16%** is #50's conversion running again on `add_component`, plus #39's copy on its args;
+  migration is half adds, so it pays about half the churn tax.
 
 ## Honest limitations (from the hostile fairness review)
 - **Run-to-run drift is ±10–25% on absolutes** (measured above). Only **ratios inside one run**, the
@@ -346,24 +356,26 @@ Attribution, in order:
 ## One-line takeaways
 1. No global winner — the fastest library flips by workload AND by N.
 2. Columnar crossover ≈ N=1.5–3k: xecs wins below, microecs (in-place numpy) above by ~2.5–3.7× at
-   100k and ~2.1× at 1M.
+   100k and ~1.9× at 1M.
 3. **microecs wins broadly at N≥5k** (columnar from 5k, ai from 5k, random access and the mixed frame
-   by 20k) — and as of this run it wins **all seven workloads at 100k**, structural ones included. At
-   N=200 it still loses on fixed per-op cost, by ~1.1–1.3× on columnar and ~6× on churn.
+   by 20k) — and it wins **all seven workloads at 100k**, structural ones included. At N=200 it still
+   loses on fixed per-op cost, by ~1.1–1.6× on columnar and ~8× on churn.
 4. Random access: batch it (`col[rows]`), never `get_entity` in a hot loop (up to 503× trap — and a
    cheaper accessor does not fix it; the access pattern is the cost).
 5. **The structural workloads were paying per-entity Python, not archetype layout — and both halves are
    fixed.** P4 found 32% of a churn pair was validation with half of it redundant; `#44` removed the
    duplicate and `#49` made the surviving pool check cheap, dropped a copy `update()` threw away, and
    stopped rebuilding pools that empty and refill in one tick. Combined: **w5 −50% and w7 −30% against the
-   field**, a churn pair **1.92× cheaper**, and **microecs now wins all seven workloads at 100k**. The
+   field**, a churn pair **1.92× cheaper**, and microecs wins all seven workloads at 100k. The
    lesson generalizes past churn — both structural workloads share `_pop_from_pool`/`_add_to_pool`, so
    anything charged per entity there is charged twice on a migration, which is why w7 moved without
-   anyone aiming at it.
+   anyone aiming at it. **The 10-18 run is the same lesson in reverse:** #50 + #39 added two per-field passes
+   to every spawn and gave back ~25% of it (churn lead at 100k 1.65× → 1.33× EnTT). #56 folded them back into
+   one pass with one copy, keeping both features: 1.47× (extrapolated).
 6. Capability gaps still decide churn/migration: xecs can't despawn OR migrate; ecs-pattern can't
    migrate. Only microecs/entt/flecs/esper/snecs do all seven — and microecs is no longer paying a
    speed penalty for the privilege at large N.
-7. Binding a native ECS is not the shortcut it looks like: entt/flecs are ~2.3–3.4× *slower* than plain
-   esper on arithmetic — including the realistic mixed frame (w6, 2.4–3.1×) — and 39–490× slower than
+7. Binding a native ECS is not the shortcut it looks like: entt/flecs are ~2.2–3.2× *slower* than plain
+   esper on arithmetic — including the realistic mixed frame (w6, 2.45–3.07×) — and 36–547× slower than
    microecs at 100k. In Python the axis that matters is **vectorized vs per-entity**, not native vs
    interpreted.

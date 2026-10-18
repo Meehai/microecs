@@ -5,8 +5,6 @@ from typing import Any, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-import numpy as np
-
 from .utils import EntityId
 from .component import ComponentType
 
@@ -40,26 +38,32 @@ class CommandBuffer:
         self.data.clear()
         self.removed_this_tick.clear()
 
-    def _get_entity_components(self, entity_id: EntityId) -> list[ComponentType]:
-        """
-        Return the entity's component set before this tick's component commands.
-        The buffered components (via ADD/REMOVE_COMPONENT) are not visible here.
-        Moreover, ADD_ENTITY->REMOVE_ENTITY->ADD_ENTITY cannot happen, as we always increment the id on adds.
-        Finally, we for-loop forward, so we get the first (and only) staged ADD_ENTITY, making it ok.
-        """
-        if entity_id not in self.world._eid_to_pool_ix: # staged entity (this tick) via ADD_ENTITY
+    def _get_projected_entity_components(self, entity_id: EntityId) -> set[ComponentType]:
+        """Gets the projected components of an entity given this command buffer's state (how it'd look after update)"""
+        if entity_id in self.world._eid_to_pool_ix:
+            pool, _ = self.world._eid_to_pool_ix[entity_id]
+            projected = set(self.world.pool_to_components[pool])
+        else:
             for cmd in self.data:
                 if cmd.entity_id == entity_id and cmd.command_type == CommandType.ADD_ENTITY:
-                    return cmd.args["components"]
-            assert False, "Invariant: live entity has a pool or a staged ADD_ENTITY"
-        pool, _ = self.world._eid_to_pool_ix[entity_id]
-        return self.world.pool_to_components[pool]
+                    projected = set(cmd.args["components"])
+                    break
+            else:
+                assert False, "Invariant: live entity either must be in a pool (world) or staged (in self.data)"
+
+        for command in self.data:
+            if command.entity_id == entity_id:
+                if command.command_type == CommandType.ADD_COMPONENT:
+                    projected.add(command.args["component"])
+                elif command.command_type == CommandType.REMOVE_COMPONENT:
+                    projected.discard(command.args["component"])
+        return projected
 
     def _get_component_in_buffer_state(self, entity_id: EntityId, component: ComponentType) -> bool | None:
-        # Look for the latest state of this entity w.r.t this component given the unstaged command buffer.
-        # If the component is not in the buffer at all, return None. Return True if the last command is an ADD_COMPONENT
-        # Return False if the last command is an REMOVE_COMPONENT. Tri-state used to determine what we do with a new
-        # component called twice in the same tick before world.update()
+        """Look for the latest state of this entity w.r.t this component given the unstaged command buffer.
+        If the component is not in the buffer at all, return None. Return True if the last command is an ADD_COMPONENT
+        Return False if the last command is an REMOVE_COMPONENT. Tri-state used to determine what we do with a new
+        component called twice in the same tick before world.update()"""
         for old_command in reversed(self.data):
             if old_command.entity_id == entity_id and old_command.args.get("component", None) == component:
                 return old_command.command_type == CommandType.ADD_COMPONENT # true if ADD, false if REMOVE
@@ -70,6 +74,8 @@ class CommandBuffer:
         world = self.world
         if (eid := command.entity_id) not in world.live_entities:
             raise ValueError(f"Entity: {eid} not in live entities ({command})")
+
+        # Below, we know for sure that the entity is either live or in staging (e.g. from ADD_ENTITY)
 
         if command.command_type == CommandType.ADD_ENTITY:
             # nothing to do here: world.add_entity already ensures validated args (& defaults) come here.
@@ -82,9 +88,8 @@ class CommandBuffer:
         elif command.command_type == CommandType.ADD_COMPONENT:
             component = command.args["component"]
             fk = {k: v for k, v in command.args.items() if k != "component"}
-            # same data conversion as add_entity (lists/tuples/scalars, None semantics, extras preserved)
-            fk = world._convert_components_data([component], **fk)
-            world._validate_component(component, strict=True, check_extra=True, **fk)
+            # same convert + validate + snapshot as add_entity (lists/tuples/scalars, None semantics)
+            fk = world._validate_component(component, check_extra=True, **fk)
 
             component_state = self._get_component_in_buffer_state(eid, component)
             if component_state is True:
@@ -92,9 +97,9 @@ class CommandBuffer:
                                  f"Run world.update() or you may have a bug where 2 systems write without a lock in "
                                   "the same frame which may cause data loss on entities.")
 
-            if component_state is None:
-                components = self._get_entity_components(eid)
-                if component in components:
+            if component_state is None: # not staged, compare against projected components
+                projected = self._get_projected_entity_components(eid)
+                if component in projected:
                     raise ValueError(f"Component: {component} already exists already, use e.set_data(). (id: {eid})")
 
             # If we reach here either the component is not in the entity or we flip-flop in this frame (REMOVE->ADD)
@@ -105,18 +110,17 @@ class CommandBuffer:
             if component not in world.component_types:
                 raise ValueError(f"Unknown component: {component} not in world components {world.component_types}")
 
-            components = self._get_entity_components(eid)
             component_state = self._get_component_in_buffer_state(eid, component)
-            if component_state is None: # not in buffer -> we check if the entity has the component at all
-                if component not in components:
-                    raise ValueError(f"{component=} is not part of the entity. Use e.add_component(). (id: {eid})")
-            else: # Component is buffered. Thus we need to make sure it's flip flopped (e.g. remove after add)
-                if component_state is False: # remove after remove is no-op
-                    return
+            if component_state is False: # repeated remove -> noop
+                return
 
-        # We copy here because there's no guarantee the underlying arrays won't mutate (e.g. arr.resize) before commit.
-        command.args = {name: value.copy() if isinstance(value, np.ndarray) else value
-                        for name, value in command.args.items()}
+            projected = self._get_projected_entity_components(eid)
+            if component not in projected:
+                raise ValueError(f"{component=} is not part of the entity. Use e.add_component(). (id: {eid})")
+
+            if len(projected) == 1:
+                raise ValueError(f"Cannot remove the last component; use world.remove_entity({eid})")
+
         self.data.append(command)
 
     def __iter__(self):

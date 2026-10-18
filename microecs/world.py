@@ -10,7 +10,7 @@ from .entity import Entity, ENTITY_RESERVED_NAMES
 from .pool import Pool, POOL_RESERVED_NAMES
 from .command_buffer import CommandBuffer, Command, CommandType
 
-WORLD_RESERVED_NAMES = {"check_extra", "component", "components", "strict"}
+WORLD_RESERVED_NAMES = {"check_extra", "component", "components"}
 
 class World:
     """
@@ -80,13 +80,12 @@ class World:
 
     def add_entity(self, components: list[ComponentType], **kwargs) -> EntityId:
         """Adds an entity to the world based on components (data->kwargs). Returns an entity id. Lazy; call update()"""
-        kwargs = self._convert_components_data(components, **kwargs)
-        self._validate_components(components, **kwargs)
-        default_kwargs = self._defaults_for(components, **kwargs)
+        data = self._validate_components(components, **kwargs)
+        default_kwargs = self._defaults_for(components, **data)
         self._last_id += 1
         self.live_entities[self._last_id] = None # add the id the live_entities, but the object is created in get_entity
         self._command_buffer.append(Command(CommandType.ADD_ENTITY, self._last_id,
-                                            args={"components": components, **kwargs, **default_kwargs}))
+                                            args={"components": components, **data, **default_kwargs}))
         return self._last_id
 
     def remove_entity(self, entity_id: EntityId):
@@ -232,33 +231,46 @@ class World:
 
     # other low-level methods
 
-    def _validate_component(self, component: ComponentType, strict: bool, check_extra: bool, **kwargs):
+    def _validate_component(self, component: ComponentType, check_extra: bool, **kwargs) -> dict[str, np.ndarray]:
         """
-        Validates a single component.
+        Converts, validates and snapshots a single component's data. Returns {field: private array} for the supplied
+        fields: array-likes are converted to the field's dtype/shape. Moreover, we do arr.copy() here to protect against
+        array inplace mutations, like arr.resize() between staging and commit (world.update).
         Parameters:
-        - strict Two modes: True -> kwargs==component fields, False -> kwargs is subset
         - check_extra If set, extra data in kwargs unrelated to this component also raises (_validate_components)
+        Return: a dictionary
         """
         if check_extra and (extra := set(kwargs) - set(self.component_to_field_names[component])):
             raise ValueError(f"Extra fields: {extra}; expected {self.component_to_field_names[component]}")
 
+        res = {}
         for name, shape, dtype, default in zip(
                 self.component_to_field_names[component], self.component_to_shapes[component],
                 self.component_to_dtypes[component], self.component_to_defaults[component]):
             if name not in kwargs:
-                if default is None and strict is True:
+                if default is None:
                     raise KeyError(f"'{component.__name__}/{name}' required (default=None) but not supplied")
-                continue                      # omitted but has a default -> fine (or non-strict mode for set_data)
-            if not isinstance(field := kwargs[name], np.ndarray):
-                raise TypeError(f"'{component.__name__}/{name}'. Expected np.ndarray, got {type(field)}")
+                continue # fine if omitted but has a default
+
+            field = kwargs[name]
+            if field is None and dtype != "object":
+                raise TypeError(f"'{component.__name__}/{name}': None is not a valid {dtype} value")
+
+            if not isinstance(field, np.ndarray): # array-like (list/tuple/scalar) -> field dtype/shape
+                res[name] = np.broadcast_to(np.array(field, dtype=dtype), shape=shape) # np.array() copies -> no asarray
+                continue
+
+            # in case we are provided with an actual array, check & copy it to avoid inplace mutation before commit
             if (dt := field.dtype) != dtype:
                 raise TypeError(f"'{component.__name__}/{name}'. Expected dtype {dtype}, got {dt}")
             if (sh := field.shape) != shape:
                 raise ValueError(f"'{component.__name__}/{name}'. Expected shape {shape}, got {sh}")
+            res[name] = field.copy()
+        return res
 
-    def _validate_components(self, components: list[ComponentType], **kwargs):
-        """Pure check. Raises on: no components, unknown component, missing-required (default=None),
-            wrong dtype/shape, extra field. No mutation, no return. kwargs == fields data."""
+    def _validate_components(self, components: list[ComponentType], **kwargs) -> dict[str, np.ndarray]:
+        """Converts, validates and snapshots an entity's data. Raises on: no components, unknown component,
+            missing-required (default=None), wrong dtype/shape, extra field. Returns the private staged data."""
         if len(cs := set(components)) == 0:
             raise ValueError(f"Entity has no components: {self.component_names}")
         if diff := cs - self.component_types:
@@ -266,29 +278,13 @@ class World:
         if len(cs) != len(components):
             raise ValueError(f"Duplicate components: {components}")
 
-        expected = set()
+        expected, res = set(), {}
         for component in components:
             expected.update(self.component_to_field_names[component]) # updated here for error message.
-            self._validate_component(component, strict=True, check_extra=False, **kwargs)
+            res |= self._validate_component(component, check_extra=False, **kwargs)
         if extra := set(kwargs) - expected:
             raise ValueError(f"Extra fields: {extra}; expected {expected}")
 
-    def _convert_components_data(self, components: list[ComponentType], **kwargs) -> dict[str, np.ndarray]:
-        """This allows components data to be passed as convertible (e.g. tuple->ndarray or even numpy broadcasting).
-        Unknown kwargs are passed through untouched so the "Extra fields" validation can still fire on them."""
-        res = dict(kwargs)
-        for c in components:
-            for name, dtype, shape in zip(self.component_to_field_names[c], self.component_to_dtypes[c],
-                                          self.component_to_shapes[c]):
-                if name not in kwargs:
-                    continue
-
-                if (data := kwargs.get(name)) is None and dtype != "object":
-                    raise TypeError(f"'{c.__name__}/{name}': None is not a valid {dtype} value")
-                # If data is given as ndarray, then use it as-is (user provided). Otherwise, convert it to shape/dtype
-                res[name] = data
-                if not isinstance(data, np.ndarray):
-                    res[name] = np.broadcast_to(np.asarray(data, dtype=dtype), shape=shape)
         return res
 
     def _defaults_for(self, components: list[ComponentType], **kwargs) -> dict[str, np.ndarray]:

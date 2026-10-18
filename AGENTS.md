@@ -16,6 +16,10 @@ NEVER EVER EVER modify non-test Python files (the sole exception: test files). P
 ## Rules
 
 - **Verify before answering.** Read the current source; never answer from memory. Don't ask what the code can tell you.
+- **Formal language first.** For structural work, start the discussion with the state formula, not the test:
+  `S0 = setup(...)`, `S1 = act(S0, [...])`, expected `S1 == {...}`. Tests are the Python bytecode for that
+  formula. The language models committed states only; when the subject is the buffer or a failed commit, write
+  the extended state `W = (S, B, Q)` explicitly instead of pretending `act` covers it.
 - **Review gate:** `pip install -e ".[dev]"`, then `pytest test`, `python -m pylint --rcfile=.pylintrc microecs/` and `ruff check` must pass (what `.gitlab-ci.yml` runs). Inside robosim: `pytest pkg/microecs`.
 - **Throwaway scripts** (benchmarks, diagnostics) go in `test/manual/<topic>/`. `test/benchmarks/` is the cross-library comparison harness, not a test suite.
 - **Tests are scoped**: `test/unit/` and `test/integration/`.

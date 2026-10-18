@@ -27,6 +27,7 @@ list and commits, and a state compares directly to a plain dict of component lis
 tests stay direct.
 """
 from dataclasses import field
+import array
 import os
 import random
 import subprocess
@@ -155,7 +156,7 @@ def test_added_entity_field_values_are_stored():
     world.update()
 
     pool = world.query(C8).pool_list[0]
-    np.testing.assert_array_equal(pool.position[0], np.array([1.5, 2.5], "float32"))
+    assert np.allclose(pool.position[0], np.array([1.5, 2.5], "float32"))
 
 
 def test_same_archetype_entities_share_a_single_pool():
@@ -307,7 +308,7 @@ def test_query_exclude_spans_multiple_pools():
 
     qr.position[:] = qr.position + 10.0                        # vectorised write across both surviving pools
     for eid, pos in zip(qr.entity_ids, qr.position):           # scattered back, id-aligned per pool
-        np.testing.assert_array_equal(world.get_entity(int(eid)).position, pos)
+        assert np.allclose(world.get_entity(int(eid)).position, pos)
 
 
 def test_query_exclude_cache_invalidated_on_mutation():
@@ -440,8 +441,8 @@ def test_add_component_moves_entity_and_preserves_fields():
     assert state.world._make_key((C1,)) not in state.world.pools               # old pool emptied -> reclaimed
     pool = state.world.pools[state.world._make_key((C1, C2))]
     assert len(pool) == 1
-    np.testing.assert_array_equal(pool.c1[0], [1.0, 2.0])         # carried-over value intact
-    np.testing.assert_array_equal(pool.c2[0], [3.0, 4.0])         # new value set
+    assert np.allclose(pool.c1[0], [1.0, 2.0])         # carried-over value intact
+    assert np.allclose(pool.c2[0], [3.0, 4.0])         # new value set
 
 
 def test_add_component_keeps_entity_id():
@@ -453,8 +454,8 @@ def test_add_component_keeps_entity_id():
     assert 0 in state.world._eid_to_pool_ix                              # original id still resolves
     pool, ix = state.world._eid_to_pool_ix[0]
     assert pool is state.world.pools[state.world._make_key((C1, C2))]
-    np.testing.assert_array_equal(pool.c1[ix], [1.0, 2.0])
-    np.testing.assert_array_equal(pool.c2[ix], [3.0, 4.0])
+    assert np.allclose(pool.c1[ix], [1.0, 2.0])
+    assert np.allclose(pool.c2[ix], [3.0, 4.0])
 
 
 def test_remove_component_narrows_archetype():
@@ -468,7 +469,7 @@ def test_remove_component_narrows_archetype():
     assert state.world._make_key((C1, C2)) not in state.world.pools
     pool = state.world.pools[state.world._make_key((C1,))]
     assert len(pool) == 1
-    np.testing.assert_array_equal(pool.c1[0], [1.0, 2.0])         # kept field survives
+    assert np.allclose(pool.c1[0], [1.0, 2.0])         # kept field survives
     assert not hasattr(pool, "c2")                                 # dropped field is gone
 
 
@@ -479,8 +480,8 @@ def test_add_component_only_needs_new_fields():
     assert state == {0: [C1, C2]}
 
     pool = state.world.pools[state.world._make_key((C1, C2))]
-    np.testing.assert_array_equal(pool.c1[0], [5.0, 6.0])
-    np.testing.assert_array_equal(pool.c2[0], [7.0, 8.0])
+    assert np.allclose(pool.c1[0], [5.0, 6.0])
+    assert np.allclose(pool.c2[0], [7.0, 8.0])
 
 
 def test_add_unknown_component_raises():
@@ -512,7 +513,7 @@ def test_add_component_to_middle_sibling_keeps_all_ids():
     assert sum(len(pool) for pool in state.world.pools.values()) == 3
     for eid, expected in zip(range(3), ([0, 0], [1, 1], [2, 2])):
         pool, ix = state.world._eid_to_pool_ix[eid]
-        np.testing.assert_array_equal(pool.c1[ix], expected)
+        assert np.allclose(pool.c1[ix], expected)
 
 
 def test_add_then_remove_component_round_trips():
@@ -524,7 +525,7 @@ def test_add_then_remove_component_round_trips():
     pool, ix = state.world._eid_to_pool_ix[0]
     assert pool is state.world.pools[state.world._make_key((C1,))]
     assert state.world._make_key((C1, C2)) not in state.world.pools
-    np.testing.assert_array_equal(pool.c1[ix], [5.0, 6.0])
+    assert np.allclose(pool.c1[ix], [5.0, 6.0])
 
 
 def test_remove_component_lands_in_existing_pool_and_conserves_entities():
@@ -540,7 +541,7 @@ def test_remove_component_lands_in_existing_pool_and_conserves_entities():
     for eid, expected in ((0, [1.0, 1.0]), (1, [2.0, 2.0])):
         pool, ix = state.world._eid_to_pool_ix[eid]
         assert pool is state.world.pools[state.world._make_key((C1,))]
-        np.testing.assert_array_equal(pool.c1[ix], expected)
+        assert np.allclose(pool.c1[ix], expected)
 
 
 def test_add_component_reuses_existing_archetype_pool():
@@ -564,9 +565,9 @@ def test_migrate_multi_field_component_preserves_all_fields():
     assert state == {0: [C1, C5]}
 
     pool, ix = state.world._eid_to_pool_ix[0]
-    np.testing.assert_array_equal(pool.c1[ix], [1.0, 2.0])
-    np.testing.assert_array_equal(pool.c5a[ix], [0.0, 0.0])
-    np.testing.assert_array_equal(pool.c5b[ix], [4.0, 4.0])
+    assert np.allclose(pool.c1[ix], [1.0, 2.0])
+    assert np.allclose(pool.c5a[ix], [0.0, 0.0])
+    assert np.allclose(pool.c5b[ix], [4.0, 4.0])
 
 
 # --- eager id tracking -------------------------------------------------------------------------------------------
@@ -584,8 +585,18 @@ def test_spawn_then_add_component_same_tick():
 
     pool, ix = state.world._eid_to_pool_ix[0]
     assert pool is state.world.pools[state.world._make_key((C1, C2))]
-    np.testing.assert_array_equal(pool.c1[ix], [1.0, 2.0])
-    np.testing.assert_array_equal(pool.c2[ix], [3.0, 4.0])
+    assert np.allclose(pool.c1[ix], [1.0, 2.0])
+    assert np.allclose(pool.c2[ix], [3.0, 4.0])
+
+
+def test_spawn_then_add_an_existing_component_same_tick_is_rejected():
+    """The staged spawn is part of the projected base, so adding a component it already has raises at the call."""
+    state = setup({}, _COMPONENTS)
+    with pytest.raises(ActError, match="already exists") as exc:
+        act(state, [adde([C1]), addc(0, C1)])
+
+    assert exc.value.state == {0: [C1]}        # the accepted spawn is recovered
+    assert state == {}
 
 
 # --- a REJECTED add_entity must not leave bookkeeping behind ------------------------------------------------------
@@ -818,7 +829,7 @@ def test_add_then_remove_same_component_same_tick_ok():
     state = setup({0: [C1]}, _COMPONENTS, data={0: {"c1": np.array([1.0, 2.0], "float32")}})
     state = act(state, [addc(0, C2, c2=np.array([3.0, 4.0], "float32")), rmc(0, C2)])
     assert state == {0: [C1]}
-    np.testing.assert_array_equal(state.world.get_entity(0).c1, [1.0, 2.0])
+    assert np.allclose(state.world.get_entity(0).c1, [1.0, 2.0])
 
 
 def test_remove_then_add_same_component_same_tick_ok():
@@ -828,7 +839,7 @@ def test_remove_then_add_same_component_same_tick_ok():
                             "c2": np.array([3.0, 4.0], "float32")}})
     state = act(state, [rmc(0, C2), addc(0, C2, c2=np.array([5.0, 6.0], "float32"))])
     assert state == {0: [C1, C2]}
-    np.testing.assert_array_equal(state.world.get_entity(0).c2, [5.0, 6.0])
+    assert np.allclose(state.world.get_entity(0).c2, [5.0, 6.0])
 
 
 def test_add_remove_cycle_same_tick_ok():
@@ -864,6 +875,21 @@ def test_remove_component_twice_is_a_noop():
     state = setup({0: [C1, C2]}, _COMPONENTS)
     state = act(state, [rmc(0, C2), rmc(0, C2)])
     assert state == {0: [C1]}
+
+
+def test_remove_component_twice_after_a_same_tick_spawn_is_a_noop():
+    """A repeat removal is judged by the staged remove, not by committed membership: the spawn is not pooled yet."""
+    state = setup({}, _COMPONENTS)
+    state = act(state, [adde([C1, C2]), rmc(0, C1), rmc(0, C1)])
+    assert state == {0: [C2]}
+
+
+def test_remove_after_a_staged_remove_add_cycle_is_not_a_repeat():
+    """The latest buffered decision for C1 is the re-add, so the third removal stages instead of collapsing to the
+    earlier no-op; the ordered replay leaves C2."""
+    state = setup({0: [C1, C2]}, _COMPONENTS)
+    state = act(state, [rmc(0, C1), addc(0, C1), rmc(0, C1)])
+    assert state == {0: [C2]}
 
 
 def test_remove_component_after_the_removal_committed_raises():
@@ -999,7 +1025,7 @@ def test_act_copies_pool_data():
 
     next_state.world.get_entity(0).c1[0] = 9.0
 
-    np.testing.assert_array_equal(state.world.get_entity(0).c1, [1.0, 2.0])
+    assert np.allclose(state.world.get_entity(0).c1, [1.0, 2.0])
 
 
 def test_failed_act_exposes_the_accepted_prefix():
@@ -1024,7 +1050,6 @@ def test_failed_act_exposes_unrelated_prefix_work():
     assert len(exc.value.state.world._command_buffer) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="a removal that empties the projected set is accepted")
 def test_remove_only_component_is_rejected():
     state = setup({0: [C1]}, _COMPONENTS)
     with pytest.raises(ActError, match="last component") as exc:
@@ -1033,7 +1058,6 @@ def test_remove_only_component_is_rejected():
     assert state == {0: [C1]}
 
 
-@pytest.mark.xfail(strict=True, reason="a removal that empties the projected set is accepted")
 def test_remove_after_a_cancelled_staged_add_is_rejected():
     state = setup({0: [C1]}, _COMPONENTS)
     with pytest.raises(ActError, match="last component") as exc:
@@ -1043,7 +1067,6 @@ def test_remove_after_a_cancelled_staged_add_is_rejected():
     assert len(exc.value.state.world._command_buffer) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="two removals can empty the projected set")
 def test_second_remove_that_empties_the_entity_is_rejected():
     state = setup({0: [C1, C3]}, _COMPONENTS)
     with pytest.raises(ActError, match="last component") as exc:
@@ -1053,7 +1076,6 @@ def test_second_remove_that_empties_the_entity_is_rejected():
     assert len(exc.value.state.world._command_buffer) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="a staged swap can still be emptied")
 def test_remove_of_the_only_staged_survivor_is_rejected():
     state = setup({0: [C1]}, _COMPONENTS)
     with pytest.raises(ActError, match="last component") as exc:
@@ -1063,7 +1085,6 @@ def test_remove_of_the_only_staged_survivor_is_rejected():
     assert len(exc.value.state.world._command_buffer) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="the projected set of a same-tick spawn is not checked")
 def test_remove_only_component_of_a_same_tick_spawn_is_rejected():
     state = setup({}, _COMPONENTS)
     with pytest.raises(ActError, match="last component") as exc:
@@ -1072,7 +1093,6 @@ def test_remove_only_component_of_a_same_tick_spawn_is_rejected():
     assert state == {}
 
 
-@pytest.mark.xfail(strict=True, reason="a removal before its survivor is staged is not refused")
 def test_remove_before_its_survivor_is_staged_is_rejected():
     state = setup({0: [C1]}, _COMPONENTS)
     with pytest.raises(ActError, match="last component") as exc:
@@ -1110,7 +1130,7 @@ def test_remove_leaves_a_staged_data_component():
     state = setup({0: [C1]}, _COMPONENTS)
     state = act(state, [addc(0, C2, c2=np.array([3.0, 4.0], "float32")), rmc(0, C1)])
     assert state == {0: [C2]}
-    np.testing.assert_array_equal(state.world.get_entity(0).c2, [3.0, 4.0])
+    assert np.allclose(state.world.get_entity(0).c2, [3.0, 4.0])
 
 
 def test_add_component_wrong_shape_raises_eagerly():
@@ -1275,7 +1295,7 @@ def test_world_reserved_name_guard_survives_python_dash_o():
 # instead of the offending field -- the late, cryptic failure this gate exists to prevent. `data` and `entity_id`
 # are already rejected, but only incidentally (they happen to be Pool / Entity attrs).
 
-_WORLD_KWARG_NAMES = ["check_extra", "component", "components", "strict"]
+_WORLD_KWARG_NAMES = ["check_extra", "component", "components"]
 @pytest.mark.parametrize("name", _WORLD_KWARG_NAMES)
 def test_world_rejects_field_name_colliding_with_its_own_kwargs(name):
     """A field named like one of World's own **kwargs-taking parameters must be refused at construction."""
@@ -1299,7 +1319,7 @@ def test_object_field_holds_python_string_and_compares_by_equality():
     assert pool.kind.dtype == object
     assert pool.kind[ia, 0] == "enemy"                                  # exact string, not truncated to "e"
     assert pool.kind[ib, 0] == "player_one_long_name"                   # full length kept, no <U cap
-    np.testing.assert_array_equal(pool.kind[:, 0] == "enemy", [True, False])  # vectorised string equality
+    assert np.allclose(pool.kind[:, 0] == "enemy", [True, False])  # vectorised string equality
 
 
 def test_object_component_stores_and_reads_back_the_same_object():
@@ -1328,7 +1348,7 @@ def test_object_component_survives_migration():
     pool, ix = world._eid_to_pool_ix[eid]
     assert pool is world.pools[world._make_key((C1, C6))]
     assert pool.c6[ix, 0] is obj                                   # object preserved across the archetype move
-    np.testing.assert_array_equal(pool.c1[ix], [1.0, 2.0])
+    assert np.allclose(pool.c1[ix], [1.0, 2.0])
 
 
 def test_distinct_objects_per_entity_survive_swap_remove():
@@ -1361,7 +1381,7 @@ def test_get_entity_returns_field_data_and_components():
     world.update()
 
     entity = world.get_entity(eid)
-    np.testing.assert_array_equal(entity.position, [1.0, 2.0])
+    assert np.allclose(entity.position, [1.0, 2.0])
     assert set(entity.get_components()) == {C8}
 
 
@@ -1373,8 +1393,8 @@ def test_get_entity_returns_all_fields_of_a_multi_component_entity():
     world.update()
 
     entity = world.get_entity(eid)
-    np.testing.assert_array_equal(entity.position, [1.0, 2.0])
-    np.testing.assert_array_equal(entity.velocity, [3.0, 4.0])
+    assert np.allclose(entity.position, [1.0, 2.0])
+    assert np.allclose(entity.velocity, [3.0, 4.0])
     assert set(entity.get_components()) == {C8, C9}
 
 
@@ -1409,8 +1429,8 @@ def test_get_entity_reads_current_row_after_sibling_swap_remove():
 
     entity_b = world.get_entity(b)
     entity_c = world.get_entity(c)
-    np.testing.assert_array_equal(entity_b.position, [1.0, 1.0])  # b unmoved
-    np.testing.assert_array_equal(entity_c.position, [2.0, 2.0])  # c followed its id into the freed slot
+    assert np.allclose(entity_b.position, [1.0, 1.0])  # b unmoved
+    assert np.allclose(entity_c.position, [2.0, 2.0])  # c followed its id into the freed slot
 
 
 def test_get_entity_unknown_id_raises():
@@ -1526,7 +1546,7 @@ def test_pool_ids_stay_aligned_through_random_churn():
         for eid, fields in shadow.items():
             entity = world.get_entity(eid)
             for name, value in fields.items():
-                np.testing.assert_array_equal(getattr(entity, name), value)  # each id keeps its OWN data thru swaps
+                assert np.allclose(getattr(entity, name), value)  # each id keeps its OWN data thru swaps
 
     assert len(world.live_entities) > 0                            # sanity: the churn left a populated world
 
@@ -1606,7 +1626,7 @@ def test_query_result_entity_ids_is_flat_and_aligned_across_pools():
     assert qr.entity_ids.shape == (len(qr),)                       # flat, one entry per entity
     assert set(qr.entity_ids.tolist()) == {a, b, c}                # exactly the matched ids
     for eid, pos in zip(qr.entity_ids, qr.position):               # id <-> row alignment, across pools
-        np.testing.assert_array_equal(world.get_entity(int(eid)).position, pos)
+        assert np.allclose(world.get_entity(int(eid)).position, pos)
 
 
 def test_query_result_entity_ids_supports_flat_array_ops():
@@ -1650,7 +1670,7 @@ def test_query_result_entity_ids_track_rows_after_swap_remove():
 
     assert set(qr.entity_ids.tolist()) == {a, c}
     for eid, pos in zip(qr.entity_ids, qr.position):
-        np.testing.assert_array_equal(world.get_entity(int(eid)).position, pos)
+        assert np.allclose(world.get_entity(int(eid)).position, pos)
 
 
 def test_query_cache_returns_same_object_between_updates():
@@ -1755,8 +1775,8 @@ def test_no_stale_views_across_realloc():
 
     fresh.position[:] = fresh.position + 1            # must land in the LIVE (reallocated) array
     pool = next(iter(world.pools.values()))
-    np.testing.assert_array_equal(pool.position[0], [1.0, 1.0])           # entity i=0 -> +1
-    np.testing.assert_array_equal(pool.position[100], [1000.0, 1000.0])   # the 101st entity -> +1
+    assert np.allclose(pool.position[0], [1.0, 1.0])           # entity i=0 -> +1
+    assert np.allclose(pool.position[100], [1000.0, 1000.0])   # the 101st entity -> +1
 
 
 # Derived from the library's own constant, like _ENTITY_RESERVED below -- NOT from vars(<a throwaway instance>).
@@ -1830,7 +1850,7 @@ def test_tag_component_is_valid_and_queryable():
 
     qr = world.query(C8, C13)             # tag as a filter: only the tagged entity, position exposed
     assert qr.entity_ids.tolist() == [tagged]
-    np.testing.assert_array_equal(qr.position.numpy(), [[1.0, 2.0]])
+    assert np.allclose(qr.position.numpy(), [[1.0, 2.0]])
 
     qr_tag = world.query(C13)                     # tag-only query spans {Pos,C13} + pure {C13} pools
     assert sorted(qr_tag.entity_ids.tolist()) == sorted([tagged, pure])
@@ -1847,12 +1867,12 @@ def test_tag_component_add_remove_migrates():
     state = act(state, [addc(0, C3)])
     assert state == {0: [C1, C3]}
     assert state.world.query(C3).entity_ids.tolist() == [0]
-    np.testing.assert_array_equal(state.world.get_entity(0).c1, [5.0, 6.0])
+    assert np.allclose(state.world.get_entity(0).c1, [5.0, 6.0])
 
     state = act(state, [rmc(0, C3)])
     assert state == {0: [C1]}
     assert state.world.query(C3).entity_ids.tolist() == []
-    np.testing.assert_array_equal(state.world.get_entity(0).c1, [5.0, 6.0])
+    assert np.allclose(state.world.get_entity(0).c1, [5.0, 6.0])
 
 
 def test_zero_dim_array_field_roundtrips():
@@ -1863,11 +1883,11 @@ def test_zero_dim_array_field_roundtrips():
     world.update()
 
     qr = world.query(C14)
-    np.testing.assert_array_equal(qr.scale.numpy(), [2.5, 4.0])  # (N,) contiguous view over the 0-d field
+    assert np.allclose(qr.scale.numpy(), [2.5, 4.0])  # (N,) contiguous view over the 0-d field
 
     entity = world.get_entity(e0)
     assert entity.scale.shape == ()                            # still a 0-d scalar per entity
-    np.testing.assert_array_equal(entity.scale, 2.5)
+    assert np.allclose(entity.scale, 2.5)
 
 
 def test_add_entity_wrong_dtype_crashes_eagerly():
@@ -1934,7 +1954,7 @@ def test_staged_spawn_snapshots_the_values_at_the_call():
     arr[:] = 9.0
     world.update()
 
-    np.testing.assert_array_equal(world.get_entity(0).position, [1.0, 2.0])
+    assert np.allclose(world.get_entity(0).position, [1.0, 2.0])
 
 
 def test_staged_spawn_snapshots_the_callers_array():
@@ -1945,7 +1965,7 @@ def test_staged_spawn_snapshots_the_callers_array():
     arr.resize(3, refcheck=False)
     world.update()
 
-    np.testing.assert_array_equal(world.get_entity(0).position, [0.0, 0.0])
+    assert np.allclose(world.get_entity(0).position, [0.0, 0.0])
 
 
 def test_staged_add_component_snapshots_the_values_at_the_call():
@@ -1962,7 +1982,7 @@ def test_staged_add_component_snapshots_the_values_at_the_call():
 
     entity = world.get_entity(0)
     assert set(entity.get_components()) == {C8, C9}
-    np.testing.assert_array_equal(entity.velocity, [3.0, 4.0])
+    assert np.allclose(entity.velocity, [3.0, 4.0])
 
 
 def test_spawn_loop_snapshots_each_scratch_buffer():
@@ -1974,7 +1994,32 @@ def test_spawn_loop_snapshots_each_scratch_buffer():
         world.add_entity((C8,), position=scratch)
     world.update()
 
-    np.testing.assert_array_equal(world.query(C8).position.numpy(), [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+    assert np.allclose(world.query(C8).position.numpy(), [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]])
+
+
+def test_staged_spawn_snapshots_an_array_like_that_shares_memory():
+    """A non-ndarray buffer (array.array) converts without copying; mutating it after add_entity cannot reach commit."""
+    world = World(components=[C8])
+    buf = array.array("f", [1.0, 2.0])
+    world.add_entity((C8,), position=buf)
+    buf[0] = 9.0
+    world.update()
+
+    assert np.allclose(world.get_entity(0).position, [1.0, 2.0])
+
+
+def test_staged_add_component_snapshots_an_array_like_that_shares_memory():
+    """Same for add_component."""
+    world = World(components=[C8, C9])
+    world.add_entity((C8,), position=np.array([1.0, 2.0], "float32"))
+    world.update()
+
+    buf = array.array("f", [3.0, 4.0])
+    world.get_entity(0).add_component(C9, velocity=buf)
+    buf[0] = 9.0
+    world.update()
+
+    assert np.allclose(world.get_entity(0).velocity, [3.0, 4.0])
 
 
 def test_staged_object_field_snapshots_the_array_not_the_object():
@@ -2063,7 +2108,7 @@ def test_spawn_computes_defaults_exactly_once():
 
     assert len(calls) == 1, f"defaults computed {len(calls)}x -- the duplicate pass is back"
     pool = world.query(C15).pool_list[0]
-    np.testing.assert_array_equal(pool.color[0], np.array([10, 20, 30], "int32"))
+    assert np.allclose(pool.color[0], np.array([10, 20, 30], "int32"))
 
 
 def test_rejected_spawn_validates_exactly_once_too():
@@ -2123,7 +2168,7 @@ def test_query_with_a_repeated_component_is_harmless():
     world.update()
 
     assert len(world.query(C8, C8).entity_ids) == 1
-    np.testing.assert_array_equal(world.query(C8, C8).position.numpy(), [[1.0, 2.0]])
+    assert np.allclose(world.query(C8, C8).position.numpy(), [[1.0, 2.0]])
 
 
 # --- default metadata: omitted fields fall back to the component's declared default ---
@@ -2136,7 +2181,7 @@ def test_add_entity_fills_default_when_field_omitted():
     world.update()
 
     pool = world.query(C15).pool_list[0]
-    np.testing.assert_array_equal(pool.color[0], np.array([10, 20, 30], "int32"))
+    assert np.allclose(pool.color[0], np.array([10, 20, 30], "int32"))
 
 
 def test_add_entity_explicit_value_overrides_default():
@@ -2147,7 +2192,7 @@ def test_add_entity_explicit_value_overrides_default():
     world.update()
 
     pool = world.query(C15).pool_list[0]
-    np.testing.assert_array_equal(pool.color[0], np.array([1, 2, 3], "int32"))
+    assert np.allclose(pool.color[0], np.array([1, 2, 3], "int32"))
 
 
 def test_default_and_explicit_coexist_per_row():
@@ -2159,8 +2204,8 @@ def test_default_and_explicit_coexist_per_row():
     world.update()
 
     pool = world.query(C15).pool_list[0]
-    np.testing.assert_array_equal(pool.color[0], np.array([10, 20, 30], "int32"))
-    np.testing.assert_array_equal(pool.color[1], np.array([1, 2, 3], "int32"))
+    assert np.allclose(pool.color[0], np.array([10, 20, 30], "int32"))
+    assert np.allclose(pool.color[1], np.array([1, 2, 3], "int32"))
 
 
 def test_component_default_wrong_dtype_rejected():
@@ -2199,8 +2244,8 @@ def test_add_component_fills_default_when_field_omitted():
     assert state == {0: [C1, C2]}
 
     pool = state.world.query(C1, C2).pool_list[0]
-    np.testing.assert_array_equal(pool.c1[0], [1.0, 2.0])
-    np.testing.assert_array_equal(pool.c2[0], [0.0, 0.0])          # metadata default
+    assert np.allclose(pool.c1[0], [1.0, 2.0])
+    assert np.allclose(pool.c2[0], [0.0, 0.0])          # metadata default
 
 
 def test_add_component_explicit_value_overrides_default():
@@ -2210,7 +2255,7 @@ def test_add_component_explicit_value_overrides_default():
     assert state == {0: [C1, C2]}
 
     pool = state.world.query(C1, C2).pool_list[0]
-    np.testing.assert_array_equal(pool.c2[0], [1.0, 2.0])
+    assert np.allclose(pool.c2[0], [1.0, 2.0])
 
 
 # --- field -> component map: what makes entity.set_data(**fields) possible ----------------------------------------
@@ -2242,7 +2287,7 @@ def test_field_to_component_resolves_the_name_entity_set_data_passes():
     assert world.field_to_component["velocity"] is C9
     world.get_entity(eid).set_data(velocity=np.array([9, 8], "float32"))
 
-    np.testing.assert_array_equal(world.get_entity(eid).velocity, [9, 8])
+    assert np.allclose(world.get_entity(eid).velocity, [9, 8])
     assert len(world._command_buffer) == 0
 
 

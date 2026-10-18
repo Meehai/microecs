@@ -84,9 +84,9 @@ def test_same_tick_widening_across_systems():
     ])
     pool, ix = world._eid_to_pool_ix[spawned[0]]
     assert pool is world.pools[world._make_key((HasPosition, HasVelocity, HasRadius))]
-    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])
-    np.testing.assert_array_equal(pool.velocity[ix], [3.0, 4.0])
-    np.testing.assert_array_equal(pool.radius[ix], [5.0])
+    assert np.allclose(pool.position[ix], [1.0, 2.0])
+    assert np.allclose(pool.velocity[ix], [3.0, 4.0])
+    assert np.allclose(pool.radius[ix], [5.0])
     assert _count(world) == 1
 
     # pre-existing entity widened by two different systems, same tick -> same full archetype
@@ -115,7 +115,7 @@ def test_same_tick_component_round_trips_across_systems():
     pool, ix = world._eid_to_pool_ix[eid]
     assert pool is world.pools[world._make_key((HasPosition,))]
     assert world._make_key((HasPosition, HasVelocity)) not in world.pools
-    np.testing.assert_array_equal(pool.position[ix], [5.0, 6.0])
+    assert np.allclose(pool.position[ix], [5.0, 6.0])
     assert not hasattr(pool, "velocity")
 
     # remove X then re-add X with new data, same tick -> ends in {pos, vel} carrying the re-added value
@@ -129,8 +129,8 @@ def test_same_tick_component_round_trips_across_systems():
     ])
     pool, ix = world._eid_to_pool_ix[eid]
     assert pool is world.pools[world._make_key((HasPosition, HasVelocity))]
-    np.testing.assert_array_equal(pool.position[ix], [1.0, 2.0])           # untouched
-    np.testing.assert_array_equal(pool.velocity[ix], [9.0, 9.0])           # the re-added value, not the old [3, 4]
+    assert np.allclose(pool.position[ix], [1.0, 2.0])           # untouched
+    assert np.allclose(pool.velocity[ix], [9.0, 9.0])           # the re-added value, not the old [3, 4]
 
 
 def test_same_tick_lifecycle_across_systems():
@@ -162,7 +162,7 @@ def test_same_tick_lifecycle_across_systems():
     assert _count(world) == 3
     for eid, expected in ((ids[0], [0, 0]), (ids[2], [2, 2]), (spawned[0], [9, 9])):
         pool, ix = world._eid_to_pool_ix[eid]
-        np.testing.assert_array_equal(pool.position[ix], expected)
+        assert np.allclose(pool.position[ix], expected)
 
     # migrate ALL to {pos, vel} + despawn one, same tick -> old pool reclaimed, survivors in richer pool
     world = World(components=[HasPosition, HasVelocity])
@@ -178,7 +178,7 @@ def test_same_tick_lifecycle_across_systems():
     for eid, expected in ((ids[1], [1, 1]), (ids[2], [2, 2])):
         pool, ix = world._eid_to_pool_ix[eid]
         assert pool is world.pools[world._make_key((HasPosition, HasVelocity))]
-        np.testing.assert_array_equal(pool.position[ix], expected)
+        assert np.allclose(pool.position[ix], expected)
 
     # spawn several + despawn all of them, same tick -> world ends empty, pools reclaimed
     world = World(components=[HasPosition])

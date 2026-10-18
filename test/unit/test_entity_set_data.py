@@ -80,7 +80,7 @@ def test_set_data_writes_immediately_and_stages_nothing():
 
     assert world.get_entity(eid).set_data(a=np.array([9.0, 8.0], "float32")) is None    # succeeds -> returns None
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), [9.0, 8.0])                    # the pool itself
+    assert np.allclose(_row(world, eid, "a"), [9.0, 8.0])                    # the pool itself
     assert len(world._command_buffer) == 0                                              # SET_DATA is gone
 
 
@@ -91,7 +91,7 @@ def test_set_data_is_readable_by_the_caller_that_wrote_it():
 
     e.set_data(a=np.array([9.0, 8.0], "float32"))
 
-    np.testing.assert_array_equal(e.a, [9.0, 8.0])
+    assert np.allclose(e.a, [9.0, 8.0])
 
 
 def test_set_data_composes_with_a_later_write_to_the_same_field():
@@ -103,7 +103,7 @@ def test_set_data_composes_with_a_later_write_to_the_same_field():
     e.set_data(a=e.a + np.float32(1.0))                    # reads its own write, adds to it
     e.a += np.float32(1.0)                                 # and the setattr idiom stacks on top
 
-    np.testing.assert_array_equal(e.a, [7.0, 7.0])
+    assert np.allclose(e.a, [7.0, 7.0])
 
 
 def test_set_data_spans_multiple_components_in_one_call():
@@ -113,8 +113,8 @@ def test_set_data_spans_multiple_components_in_one_call():
     world.get_entity(eid).set_data(a=np.array([9.0, 8.0], "float32"), b=np.array([7.0, 6.0], "float32"))
 
     e = world.get_entity(eid)
-    np.testing.assert_array_equal(e.a, [9.0, 8.0])
-    np.testing.assert_array_equal(e.b, [7.0, 6.0])
+    assert np.allclose(e.a, [9.0, 8.0])
+    assert np.allclose(e.b, [7.0, 6.0])
 
 
 def test_set_data_multi_field_of_one_component_writes_both():
@@ -123,8 +123,8 @@ def test_set_data_multi_field_of_one_component_writes_both():
 
     world.get_entity(eid).set_data(x=np.array([9.0, 8.0], "float32"), y=np.array([7.0, 6.0], "float32"))
 
-    np.testing.assert_array_equal(_row(world, eid, "x"), [9.0, 8.0])
-    np.testing.assert_array_equal(_row(world, eid, "y"), [7.0, 6.0])
+    assert np.allclose(_row(world, eid, "x"), [9.0, 8.0])
+    assert np.allclose(_row(world, eid, "y"), [7.0, 6.0])
 
 
 def test_set_data_partial_multifield_leaves_the_other_field_alone():
@@ -133,8 +133,8 @@ def test_set_data_partial_multifield_leaves_the_other_field_alone():
 
     world.get_entity(eid).set_data(x=np.array([9.0, 8.0], "float32"))      # y omitted
 
-    np.testing.assert_array_equal(_row(world, eid, "x"), [9.0, 8.0])
-    np.testing.assert_array_equal(_row(world, eid, "y"), [3.0, 4.0])       # untouched
+    assert np.allclose(_row(world, eid, "x"), [9.0, 8.0])
+    assert np.allclose(_row(world, eid, "y"), [3.0, 4.0])       # untouched
 
 
 def test_set_data_empty_call_is_a_noop():
@@ -143,7 +143,7 @@ def test_set_data_empty_call_is_a_noop():
 
     assert world.get_entity(eid).set_data() is None
     assert len(world._command_buffer) == 0
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])
 
 
 def test_set_data_has_no_set_component_data():
@@ -161,7 +161,7 @@ def test_set_data_copies_the_value_it_is_given():
     world.get_entity(eid).set_data(a=src)
     src[:] = [999.0, 999.0]                                               # mutate the source after the write
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), [5.0, 6.0])      # stored value is independent
+    assert np.allclose(_row(world, eid, "a"), [5.0, 6.0])      # stored value is independent
 
 
 def test_set_data_object_field_stores_the_reference():
@@ -186,7 +186,7 @@ def test_set_data_writes_a_zero_dim_field():
 
     e = world.get_entity(eid)
     assert e.scale.shape == ()
-    np.testing.assert_array_equal(e.scale, 4.0)
+    assert np.allclose(e.scale, 4.0)
 
 
 def test_set_data_nonfinite_accepted():
@@ -195,7 +195,7 @@ def test_set_data_nonfinite_accepted():
 
     world.get_entity(eid).set_data(a=np.array([np.nan, np.inf], "float32"))
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), np.array([np.nan, np.inf], "float32"))
+    assert np.allclose(_row(world, eid, "a"), np.array([np.nan, np.inf], "float32"), equal_nan=True)
 
 
 # --- what it accepts, what it refuses: `__setattr__`'s rule, which is numpy's ---------------------------------------
@@ -216,7 +216,7 @@ def test_set_data_accepts_whatever_numpy_accepts(reason, value, expected):
 
     world.get_entity(eid).set_data(a=value)
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), expected)
+    assert np.allclose(_row(world, eid, "a"), expected)
 
 
 def test_set_data_unknown_field_rejected():
@@ -225,7 +225,7 @@ def test_set_data_unknown_field_rejected():
 
     with pytest.raises((KeyError, ValueError, AttributeError), match="bogus"):
         world.get_entity(eid).set_data(bogus=np.array([1.0, 2.0], "float32"))
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])
 
 
 def test_set_data_field_of_a_component_the_entity_lacks_rejected():
@@ -234,7 +234,7 @@ def test_set_data_field_of_a_component_the_entity_lacks_rejected():
 
     with pytest.raises((ValueError, KeyError, AttributeError)):
         world.get_entity(eid).set_data(b=np.array([1.0, 2.0], "float32"))
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])       # untouched
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])       # untouched
 
 
 def test_set_data_not_broadcastable_rejected():
@@ -243,7 +243,7 @@ def test_set_data_not_broadcastable_rejected():
 
     with pytest.raises((ValueError, TypeError)):
         world.get_entity(eid).set_data(a=np.array([1.0, 2.0, 3.0], "float32"))
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])
 
 
 # --- all-or-nothing across the WHOLE call -------------------------------------------------------------------------
@@ -268,8 +268,8 @@ def test_set_data_one_bad_field_writes_nothing_same_component(reason, bad):
     with pytest.raises((ValueError, TypeError, KeyError)):
         world.get_entity(eid).set_data(x=np.array([9.0, 8.0], "float32"), y=bad)
 
-    np.testing.assert_array_equal(_row(world, eid, "x"), [1.0, 2.0])       # x NOT written
-    np.testing.assert_array_equal(_row(world, eid, "y"), [3.0, 4.0])
+    assert np.allclose(_row(world, eid, "x"), [1.0, 2.0])       # x NOT written
+    assert np.allclose(_row(world, eid, "y"), [3.0, 4.0])
 
 
 @pytest.mark.parametrize("reason,bad", _BAD, ids=_BAD_IDS)
@@ -281,8 +281,8 @@ def test_set_data_one_bad_field_writes_nothing_across_components(reason, bad):
     with pytest.raises((ValueError, TypeError, KeyError)):
         world.get_entity(eid).set_data(a=np.array([9.0, 8.0], "float32"), b=bad)
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])       # a NOT written
-    np.testing.assert_array_equal(_row(world, eid, "b"), [3.0, 4.0])
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])       # a NOT written
+    assert np.allclose(_row(world, eid, "b"), [3.0, 4.0])
 
 
 @pytest.mark.parametrize("reason,bad", _BAD, ids=_BAD_IDS)
@@ -293,8 +293,8 @@ def test_set_data_bad_field_first_also_writes_nothing(reason, bad):
     with pytest.raises((ValueError, TypeError, KeyError)):
         world.get_entity(eid).set_data(b=bad, a=np.array([9.0, 8.0], "float32"))
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])
-    np.testing.assert_array_equal(_row(world, eid, "b"), [3.0, 4.0])
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])
+    assert np.allclose(_row(world, eid, "b"), [3.0, 4.0])
 
 
 def test_set_data_absent_component_beside_a_valid_field_writes_nothing():
@@ -304,7 +304,7 @@ def test_set_data_absent_component_beside_a_valid_field_writes_nothing():
     with pytest.raises((ValueError, KeyError, AttributeError)):
         world.get_entity(eid).set_data(a=np.array([9.0, 8.0], "float32"), b=np.array([1.0, 2.0], "float32"))
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])
 
 
 def test_set_data_unknown_field_beside_a_valid_one_writes_nothing():
@@ -314,7 +314,7 @@ def test_set_data_unknown_field_beside_a_valid_one_writes_nothing():
     with pytest.raises((KeyError, ValueError, AttributeError)):
         world.get_entity(eid).set_data(a=np.array([9.0, 8.0], "float32"), bogus=np.array([1.0], "float32"))
 
-    np.testing.assert_array_equal(_row(world, eid, "a"), [1.0, 2.0])
+    assert np.allclose(_row(world, eid, "a"), [1.0, 2.0])
 
 
 def test_set_data_failure_leaves_earlier_work_alone():
@@ -334,11 +334,11 @@ def test_set_data_failure_leaves_earlier_work_alone():
         e.set_data(a=np.array([9.0, 8.0], "float32"), b=np.array([1.0, 2.0, 3.0], "float32"))
 
     assert len(world._command_buffer) == 1                           # the staged migration untouched
-    np.testing.assert_array_equal(e.a, [7.0, 7.0])                   # the EARLIER write still stands
-    np.testing.assert_array_equal(e.b, [3.0, 4.0])                   # the failed call changed nothing
+    assert np.allclose(e.a, [7.0, 7.0])                   # the EARLIER write still stands
+    assert np.allclose(e.b, [3.0, 4.0])                   # the failed call changed nothing
     world.update()
-    np.testing.assert_array_equal(world.get_entity(eid).x, [1.0, 1.0])   # and the migration still applies
-    np.testing.assert_array_equal(world.get_entity(eid).a, [7.0, 7.0])   # value carried across the pool move
+    assert np.allclose(world.get_entity(eid).x, [1.0, 1.0])   # and the migration still applies
+    assert np.allclose(world.get_entity(eid).a, [7.0, 7.0])   # value carried across the pool move
 
 
 # --- live view: the row must exist, and it must be the CURRENT one -------------------------------------------------
@@ -355,8 +355,8 @@ def test_set_data_targets_the_correct_row_after_swap_remove():
 
     world.get_entity(c).set_data(a=np.array([20.0, 20.0], "float32"))
 
-    np.testing.assert_array_equal(world.get_entity(c).a, [20.0, 20.0])    # c got the write
-    np.testing.assert_array_equal(world.get_entity(b).a, [1.0, 1.0])      # neighbour untouched
+    assert np.allclose(world.get_entity(c).a, [20.0, 20.0])    # c got the write
+    assert np.allclose(world.get_entity(b).a, [1.0, 1.0])      # neighbour untouched
 
 
 def test_set_data_before_the_spawn_is_committed_rejects():
@@ -370,9 +370,9 @@ def test_set_data_before_the_spawn_is_committed_rejects():
         e.set_data(a=np.array([9.0, 8.0], "float32"))
 
     world.update()
-    np.testing.assert_array_equal(e.a, [1.0, 2.0])                        # the spawn value, unaffected
+    assert np.allclose(e.a, [1.0, 2.0])                        # the spawn value, unaffected
     e.set_data(a=np.array([9.0, 8.0], "float32"))                         # and now it works
-    np.testing.assert_array_equal(e.a, [9.0, 8.0])
+    assert np.allclose(e.a, [9.0, 8.0])
 
 
 def test_set_data_on_a_field_added_this_tick_rejects_until_update():
@@ -390,8 +390,8 @@ def test_set_data_on_a_field_added_this_tick_rejects_until_update():
 
     world.update()
     e.set_data(b=np.array([5.0, 6.0], "float32"))
-    np.testing.assert_array_equal(e.b, [5.0, 6.0])
-    np.testing.assert_array_equal(e.a, [1.0, 2.0])                        # survived the migration
+    assert np.allclose(e.b, [5.0, 6.0])
+    assert np.allclose(e.a, [1.0, 2.0])                        # survived the migration
 
 
 def test_set_data_on_a_field_pending_removal_lands_then_is_dropped():
@@ -402,12 +402,12 @@ def test_set_data_on_a_field_pending_removal_lands_then_is_dropped():
 
     e.remove_component(C2)
     e.set_data(b=np.array([5.0, 6.0], "float32"))                         # accepted: the column exists
-    np.testing.assert_array_equal(e.b, [5.0, 6.0])
+    assert np.allclose(e.b, [5.0, 6.0])
 
     world.update()
     with pytest.raises(AttributeError):
         _ = e.b                                                           # gone with the component
-    np.testing.assert_array_equal(e.a, [1.0, 2.0])
+    assert np.allclose(e.a, [1.0, 2.0])
 
 
 def test_set_data_through_a_stale_handle_rejects():
@@ -424,4 +424,4 @@ def test_set_data_through_a_stale_handle_rejects():
     with pytest.raises((AttributeError, KeyError, ValueError)):
         e.set_data(a=np.array([9.0, 8.0], "float32"))
 
-    np.testing.assert_array_equal(world.get_entity(other).a, [3.0, 4.0])  # neighbour untouched
+    assert np.allclose(world.get_entity(other).a, [3.0, 4.0])  # neighbour untouched

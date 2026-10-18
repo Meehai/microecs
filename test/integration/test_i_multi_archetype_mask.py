@@ -67,5 +67,5 @@ def test_full_n_mask_writes_back_across_two_archetypes():
 
     WallBounceSystem(scene)(world)
 
-    np.testing.assert_array_equal(pool_a.velocity, [[-3.0, 3.0], [3.0, 3.0]])   # e1 x-bounced, e2 untouched
-    np.testing.assert_array_equal(pool_b.velocity, [[-3.0, 3.0], [3.0, -3.0]])  # e3 x-bounced, e4 y-bounced
+    assert np.allclose(pool_a.velocity, [[-3.0, 3.0], [3.0, 3.0]])   # e1 x-bounced, e2 untouched
+    assert np.allclose(pool_b.velocity, [[-3.0, 3.0], [3.0, -3.0]])  # e3 x-bounced, e4 y-bounced

@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-18
 **Priority**: 2
-**Closed**: n/a
+**Closed**: 2026-10-18
 
 ## Why
 

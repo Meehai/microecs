@@ -1,4 +1,4 @@
-"""Unit tests for add_entity's array-like data conversion (_convert_components_data).
+"""Unit tests for add_entity's array-like data conversion.
 
 Contract (broadcastable commit): field values may be lists/tuples/scalars/strings -- they are converted
 to the field's dtype/shape at the add_entity call. ndarrays are taken as-is and validated strictly

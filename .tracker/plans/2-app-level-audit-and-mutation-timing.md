@@ -148,7 +148,7 @@ original text, because *why* a trap existed is the part worth re-reading before 
 | 4 | a dangling `Entity`: read and write phrase the same state differently | error quality | **regressed 07-27** by #45 (Appendix A) |
 | 6b | the removal leak is exactly "the last row of a surviving pool" | lifetime | sharpens [#40](../tasks/open/40-object-dtype-lifetimes/TASK.md) |
 | 7 | reductions work at 1 archetype, raise at 2 | contract | extends [#37](../tasks/open/37-qrarray-qrfield-one-contract/TASK.md)/[#38](../tasks/open/38-array-function-honour-check/TASK.md) |
-| 9b | removing the last component reaches the state `add_entity` forbids | state machine | filed [#54](../tasks/open/54-remove-last-component/TASK.md): reject the removal that would empty the entity |
+| 9b | removing the last component reaches the state `add_entity` forbids | state machine | **closed** by [#54](../tasks/closed/54-remove-last-component/TASK.md): the removal that would empty the entity raises |
 | 12 | an emptied archetype is deleted and rebuilt from scratch | perf/design | **half closed** by [#49](../tasks/closed/49-churn-headroom-beyond-44/TASK.md) (same-tick only) |
 | 13 | a cold query is O(entities), and the cache never survives a tick | perf | **first half closed** by [#47](../tasks/closed/47-lazy-entity-ids/TASK.md); now a NOTE |
 | 14 | a mid-tick `update()` voids the queries already taken | perf/correctness | game-shaped [#27](../tasks/open/27-stale-queryresult-guard/TASK.md) |
@@ -212,8 +212,8 @@ a malformed `QRField` instead of raising. `primitives.md` already records this a
 entity lived on with `components=[]`, `fields=set()`, invisible to every query except the no-arg one.
 Decision: empty entities cannot exist. The removal that would empty an entity raises, and the caller
 despawns with `remove_entity()`. Auto-despawn was rejected: it hides a lifecycle change inside a component
-verb, and it collides with #53's same-tick repeat semantics. Filed as
-[#54](../tasks/open/54-remove-last-component/TASK.md).
+verb, and it collides with #53's same-tick repeat semantics. Closed as
+[#54](../tasks/closed/54-remove-last-component/TASK.md).
 
 Its twin, finding 9 (duplicate components at spawn), was closed by #43 with a one-line `raise`. 9b was
 deliberately **not** bundled with it: a check and a decision do not belong in one task.
@@ -510,7 +510,7 @@ Ranked, and only what is still open. Ids are this plan's findings unless a `#` s
 |---|---|---|---|
 | 1 | **Buffer-aware `has_component`** (2) | S | the information already exists in `_entity_has_buffered_component`, which since 07-27 is even a plain `bool` with the question in its name; deletes the last app-side bookkeeping the shooter needs |
 | 2 | **One phrasing for "no such entity"** (4) | XS | promoted: **four** phrasings now, and read-vs-write disagree on the same state. Cheapest item on the list, and it is a live regression rather than an old wart |
-| 3 | **Close 9b** ([#54](../tasks/open/54-remove-last-component/TASK.md)) | S | decision: reject the removal that would empty the entity; caller uses `remove_entity()`. Auto-despawn rejected for now |
+| 3 | ~~**Close 9b** ([#54](../tasks/closed/54-remove-last-component/TASK.md))~~ **DONE 2026-10-18** | S | decision: reject the removal that would empty the entity; caller uses `remove_entity()`. Auto-despawn rejected for now |
 | 4 | **Refresh-not-clear queries** (Part 3.2) | M | subsumes #27 and finding 14. Now purely a correctness item: with #47 in, the cache rebuild is ~5 µs, so the perf argument for it is gone |
 | 5 | **One contract for `qr.field`** (Part 4) | M | concrete resolution for open P1 #37 + #38, including finding 7's reductions |
 | 6 | **Field-declaration helpers** ([#50](../tasks/closed/50-field-declaration-helpers/TASK.md)) | S | filed 07-27. Pure sugar, ~15 LoC, no new code path — and 11 files in this repo already wrote it themselves |

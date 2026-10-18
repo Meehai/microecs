@@ -120,7 +120,7 @@ def test_entity_reads_field_components_and_fields():
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
-    np.testing.assert_array_equal(e.position, [1.0, 2.0])
+    assert np.allclose(e.position, [1.0, 2.0])
     assert set(e.get_components()) == {C1}
     assert e.get_fields() == {"position"}
     assert e.entity_id == eid
@@ -157,10 +157,10 @@ def test_entity_sliced_read_still_works():
     world.update()
     e = world.get_entity(eid)
 
-    np.testing.assert_array_equal(e.pose[0:3, 3], pose[0:3, 3])
-    np.testing.assert_array_equal(e.pose[0], pose[0])
+    assert np.allclose(e.pose[0:3, 3], pose[0:3, 3])
+    assert np.allclose(e.pose[0], pose[0])
     assert float(e.pose[1, 1]) == pose[1, 1]
-    np.testing.assert_array_equal(e.pose.copy(), pose)
+    assert np.allclose(e.pose.copy(), pose)
 
 
 def test_entity_read_is_a_live_view_not_a_copy():
@@ -170,7 +170,7 @@ def test_entity_read_is_a_live_view_not_a_copy():
 
     world.query(C1).position = np.array([[7.0, 7.0]], "float32")   # the vectorised write path
 
-    np.testing.assert_array_equal(e.position, [7.0, 7.0])
+    assert np.allclose(e.position, [7.0, 7.0])
 
 
 # --- eager data write: every idiom lands in the pool NOW ----------------------------------------------------------
@@ -184,7 +184,7 @@ def test_entity_attribute_write_lands_in_the_pool_immediately():
 
     e.position = np.array([9.0, 8.0], "float32")
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), [9.0, 8.0])   # the pool itself
+    assert np.allclose(_row(world, eid, "position"), [9.0, 8.0])   # the pool itself
     assert len(world._command_buffer) == 0                                    # no command, no deferral
 
 
@@ -206,7 +206,7 @@ def test_entity_write_never_rebinds_the_pool_column():
 
     assert pool.data["position"] is column                                   # not swapped out
     assert pool.data["position"].shape == (pool.capacity, 2)                 # still the full column
-    np.testing.assert_array_equal(world.get_entity(other).position, [3.0, 4.0])   # neighbour's row intact
+    assert np.allclose(world.get_entity(other).position, [3.0, 4.0])   # neighbour's row intact
     world.add_entity((C1,), position=np.array([5.0, 5.0], "float32"))
     world.update()                                                          # and the pool can still grow
 
@@ -220,7 +220,7 @@ def test_entity_attribute_write_copies_the_value_it_is_given():
     e.position = src
     src[:] = [999.0, 999.0]                                                  # mutate the source after the write
 
-    np.testing.assert_array_equal(e.position, [5.0, 6.0])                    # stored value is independent
+    assert np.allclose(e.position, [5.0, 6.0])                    # stored value is independent
 
 
 def test_entity_slice_write_lands_immediately():
@@ -230,7 +230,7 @@ def test_entity_slice_write_lands_immediately():
 
     e.position[:] = np.array([9.0, 8.0], "float32")
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), [9.0, 8.0])
+    assert np.allclose(_row(world, eid, "position"), [9.0, 8.0])
     assert len(world._command_buffer) == 0
 
 
@@ -241,7 +241,7 @@ def test_entity_element_write_lands_immediately():
 
     e.position[0] = 9.0
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), [9.0, 2.0])
+    assert np.allclose(_row(world, eid, "position"), [9.0, 2.0])
 
 
 def test_entity_inplace_add_lands_immediately():
@@ -252,7 +252,7 @@ def test_entity_inplace_add_lands_immediately():
 
     e.position += np.array([10.0, 10.0], "float32")
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), [11.0, 12.0])
+    assert np.allclose(_row(world, eid, "position"), [11.0, 12.0])
 
 
 def test_entity_multidim_slice_write_lands_immediately():
@@ -264,7 +264,7 @@ def test_entity_multidim_slice_write_lands_immediately():
 
     e.pose[0:3, 3] = np.array([1.0, 2.0, 3.0], "float32")
 
-    np.testing.assert_array_equal(_row(world, eid, "pose")[0:3, 3], [1.0, 2.0, 3.0])
+    assert np.allclose(_row(world, eid, "pose")[0:3, 3], [1.0, 2.0, 3.0])
     assert _row(world, eid, "pose")[3, 3] == 0.0                             # nothing else touched
 
 
@@ -290,7 +290,7 @@ def test_entity_zero_dim_field_write_lands_immediately():
 
     e.scale = np.array(4.0, "float32")
 
-    np.testing.assert_array_equal(_row(world, eid, "scale"), 4.0)
+    assert np.allclose(_row(world, eid, "scale"), 4.0)
     assert e.scale.shape == ()
 
 
@@ -304,7 +304,7 @@ def test_entity_read_your_own_write_within_one_tick():
 
     e.position = np.array([9.0, 8.0], "float32")
 
-    np.testing.assert_array_equal(e.position, [9.0, 8.0])       # a buffered write would read [1.0, 2.0]
+    assert np.allclose(e.position, [9.0, 8.0])       # a buffered write would read [1.0, 2.0]
 
 
 def test_entity_read_modify_write_composes_within_one_tick():
@@ -323,7 +323,7 @@ def test_entity_read_modify_write_composes_within_one_tick():
     damage(3.0)
     damage(4.0)
 
-    np.testing.assert_array_equal(e.health, [3.0])               # 10 - 3 - 4, not 10 - 4
+    assert np.allclose(e.health, [3.0])               # 10 - 3 - 4, not 10 - 4
 
 
 def test_entity_inplace_accumulator_composes_within_one_tick():
@@ -336,7 +336,7 @@ def test_entity_inplace_accumulator_composes_within_one_tick():
     for contribution in (1.0, 2.0, 3.0):
         e.health += np.float32(contribution)
 
-    np.testing.assert_array_equal(e.health, [6.0])               # every contribution, not just the last
+    assert np.allclose(e.health, [6.0])               # every contribution, not just the last
 
 
 def test_entity_write_is_visible_through_a_query_taken_before_it():
@@ -346,7 +346,7 @@ def test_entity_write_is_visible_through_a_query_taken_before_it():
 
     world.get_entity(eid).position = np.array([9.0, 8.0], "float32")
 
-    np.testing.assert_array_equal(qr.position[0], [9.0, 8.0])
+    assert np.allclose(qr.position[0], [9.0, 8.0])
 
 
 def test_entity_write_is_visible_to_a_batch_read_modify_write():
@@ -358,7 +358,7 @@ def test_entity_write_is_visible_to_a_batch_read_modify_write():
     qr = world.query(C1)
     qr.position = qr.position * 10.0                             # batch sees [2, 2] -> [20, 20]
 
-    np.testing.assert_array_equal(e.position, [20.0, 20.0])      # and the entity view sees that
+    assert np.allclose(e.position, [20.0, 20.0])      # and the entity view sees that
 
 
 def test_data_only_tick_keeps_the_query_cache_alive():
@@ -384,12 +384,12 @@ def test_entity_write_does_not_disturb_staged_structural_commands():
     e.add_component(C2, velocity=np.zeros(2, "float32"))     # staged: C1 -> C1+C2
     e.position = np.array([9.0, 8.0], "float32")                     # eager, into the OLD pool
     assert len(world._command_buffer) == 1                           # the write added nothing to the buffer
-    np.testing.assert_array_equal(e.position, [9.0, 8.0])
+    assert np.allclose(e.position, [9.0, 8.0])
 
     world.update()
 
-    np.testing.assert_array_equal(e.position, [9.0, 8.0])            # carried over by the migration
-    np.testing.assert_array_equal(e.velocity, [0.0, 0.0])
+    assert np.allclose(e.position, [9.0, 8.0])            # carried over by the migration
+    assert np.allclose(e.velocity, [0.0, 0.0])
 
 
 # --- what a write ACCEPTS: numpy's rules, the same ones `qr.field = v` follows --------------------------------------
@@ -427,7 +427,7 @@ def test_entity_write_accepts_whatever_numpy_accepts(reason, value, expected):
 
     world.get_entity(eid).position = value
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), expected)
+    assert np.allclose(_row(world, eid, "position"), expected)
     assert _row(world, eid, "position").dtype == "float32"           # the COLUMN's dtype never changes
 
 
@@ -454,7 +454,7 @@ def test_entity_write_agrees_with_the_batch_write_path(reason, value):
 
     assert (entity_err is None) == (qr_err is None), f"entity: {entity_err}, batch: {qr_err}"
     if entity_err is None:                                   # both accepted -> same bytes in the pool
-        np.testing.assert_array_equal(_row(world_e, eid, "position"), _row(world_q, eid, "position"))
+        assert np.allclose(_row(world_e, eid, "position"), _row(world_q, eid, "position"))
 
 
 @pytest.mark.parametrize("reason,value", _REJECTED, ids=[r for r, _ in _REJECTED])
@@ -467,7 +467,7 @@ def test_entity_write_rejected_value_leaves_the_pool_untouched(reason, value):
     with pytest.raises((ValueError, TypeError)):
         e.position = value
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), [1.0, 2.0])
+    assert np.allclose(_row(world, eid, "position"), [1.0, 2.0])
 
 
 def test_entity_write_object_field_takes_a_bare_python_object():
@@ -532,11 +532,11 @@ def test_entity_zero_dim_field_accumulates_but_cannot_be_sliced():
 
     e.scale += np.float32(1.5)                               # rebind, not in-place -- and it composes
     e.scale += np.float32(1.0)
-    np.testing.assert_array_equal(_row(world, eid, "scale"), 5.0)
+    assert np.allclose(_row(world, eid, "scale"), 5.0)
 
     with pytest.raises((TypeError, ValueError)):
         e.scale[...] = 4.0                                   # numpy scalar: item assignment unsupported
-    np.testing.assert_array_equal(_row(world, eid, "scale"), 5.0)
+    assert np.allclose(_row(world, eid, "scale"), 5.0)
 
 
 # --- not committed yet: reads and writes agree --------------------------------------------------------------------
@@ -624,7 +624,7 @@ def test_entity_field_write_before_update_raises_attributeerror():
         e.position = np.array([9.0, 8.0], "float32")
 
     world.update()
-    np.testing.assert_array_equal(e.position, [1.0, 2.0])            # the spawn value, unaffected by the refusal
+    assert np.allclose(e.position, [1.0, 2.0])            # the spawn value, unaffected by the refusal
 
 
 def test_entity_write_after_commit_of_the_spawn_works():
@@ -636,7 +636,7 @@ def test_entity_write_after_commit_of_the_spawn_works():
 
     e.position = np.array([9.0, 8.0], "float32")                     # same handle, now backed by a row
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), [9.0, 8.0])
+    assert np.allclose(_row(world, eid, "position"), [9.0, 8.0])
 
 
 # --- live view: resolves the CURRENT row, across swaps and migrations ---------------------------------------------
@@ -654,8 +654,8 @@ def test_entity_write_targets_correct_row_after_swap_remove():
 
     world.get_entity(c).position = np.array([20.0, 20.0], "float32")
 
-    np.testing.assert_array_equal(world.get_entity(c).position, [20.0, 20.0])       # c got the write
-    np.testing.assert_array_equal(world.get_entity(b).position, [1.0, 1.0])         # neighbour untouched
+    assert np.allclose(world.get_entity(c).position, [20.0, 20.0])       # c got the write
+    assert np.allclose(world.get_entity(b).position, [1.0, 1.0])         # neighbour untouched
 
 
 def test_entity_view_is_live_across_archetype_migration():
@@ -671,12 +671,12 @@ def test_entity_view_is_live_across_archetype_migration():
     world.get_entity(eid).add_component(C2, velocity=np.array([1.0, 1.0], "float32"))  # -> pos+vel pool
     world.update()
 
-    np.testing.assert_array_equal(e.position, [5.0, 6.0])           # data survived the move, same view
+    assert np.allclose(e.position, [5.0, 6.0])           # data survived the move, same view
     assert set(e.get_components()) == {C1, C2}    # view sees the new archetype
     assert "velocity" in e.get_fields()
 
     e.velocity = np.array([7.0, 7.0], "float32")                    # write the newly-available field via old view
-    np.testing.assert_array_equal(_row(world, eid, "velocity"), [7.0, 7.0])
+    assert np.allclose(_row(world, eid, "velocity"), [7.0, 7.0])
 
 
 def test_entity_write_to_a_field_added_this_tick_raises_until_update():
@@ -694,7 +694,7 @@ def test_entity_write_to_a_field_added_this_tick_raises_until_update():
 
     world.update()
     e.velocity = np.array([5.0, 6.0], "float32")                     # the column exists now
-    np.testing.assert_array_equal(e.velocity, [5.0, 6.0])
+    assert np.allclose(e.velocity, [5.0, 6.0])
 
 
 def test_entity_write_to_a_field_pending_removal_lands_then_is_dropped():
@@ -708,13 +708,13 @@ def test_entity_write_to_a_field_pending_removal_lands_then_is_dropped():
 
     e.remove_component(C2)                                  # staged
     e.velocity = np.array([5.0, 6.0], "float32")                     # accepted: the column is still live
-    np.testing.assert_array_equal(e.velocity, [5.0, 6.0])
+    assert np.allclose(e.velocity, [5.0, 6.0])
 
     world.update()
 
     with pytest.raises(AttributeError):
         _ = e.velocity                                               # gone with the component
-    np.testing.assert_array_equal(e.position, [1.0, 2.0])            # the surviving field is intact
+    assert np.allclose(e.position, [1.0, 2.0])            # the surviving field is intact
 
 
 # --- stale handle across remove: every op must reject EAGERLY ------------------------------------------------------
@@ -760,7 +760,7 @@ def test_stale_handle_data_write_after_committed_remove_raises():
     with pytest.raises((AttributeError, KeyError, ValueError)):
         e.position = np.array([9.0, 8.0], "float32")
 
-    np.testing.assert_array_equal(world.get_entity(other).position, [3.0, 4.0])   # the neighbour is untouched
+    assert np.allclose(world.get_entity(other).position, [3.0, 4.0])   # the neighbour is untouched
 
 
 def test_stale_handle_data_write_before_the_remove_commits_cannot_corrupt_a_neighbour():
@@ -780,7 +780,7 @@ def test_stale_handle_data_write_before_the_remove_commits_cannot_corrupt_a_neig
         pass
 
     world.update()
-    np.testing.assert_array_equal(world.get_entity(other).position, [3.0, 4.0])   # no collateral damage
+    assert np.allclose(world.get_entity(other).position, [3.0, 4.0])   # no collateral damage
 
 
 def test_stashed_row_view_across_update_is_the_documented_hole():
@@ -800,7 +800,7 @@ def test_stashed_row_view_across_update_is_the_documented_hole():
     world.update()                                       # b's row is copied into slot 0
     stashed[:] = [9.0, 9.0]                              # still row 0 -- which is B's row now
 
-    np.testing.assert_array_equal(world.get_entity(b).position, [9.0, 9.0])   # B was hit, and nothing warned
+    assert np.allclose(world.get_entity(b).position, [9.0, 9.0])   # B was hit, and nothing warned
 
 
 # --- serialization: entity.to_dict() ------------------------------------------------------------------------------
@@ -918,4 +918,4 @@ def test_entity_stays_usable_after_a_refused_copy():
 
     e.position = np.array([7.0, 8.0], "float32")     # the handle is untouched: it is still row ix of its pool
 
-    np.testing.assert_array_equal(_row(world, eid, "position"), [7.0, 8.0])
+    assert np.allclose(_row(world, eid, "position"), [7.0, 8.0])

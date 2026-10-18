@@ -16,34 +16,33 @@ python -m pytest test/                            # run the unit & integration t
 python examples/01-hello-world.py                 # run the basic hello world example (others in that dir)
 ```
 
-Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/) — built by
-[`opdoc`](https://pypi.org/project/opdoc/). Build locally with
-`pip install opdoc && opdoc docs/ public` and open `public/index.html`.
+Docs: [meehai.gitlab.io/microecs](https://meehai.gitlab.io/microecs/) — built with
+[opdoc](https://gitlab.com/meehai/opdoc). Build locally with `pip install opdoc && opdoc docs/ public`
+and open `public/index.html`.
 
 ## Simple example
 
 ```python
 from dataclasses import field
 import numpy as np
-from microecs import World, Component
+from microecs import World, Component, f32
 
 class HasPosition(Component):
     position: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": np.float32([0, 0])})
 class HasVelocity(Component):
-    velocity: np.ndarray = field(metadata={"shape": (2, ), "dtype": "float32", "default": np.float32([0, 0])})
+    velocity: np.ndarray = f32(shape=(2, ), default=[0, 0]) # use f32 helper; lists are auto-converted to numpy.
 
 world = World(components=[HasPosition, HasVelocity])
 # both velocity and position (data) are optional since they have a default
 eid1 = world.add_entity(components=[HasPosition, HasVelocity])
 # data is passed as kwargs to add_entity
-eid2 = world.add_entity(components=[HasPosition, HasVelocity],
-                        velocity=np.float32([1, 1]))
+eid2 = world.add_entity(components=[HasPosition, HasVelocity], velocity=[1, 1])
 world.update() # add_entity uses a command buffer internally until this is called
 print(f"Added 2 entities. Id1={eid1}, Id2={eid2}")
 
 # Querying: batch operate on all entities at once.
 qr = world.query(HasVelocity) # qr is a QueryResult object, a numpy-based Structure of Arrays (SoA).
-qr.velocity += np.float32([0.1, 0.5])
+qr.velocity += [0.1, 0.5] # lists are auto-converted to numpy following component's shape/dtype
 ```
 
 ## Documentation
