@@ -29,13 +29,35 @@ import pytest
 from microecs import World, Component, f32, i32, obj
 from microecs.command_buffer import Command, CommandType
 
+from formal import State, setup
 
-class HasPosition(Component):
+
+class C1(Component):
+    c1: np.ndarray = f32((2,), default=[0.0, 0.0])
+
+
+class C2(Component):
+    c2: np.ndarray = f32((2,), default=[0.0, 0.0])
+
+
+class C3(Component):
+    pass
+
+
+class C4(Component):
+    c4: np.ndarray = obj((1,))
+
+
+class C5(Component):
+    c5: np.ndarray = f32((2,))
+
+
+class C6(Component):
     position: np.ndarray = f32((2,))
 
 
-class HasVelocity(Component):
-    velocity: np.ndarray = f32((2,))
+class C7(Component):   # optional field: a real default, filled when omitted
+    color: np.ndarray = i32((3,), default=[10, 20, 30])
 
 
 def _add_cmd(entity_id, component, **data):
@@ -44,191 +66,157 @@ def _add_cmd(entity_id, component, **data):
 
 
 def _remove_cmd(entity_id, component):
-    """The exact REMOVE_COMPONENT command entity.remove_component queues: args is the component itself."""
-    return Command(CommandType.REMOVE_COMPONENT, entity_id, args=component)
+    """The exact REMOVE_COMPONENT command entity.remove_component queues: the component under its 'component' key."""
+    return Command(CommandType.REMOVE_COMPONENT, entity_id, args={"component": component})
 
 
-def _assert_pool_ids_invariants(world: World):
-    """The reverse id-map mirrors the pools exactly: no orphan/missing lists, one id per row, every id sits at the
-    row it claims, and the union of all ids is precisely the live set (the command buffer is already committed)."""
-    assert {id(p) for p in world._pool_ids} == {id(p) for p in world.pools.values()}    # no orphan / missing lists
-    seen = set()
-    for pool, ids in world._pool_ids.items():
-        assert len(ids) == len(pool)                                                    # one id per row
-        for ix, eid in enumerate(ids):
-            assert world._eid_to_pool_ix[eid] == (pool, ix)                             # ids[ix] really sits at row ix
-            seen.add(eid)
-    assert seen == set(world.live_entities)                                            # exactly the live entities
+_COMPONENTS = [C1, C2, C3, C4, C5]
+
+
+def addc(world, eid: int, component: Component, **data):
+    """Append the exact ADD_COMPONENT command entity.add_component would build."""
+    world._command_buffer.append(_add_cmd(eid, component, **data))
+
+
+def rmc(world, eid: int, component: Component):
+    """Append the exact REMOVE_COMPONENT command entity.remove_component would build."""
+    world._command_buffer.append(_remove_cmd(eid, component))
 
 
 # -- valid churn: accepted today (update() replays it) and must stay accepted once append validates --------------
 
 def test_buffer_stages_add_then_remove_same_component():
-    """add(V) then remove(V) staged in one tick commits back to the original archetype. The gate must accept this:
-    the later remove has to see the queued add (the projected set), not just the committed snapshot."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    """addc then rmc in one tick commits back to the original archetype."""
+    world = setup({0: [C1]}, _COMPONENTS).world
+    addc(world, 0, C2, c2=np.array([3.0, 4.0], "float32"))
+    rmc(world, 0, C2)
     world.update()
-
-    buf = world._command_buffer
-    buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32")))
-    buf.append(_remove_cmd(eid, HasVelocity))                    # accepted: V is in the projected set
-    world.update()
-
-    assert set(world.get_entity(eid).get_components()) == {HasPosition}
-    _assert_pool_ids_invariants(world)
+    assert State(world) == {0: [C1]}
 
 
 def test_buffer_stages_remove_then_add_same_component():
-    """The mirror: remove(V) then add(V) in one tick commits back to {P, V} with the re-added value winning."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition, HasVelocity),
-                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+    """rmc then addc in one tick commits back to {C1, C2} with the re-added value winning."""
+    world = setup({0: [C1, C2]}, _COMPONENTS).world
+    rmc(world, 0, C2)
+    addc(world, 0, C2, c2=np.array([5.0, 6.0], "float32"))
     world.update()
-
-    buf = world._command_buffer
-    buf.append(_remove_cmd(eid, HasVelocity))
-    buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([5.0, 6.0], "float32")))   # re-add, same tick
-    world.update()
-
-    e = world.get_entity(eid)
-    assert set(e.get_components()) == {HasPosition, HasVelocity}
-    np.testing.assert_array_equal(e.velocity, [5.0, 6.0])       # the re-added value wins
-    _assert_pool_ids_invariants(world)
+    assert State(world) == {0: [C1, C2]}
+    np.testing.assert_array_equal(world.get_entity(0).c2, [5.0, 6.0])
 
 
 def test_buffer_stages_add_remove_cycle():
-    """A longer churn on one entity in a single tick stages cleanly and commits to the expected final archetype."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    """A longer churn in one tick stages cleanly and commits to the expected final archetype."""
+    world = setup({0: [C1]}, _COMPONENTS).world
+    addc(world, 0, C2, c2=np.array([3.0, 4.0], "float32"))
+    rmc(world, 0, C2)
+    addc(world, 0, C2, c2=np.array([5.0, 6.0], "float32"))
+    rmc(world, 0, C2)
     world.update()
-
-    buf = world._command_buffer
-    buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32")))
-    buf.append(_remove_cmd(eid, HasVelocity))
-    buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([5.0, 6.0], "float32")))
-    buf.append(_remove_cmd(eid, HasVelocity))
-    world.update()
-
-    assert set(world.get_entity(eid).get_components()) == {HasPosition}
-    _assert_pool_ids_invariants(world)
+    assert State(world) == {0: [C1]}
 
 
 # -- structural rejects: append must refuse the bad command and NOT stage it --------------------------------------
+# These tests poke the buffer directly: the partial staging area IS the thing under test. The formal `act`
+# commits and would hide it.
 
 def test_buffer_rejects_add_of_committed_component():
-    """Adding a component the entity already has (committed; empty buffer -> projected == committed) is refused at
-    append, and nothing is staged."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition, HasVelocity),
-                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
+    """Adding a component the entity already has is refused at append, and nothing is staged."""
+    world = setup({0: [C1, C2]}, _COMPONENTS).world
     with pytest.raises(ValueError):
-        buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([9.0, 9.0], "float32")))
-    assert len(buf) == 0                                         # nothing staged
-    world.update()                                              # pure no-op
+        world._command_buffer.append(_add_cmd(0, C2, c2=np.array([9.0, 9.0], "float32")))
+    assert len(world._command_buffer) == 0
 
 
 def test_buffer_rejects_remove_of_absent_component():
-    """Removing a component the entity does not have (committed) is refused at append, and nothing is staged."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
+    """Removing a component the entity does not have is refused at append, and nothing is staged."""
+    world = setup({0: [C1]}, _COMPONENTS).world
     with pytest.raises(ValueError):
-        buf.append(_remove_cmd(eid, HasVelocity))
-    assert len(buf) == 0
+        world._command_buffer.append(_remove_cmd(0, C2))
+    assert len(world._command_buffer) == 0
+
+
+@pytest.mark.xfail(strict=True, reason="a removal that empties the entity is staged")
+def test_buffer_rejects_removing_the_last_component():
+    """The gate refuses the removal, so the entity cannot commit with an empty component set."""
+    world = setup({0: [C1]}, _COMPONENTS).world
+    with pytest.raises(ValueError, match="last component"):
+        world._command_buffer.append(_remove_cmd(0, C1))
+    assert len(world._command_buffer) == 0
+
+
+def test_buffer_stages_a_remove_when_a_staged_add_survives():
+    """Control: the projected set has C2 after the add, so removing the committed C1 is legal."""
+    world = setup({0: [C1]}, _COMPONENTS).world
+    addc(world, 0, C2)
+    rmc(world, 0, C1)
+
+    assert len(world._command_buffer) == 2
     world.update()
+    assert State(world) == {0: [C2]}
+
+
+@pytest.mark.xfail(strict=True, reason="the second removal can empty the entity")
+def test_buffer_rejects_a_second_removal_that_empties_the_entity():
+    """The first removal is staged; the second sees the projected set is empty and stages nothing."""
+    world = setup({0: [C1, C3]}, _COMPONENTS).world
+    rmc(world, 0, C1)
+    with pytest.raises(ValueError, match="last component"):
+        rmc(world, 0, C3)
+    assert len(world._command_buffer) == 1
 
 
 def test_buffer_rejects_double_add_at_second_append():
-    """Same-tick self-conflict is caught at APPEND, not deferred to commit: the second add of a component already
-    staged is refused, so the poisoning command never enters the buffer and the first add stays staged."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
-    buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32")))     # 1st: staged
+    """The second add of an already-staged component is refused; only the first add is staged."""
+    world = setup({0: [C1]}, _COMPONENTS).world  # direct: the partial buffer is the assertion
     with pytest.raises(ValueError):
-        buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([5.0, 6.0], "float32")))  # 2nd: eager reject
-    assert len(buf) == 1                                         # only the first add is staged
+        world._command_buffer.append(_add_cmd(0, C2, c2=np.array([3.0, 4.0], "float32")))
+        world._command_buffer.append(_add_cmd(0, C2, c2=np.array([5.0, 6.0], "float32")))
+    assert len(world._command_buffer) == 1
 
 
-def test_buffer_rejects_double_remove_at_second_append():
-    """Removing the same component twice in a tick: the second remove sees it already gone from the projected set
-    and is refused at append -- no second, invalid REMOVE_COMPONENT is staged."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition, HasVelocity),
-                           position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
+def test_buffer_stages_one_remove_for_a_repeat():
+    """Removing the same component twice in a tick stages one command and narrows the archetype once."""
+    world = setup({0: [C1, C2]}, _COMPONENTS).world
+    world._command_buffer.append(_remove_cmd(0, C2))
+    world._command_buffer.append(_remove_cmd(0, C2))
+    assert len(world._command_buffer) == 1
     world.update()
-
-    buf = world._command_buffer
-    buf.append(_remove_cmd(eid, HasVelocity))                    # 1st: staged
-    with pytest.raises(ValueError):
-        buf.append(_remove_cmd(eid, HasVelocity))                # 2nd: eager reject
-    assert len(buf) == 1
+    assert State(world) == {0: [C1]}
 
 
 # -- field-data rejects: dtype / shape / missing / bad-name checked at append (via world._validate_components) -----
 
 def test_buffer_rejects_bad_field_name():
-    """An extra field that doesn't belong to the added component is refused at append (a component's field set is
-    static -- no world state), so it never reaches commit where it would strand a half-processed command (Bug A).
-    The valid field is supplied too, to isolate the extra-name path from the missing-required one (its own test)."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
+    """An extra field that doesn't belong to the component is refused at append."""
+    world = setup({0: [C1]}, _COMPONENTS).world
     with pytest.raises(ValueError):
-        buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float32"),
-                            WRONGNAME=np.array([3.0, 4.0], "float32")))
-    assert len(buf) == 0
-    world.update()
+        world._command_buffer.append(_add_cmd(0, C2, c2=np.array([3.0, 4.0], "float32"),
+                                              WRONGNAME=np.array([3.0, 4.0], "float32")))
+    assert len(world._command_buffer) == 0
 
 
 def test_buffer_rejects_wrong_shape():
-    """Field-data validation is eager too (mirroring add_entity): a wrong-shaped value is refused at append, not
-    deferred to commit's _check_components_against_pool."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
+    """A wrong-shaped value is refused at append, not deferred to commit."""
+    world = setup({0: [C1]}, _COMPONENTS).world
     with pytest.raises((ValueError, TypeError)):
-        buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([1.0, 2.0, 3.0], "float32")))  # (3,) != (2,)
-    assert len(buf) == 0
-    world.update()
+        world._command_buffer.append(_add_cmd(0, C2, c2=np.array([1.0, 2.0, 3.0], "float32")))
+    assert len(world._command_buffer) == 0
 
 
 def test_buffer_rejects_wrong_dtype():
-    """Same for dtype: a float64 value where the field declares float32 is refused at append, not at commit."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
+    """A float64 value where the field declares float32 is refused at append."""
+    world = setup({0: [C1]}, _COMPONENTS).world
     with pytest.raises((ValueError, TypeError)):
-        buf.append(_add_cmd(eid, HasVelocity, velocity=np.array([3.0, 4.0], "float64")))  # float64 != float32
-    assert len(buf) == 0
+        world._command_buffer.append(_add_cmd(0, C2, c2=np.array([3.0, 4.0], "float64")))
+    assert len(world._command_buffer) == 0
 
 
 def test_buffer_rejects_missing_required_field():
-    """A component field with default=None must be supplied at add; omitting it is refused at append, not at commit
-    (where today it surfaces as a KeyError deep in materialization)."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    buf = world._command_buffer
+    """A required field omitted at add is refused at append."""
+    world = setup({0: [C1]}, _COMPONENTS).world
     with pytest.raises((KeyError, ValueError)):
-        buf.append(_add_cmd(eid, HasVelocity))                   # velocity has default=None, not provided
-    assert len(buf) == 0
-    world.update()
+        world._command_buffer.append(_add_cmd(0, C5))
+    assert len(world._command_buffer) == 0
 
 
 # ==================================================================================================================
@@ -249,8 +237,8 @@ def test_buffer_verbs_are_the_four_structural_ones():
 def test_data_write_appends_no_command():
     """The same proof from the buffer's side: both write idioms leave the staging area empty, so a data-only tick
     has nothing to commit and update() keeps the query cache."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world = World([C6])
+    eid = world.add_entity((C6,), position=np.array([1.0, 2.0], "float32"))
     world.update()
 
     world.get_entity(eid).position = np.array([9.0, 8.0], "float32")
@@ -277,10 +265,6 @@ def test_data_write_appends_no_command():
 # is world.add_entity's own state.
 # ==================================================================================================================
 
-class HasColorDefault(Component):   # optional field: a real default, filled when omitted
-    color: np.ndarray = i32((3,), default=[10, 20, 30])
-
-
 def _spawn_cmd(entity_id, components, **data):
     """The ADD_ENTITY command world.add_entity queues: the component list plus the field data."""
     return Command(CommandType.ADD_ENTITY, entity_id, args={"components": components, **data})
@@ -292,29 +276,31 @@ def _register_id(world, entity_id):
     world._last_id = entity_id
 
 
-def test_buffer_stages_a_spawn_verbatim():
-    """append neither validates nor rewrites an ADD_ENTITY: the args dict it stages is the SAME object it was
-    handed, with the same keys. This is the direct pin of single validation from the buffer's side -- add either
-    pass and the identity check (for _validate_components) or the key set (for _defaults_for) moves."""
-    world = World([HasPosition, HasColorDefault])
+def test_buffer_snapshots_spawn_arrays_but_not_the_components_list():
+    """append copies array data so a later caller mutation cannot change the commit. The components list and the
+    key set stay as handed: defaults are still injected by world.add_entity, not here."""
+    world = World([C6, C7])
     _register_id(world, 0)
-    args = {"components": [HasPosition, HasColorDefault],       # color omitted, and NOT filled here
+    args = {"components": [C6, C7],       # color omitted, and NOT filled here
             "position": np.array([1.0, 2.0], "float32")}
 
     world._command_buffer.append(Command(CommandType.ADD_ENTITY, 0, args=args))
 
     (cmd,) = world._command_buffer.data
-    assert cmd.args is args                                      # untouched: not copied, not rebuilt
+    assert cmd.args is not args                                  # the dict is rebuilt around the snapshot
     assert set(cmd.args) == {"components", "position"}           # no default injected -- world.add_entity did that
+    assert cmd.args["components"] is args["components"]          # structural list is not data
+    assert cmd.args["position"] is not args["position"]
+    np.testing.assert_array_equal(cmd.args["position"], [1.0, 2.0])
 
 
 def test_buffer_rejects_a_spawn_for_an_unregistered_id():
     """The liveness check is the ONE thing append does for ADD_ENTITY, and with no validation there it is the
     only thing standing between a hand-built spawn command and update(). An id the world never minted is refused."""
-    world = World([HasPosition])                                 # no _register_id: id 0 is not live
+    world = World([C6])                                 # no _register_id: id 0 is not live
 
     with pytest.raises(ValueError, match="not in live entities"):
-        world._command_buffer.append(_spawn_cmd(0, [HasPosition], position=np.array([1.0, 2.0], "float32")))
+        world._command_buffer.append(_spawn_cmd(0, [C6], position=np.array([1.0, 2.0], "float32")))
     assert len(world._command_buffer) == 0
     world.update()
     assert len(world.pools) == 0
@@ -326,11 +312,11 @@ def test_buffer_alone_fills_defaults_into_a_staged_add_component():
     fills them for a spawn, so a staged ADD_ENTITY carries a complete arg set. ADD_COMPONENT has no such producer --
     Entity.add_component is a bare command-builder -- so its staged args are incomplete and _do_add_component
     computes them at commit. Both work; pick one story, so a staged command always carries what update() needs."""
-    world = World([HasPosition, HasColorDefault])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world = World([C6, C7])
+    eid = world.add_entity((C6,), position=np.array([1.0, 2.0], "float32"))
     world.update()
 
-    world.get_entity(eid).add_component(HasColorDefault)         # color omitted; it has a default
+    world.get_entity(eid).add_component(C7)         # color omitted; it has a default
 
     (cmd,) = world._command_buffer.data
     assert set(cmd.args) == {"component", "color"}                # today: just {"component"}
@@ -343,47 +329,38 @@ def test_buffer_alone_fills_defaults_into_a_staged_add_component():
 # None-as-data for object, extras kept so the extra-field guard fires), and the converted values are what commit
 # materializes.
 
-class HasLabel(Component):   # object field, for the None-as-data case
-    label: np.ndarray = obj((1,))
-
-
 def test_add_component_converts_array_like_data():
-    """A tuple is converted to the field's dtype/shape at append, and the CONVERTED values hit the pool at commit."""
-    world = World([HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    world.update()
-
-    world.get_entity(eid).add_component(HasVelocity, velocity=(3.0, 4.0))     # tuple, not ndarray
+    """A tuple is converted to the field's dtype/shape at append, and the converted values hit the pool at commit."""
+    world = setup({0: [C1]}, _COMPONENTS).world
+    world._command_buffer.append(_add_cmd(0, C2, c2=(3.0, 4.0)))
     (cmd,) = world._command_buffer.data
-    assert cmd.args["velocity"].dtype == np.float32 and cmd.args["velocity"].shape == (2,)
+    assert cmd.args["c2"].dtype == np.float32 and cmd.args["c2"].shape == (2,)
 
     world.update()
-    e = world.get_entity(eid)
-    assert e.velocity.dtype == np.float32 and e.velocity.shape == (2,)
-    np.testing.assert_array_equal(e.velocity, [3.0, 4.0])
+    c2 = world.get_entity(0).c2
+    assert c2.dtype == np.float32 and c2.shape == (2,)
+    np.testing.assert_array_equal(c2, [3.0, 4.0])
 
 
 def test_add_component_scalar_broadcast_and_omitted_default():
-    """Scalar data is broadcast to the shape; omitted fields fall to the metadata default (like add_entity)."""
-    world = World([HasPosition, HasColorDefault])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    """Scalar data is broadcast to the shape; omitted fields fall to the metadata default."""
+    world = setup({0: [C1]}, _COMPONENTS).world
+    addc(world, 0, C2)
     world.update()
-
-    world.get_entity(eid).add_component(HasColorDefault)     # nothing supplied -> default at commit
-    world.update()
-    np.testing.assert_array_equal(world.get_entity(eid).color, [10, 20, 30])
+    assert State(world) == {0: [C1, C2]}
+    np.testing.assert_array_equal(world.get_entity(0).c2, [0.0, 0.0])
 
 
 def test_add_component_none_semantics_match_add_entity():
-    """Key-present None is DATA for object fields (array([None])) and a caller bug (TypeError) for numeric ones."""
-    world = World([HasPosition, HasVelocity, HasLabel])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    """Key-present None is DATA for object fields and a caller bug (TypeError) for numeric ones."""
+    world = setup({0: [C1]}, _COMPONENTS).world
+    addc(world, 0, C4, c4=None)
     world.update()
+    assert State(world) == {0: [C1, C4]}
 
-    world.get_entity(eid).add_component(HasLabel, label=None)
-    world.update()
-    label = world.get_entity(eid).label
-    assert label.dtype == np.object_ and label.shape == (1,) and label[0] is None
+    c4 = world.get_entity(0).c4
+    assert c4.dtype == np.object_ and c4.shape == (1,) and c4[0] is None
 
-    with pytest.raises(TypeError, match="velocity"):
-        world.get_entity(eid).add_component(HasVelocity, velocity=None)       # after commit the label add is done
+    with pytest.raises(TypeError, match="c2"):
+        addc(world, 0, C2, c2=None)
+    assert State(world) == {0: [C1, C4]}

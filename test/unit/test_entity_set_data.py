@@ -21,47 +21,47 @@ import pytest
 from microecs import World, Component, f32, obj
 
 
-class HasA(Component):
+class C1(Component):
     a: np.ndarray = f32((2,))
 
 
-class HasB(Component):                       # a second component -> cross-component set_data in one call
+class C2(Component):                       # a second component -> cross-component set_data in one call
     b: np.ndarray = f32((2,))
 
 
-class HasPair(Component):                    # two fields of the SAME component -> the intra-component transaction
+class C3(Component):                    # two fields of the SAME component -> the intra-component transaction
     x: np.ndarray = f32((2,))
     y: np.ndarray = f32((2,))
 
 
-class HasLabel(Component):                   # object dtype: an arbitrary python object per entity
+class C4(Component):                   # object dtype: an arbitrary python object per entity
     label: np.ndarray = obj((1,))
 
 
-class HasScale(Component):                   # 0-d field: exactly one scalar per entity
+class C5(Component):                   # 0-d field: exactly one scalar per entity
     scale: np.ndarray = f32(())
 
 
 def _world_a(a=(1.0, 2.0)):
-    """A committed world with a single HasA entity (HasB known to the world, not on the entity)."""
-    world = World([HasA, HasB])
-    eid = world.add_entity((HasA,), a=np.array(a, "float32"))
+    """A committed world with a single C1 entity (C2 known to the world, not on the entity)."""
+    world = World([C1, C2])
+    eid = world.add_entity((C1,), a=np.array(a, "float32"))
     world.update()
     return world, eid
 
 
 def _world_ab():
-    """A committed world with a single HasA+HasB entity: a=[1,2], b=[3,4]."""
-    world = World([HasA, HasB])
-    eid = world.add_entity((HasA, HasB), a=np.array([1.0, 2.0], "float32"), b=np.array([3.0, 4.0], "float32"))
+    """A committed world with a single C1+C2 entity: a=[1,2], b=[3,4]."""
+    world = World([C1, C2])
+    eid = world.add_entity((C1, C2), a=np.array([1.0, 2.0], "float32"), b=np.array([3.0, 4.0], "float32"))
     world.update()
     return world, eid
 
 
 def _world_pair():
-    """A committed world with a single HasPair entity: x=[1,2], y=[3,4]."""
-    world = World([HasPair])
-    eid = world.add_entity((HasPair,), x=np.array([1.0, 2.0], "float32"), y=np.array([3.0, 4.0], "float32"))
+    """A committed world with a single C3 entity: x=[1,2], y=[3,4]."""
+    world = World([C3])
+    eid = world.add_entity((C3,), x=np.array([1.0, 2.0], "float32"), y=np.array([3.0, 4.0], "float32"))
     world.update()
     return world, eid
 
@@ -166,8 +166,8 @@ def test_set_data_copies_the_value_it_is_given():
 
 def test_set_data_object_field_stores_the_reference():
     """An object-dtype field stores the exact python object -- numeric fields copy, objects don't."""
-    world = World([HasLabel])
-    eid = world.add_entity((HasLabel,), label=np.array([{"v": 0}], dtype=object))
+    world = World([C4])
+    eid = world.add_entity((C4,), label=np.array([{"v": 0}], dtype=object))
     world.update()
 
     replacement = {"v": 42}
@@ -178,8 +178,8 @@ def test_set_data_object_field_stores_the_reference():
 
 def test_set_data_writes_a_zero_dim_field():
     """A shape-() field is written like any other -- and it is the ONLY route for one (no `[:]` idiom exists)."""
-    world = World([HasScale])
-    eid = world.add_entity((HasScale,), scale=np.array(2.5, "float32"))
+    world = World([C5])
+    eid = world.add_entity((C5,), scale=np.array(2.5, "float32"))
     world.update()
 
     world.get_entity(eid).set_data(scale=np.array(4.0, "float32"))
@@ -229,8 +229,8 @@ def test_set_data_unknown_field_rejected():
 
 
 def test_set_data_field_of_a_component_the_entity_lacks_rejected():
-    """`b` is a real field of the world, but this entity has no HasB -> there is no column to write."""
-    world, eid = _world_a()                                   # HasA only
+    """`b` is a real field of the world, but this entity has no C2 -> there is no column to write."""
+    world, eid = _world_a()                                   # C1 only
 
     with pytest.raises((ValueError, KeyError, AttributeError)):
         world.get_entity(eid).set_data(b=np.array([1.0, 2.0], "float32"))
@@ -298,8 +298,8 @@ def test_set_data_bad_field_first_also_writes_nothing(reason, bad):
 
 
 def test_set_data_absent_component_beside_a_valid_field_writes_nothing():
-    """`b` resolves to HasB but this entity has no such column -> `a` must not slip through first."""
-    world, eid = _world_a()                                    # HasA only; HasB known to the world
+    """`b` resolves to C2 but this entity has no such column -> `a` must not slip through first."""
+    world, eid = _world_a()                                    # C1 only; C2 known to the world
 
     with pytest.raises((ValueError, KeyError, AttributeError)):
         world.get_entity(eid).set_data(a=np.array([9.0, 8.0], "float32"), b=np.array([1.0, 2.0], "float32"))
@@ -321,12 +321,12 @@ def test_set_data_failure_leaves_earlier_work_alone():
     """A failing set_data is usually not the first thing that happened this tick. Earlier writes (already in the
     pool) and earlier STAGED structural commands are other callers' work and must survive untouched -- the old
     implementation had a buffer slice to undo, this one must simply not touch anything."""
-    world = World([HasA, HasB, HasPair])
-    eid = world.add_entity((HasA, HasB), a=np.array([1.0, 2.0], "float32"), b=np.array([3.0, 4.0], "float32"))
+    world = World([C1, C2, C3])
+    eid = world.add_entity((C1, C2), a=np.array([1.0, 2.0], "float32"), b=np.array([3.0, 4.0], "float32"))
     world.update()
     e = world.get_entity(eid)
 
-    e.add_component(HasPair, x=np.array([1.0, 1.0], "float32"), y=np.array([2.0, 2.0], "float32"))  # staged
+    e.add_component(C3, x=np.array([1.0, 1.0], "float32"), y=np.array([2.0, 2.0], "float32"))  # staged
     e.set_data(a=np.array([7.0, 7.0], "float32"))                                                  # written
     assert len(world._command_buffer) == 1
 
@@ -345,10 +345,10 @@ def test_set_data_failure_leaves_earlier_work_alone():
 
 def test_set_data_targets_the_correct_row_after_swap_remove():
     """Resolution is by id: after a swap-remove relocates rows, the write hits the moved entity, not a neighbour."""
-    world = World([HasA])
-    a = world.add_entity((HasA,), a=np.array([0.0, 0.0], "float32"))      # idx 0
-    b = world.add_entity((HasA,), a=np.array([1.0, 1.0], "float32"))      # idx 1
-    c = world.add_entity((HasA,), a=np.array([2.0, 2.0], "float32"))      # idx 2 (tail)
+    world = World([C1])
+    a = world.add_entity((C1,), a=np.array([0.0, 0.0], "float32"))      # idx 0
+    b = world.add_entity((C1,), a=np.array([1.0, 1.0], "float32"))      # idx 1
+    c = world.add_entity((C1,), a=np.array([2.0, 2.0], "float32"))      # idx 2 (tail)
     world.update()
     world.remove_entity(a)                                                # c swaps into slot 0
     world.update()
@@ -362,8 +362,8 @@ def test_set_data_targets_the_correct_row_after_swap_remove():
 def test_set_data_before_the_spawn_is_committed_rejects():
     """No row yet -> nowhere to write, so it raises exactly like a read does. Spawn data
     belongs in add_entity's kwargs; the entity is writable from the next update() on."""
-    world = World([HasA])
-    eid = world.add_entity((HasA,), a=np.array([1.0, 2.0], "float32"))     # not committed
+    world = World([C1])
+    eid = world.add_entity((C1,), a=np.array([1.0, 2.0], "float32"))     # not committed
     e = world.get_entity(eid)
 
     with pytest.raises(AttributeError):
@@ -378,12 +378,12 @@ def test_set_data_before_the_spawn_is_committed_rejects():
 def test_set_data_on_a_field_added_this_tick_rejects_until_update():
     """add_component(B) is STAGED, so B's column does not exist yet: the write has nowhere to go. A write never
     consults the command buffer -- so this raises now and succeeds after update()."""
-    world = World([HasA, HasB])
-    eid = world.add_entity((HasA,), a=np.array([1.0, 2.0], "float32"))
+    world = World([C1, C2])
+    eid = world.add_entity((C1,), a=np.array([1.0, 2.0], "float32"))
     world.update()
     e = world.get_entity(eid)
 
-    e.add_component(HasB, b=np.array([0.0, 0.0], "float32"))              # pending: A -> A+B pool
+    e.add_component(C2, b=np.array([0.0, 0.0], "float32"))              # pending: A -> A+B pool
     with pytest.raises((ValueError, KeyError, AttributeError)):
         e.set_data(b=np.array([5.0, 6.0], "float32"))
     assert len(world._command_buffer) == 1                                # only the add_component
@@ -400,7 +400,7 @@ def test_set_data_on_a_field_pending_removal_lands_then_is_dropped():
     world, eid = _world_ab()
     e = world.get_entity(eid)
 
-    e.remove_component(HasB)
+    e.remove_component(C2)
     e.set_data(b=np.array([5.0, 6.0], "float32"))                         # accepted: the column exists
     np.testing.assert_array_equal(e.b, [5.0, 6.0])
 
@@ -413,9 +413,9 @@ def test_set_data_on_a_field_pending_removal_lands_then_is_dropped():
 def test_set_data_through_a_stale_handle_rejects():
     """A handle kept across a committed remove_entity has no row: the write must refuse, not poke the entity that
     was swapped into that slot."""
-    world = World([HasA])
-    eid = world.add_entity((HasA,), a=np.array([1.0, 2.0], "float32"))
-    other = world.add_entity((HasA,), a=np.array([3.0, 4.0], "float32"))  # swaps into eid's slot on removal
+    world = World([C1])
+    eid = world.add_entity((C1,), a=np.array([1.0, 2.0], "float32"))
+    other = world.add_entity((C1,), a=np.array([3.0, 4.0], "float32"))  # swaps into eid's slot on removal
     world.update()
     e = world.get_entity(eid)
     world.remove_entity(eid)

@@ -158,8 +158,8 @@ class World:
                 component = command.args.pop("component")
                 self._do_add_component(command.entity_id, component=component, **command.args)
             elif command.command_type == CommandType.REMOVE_COMPONENT:
-                self._do_remove_component(command.entity_id, component=command.args)
-            else: # CommandType.REMOVE_COMPONENT
+                self._do_remove_component(command.entity_id, component=command.args["component"])
+            else:
                 raise NotImplementedError(command)
 
         # Check if there's any empty pool since the last movements and remove it, if so.

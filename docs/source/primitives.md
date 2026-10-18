@@ -76,6 +76,18 @@ object you reached for:
 
 Rule of thumb: **moving a row between pools is staged; changing a number inside a row lands now.**
 
+### Repeats and cycles of structural verbs
+
+The four structural verbs are requests applied at `update()`. They differ on repeats because only
+`add_component` carries data:
+
+| operation | timing | applied twice in one tick | opposite operation in the same tick | comments |
+|---|---|---|---|---|
+| `add_entity` | deferred; the new id is registered immediately | no raise: each call creates a new entity | no raise: spawn then remove commits nothing | Ids are never reused. Duplicate components in one spawn (`add_entity([Pos, Pos])`) raise. |
+| `remove_entity` | deferred; the id leaves `live_entities` immediately | no-op: the second call stages nothing | no raise: a later spawn gets a new id | A repeat kill is a normal race between systems. After `update()` the same id raises as stale. `get_entity` fails immediately; `query` still sees the row until `update()`. |
+| `add_component` | deferred; validated at the call | raises at the second call | no raise: add then remove cancels; remove then add re-adds | A repeat carries data: a no-op would drop the second payload, and first-wins would depend on system order. If repeated adds from independent systems become common, serialize them at the user level (one owning system, or an external lock); today it is an outlier. `has_component` reads committed state, so it is false after a staged add. |
+| `remove_component` | deferred; validated at the call | no-op: the second call stages nothing | no raise: remove then add re-adds with the new data | The first removal still requires the component in the projected set; removing a committed-absent component raises. `has_component` remains true until `update()`. |
+
 That line is where it is for one reason: moving a row invalidates iteration in flight, so a query cannot
 stay stable within a tick unless structural change is deferred. `pool.data[f][ix] = v` moves nothing and
 invalidates nothing, so there is nothing to defer — and deferring it used to cost real things (see
@@ -131,20 +143,20 @@ Consequences worth internalising:
   stashed across an `update()` writes into whatever row now sits at that index — the entity may have
   migrated or been swap-removed. Same rule a `QueryResult` already has. Re-read after `update()`.
 
-- **Data staged by `add_entity` is held by reference, not snapshotted.** `add_entity(position=arr)`
-  remembers *your array*, and `update()` reads whatever it holds at that moment. So the idiomatic numpy
-  scratch-buffer loop is **wrong** here:
+- **Data staged by `add_entity` / `add_component` is snapshotted.** The buffer copies each array when the
+  command is queued, so `update()` commits the value from call time. The idiomatic numpy scratch-buffer loop
+  is correct:
 
   ```python
   scratch = np.zeros(2, "float32")
   for i in range(3):
       scratch[:] = i
-      world.add_entity([HasPosition], position=scratch)   # WRONG: all three share `scratch`
-  world.update()                                           # every entity commits the LAST value
+      world.add_entity([HasPosition], position=scratch)   # each spawn keeps its own copy
+  world.update()                                           # entities commit 0, 1, 2
   ```
 
-  Pass a fresh array per call (`np.float32([i, i])`), or `scratch.copy()`. Data *writes* have no such
-  trap — they copy into the row at the call.
+  Object arrays are shallow copies: the array is private, the referenced objects stay shared. Data *writes*
+  have no such trap — they copy into the row at the call.
 
 - **Structural order within a tick is preserved.** The buffer replays in call order at `update()`, so
   `add_component(B)` then `remove_component(B)` nets out correctly. Data writes are not in that buffer at
@@ -164,7 +176,7 @@ Consequences worth internalising:
 
 Until v0.4.x the line was drawn at *which object you hold* — everything through an `Entity` was staged
 (`e.field = x` raised, and a read handed back a read-only view), while `qr.field = ...` was eager. Half of
-that was paid for and none of it collected: `update()` is deliberately not atomic and staged values are
+that was paid for and none of it collected: `update()` is deliberately not atomic and staged values were
 references, not copies, so deferral bought no snapshot semantics — while it cost read-modify-write
 (`damage(3); damage(4)` left only the last one), cost the ability to read your own write, and put an
 `isinstance` + `setflags(write=False)` on every single field read. Data writes are eager now, and

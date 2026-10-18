@@ -38,39 +38,39 @@ from microecs import World, Component, Entity, f32, obj
 from microecs.entity import _ENTITY_INTERNAL_ATTRS, ENTITY_RESERVED_NAMES
 
 
-class HasPosition(Component):
+class C1(Component):
     position: np.ndarray = f32((2,))
 
 
-class HasVelocity(Component):
+class C2(Component):
     velocity: np.ndarray = f32((2,))
 
 
-class HasHealth(Component):  # the accumulator field: read-modify-write must compose
+class C3(Component):  # the accumulator field: read-modify-write must compose
     health: np.ndarray = f32((1,))
 
 
-class HasLabel(Component):  # object dtype: an arbitrary python object per entity (-> to_dict uses .item())
+class C4(Component):  # object dtype: an arbitrary python object per entity (-> to_dict uses .item())
     label: np.ndarray = obj((1,))
 
 
-class HasScale(Component):  # 0-d array field: exactly one scalar per entity (shape ())
+class C5(Component):  # 0-d array field: exactly one scalar per entity (shape ())
     scale: np.ndarray = f32(())
 
 
-class HasPose(Component):   # (4, 4) field: the sliced read AND the sliced write (e.pose[0:3, 3]) must work
+class C6(Component):   # (4, 4) field: the sliced read AND the sliced write (e.pose[0:3, 3]) must work
     pose: np.ndarray = f32((4, 4))
 
 
-class HasSerial(Component):  # two fields; the 'serializable' extra-metadata drives to_dict's filter
+class C7(Component):  # two fields; the 'serializable' extra-metadata drives to_dict's filter
     keep: np.ndarray = f32((1,), serializable=True)
     drop: np.ndarray = f32((1,), serializable=False)
 
 
 def _world_with_one(position=(1.0, 2.0)):
-    """A committed world holding a single HasPosition entity. Returns (world, entity_id)."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array(position, "float32"))
+    """A committed world holding a single C1 entity. Returns (world, entity_id)."""
+    world = World(components=[C1, C2])
+    eid = world.add_entity(components=(C1,), position=np.array(position, "float32"))
     world.update()
     return world, eid
 
@@ -121,7 +121,7 @@ def test_entity_reads_field_components_and_fields():
     e = world.get_entity(eid)
 
     np.testing.assert_array_equal(e.position, [1.0, 2.0])
-    assert set(e.get_components()) == {HasPosition}
+    assert set(e.get_components()) == {C1}
     assert e.get_fields() == {"position"}
     assert e.entity_id == eid
 
@@ -146,14 +146,14 @@ def test_entity_unknown_field_read_raises_named_error():
     e = world.get_entity(eid)
 
     with pytest.raises(AttributeError, match="velocity"):
-        _ = e.velocity                                   # not a field of this (HasPosition-only) entity
+        _ = e.velocity                                   # not a field of this (C1-only) entity
 
 
 def test_entity_sliced_read_still_works():
     """Sliced/fancy reads into a (4, 4) field -- the robosim translation-read idiom."""
-    world = World([HasPose])
+    world = World([C6])
     pose = np.arange(16, dtype="float32").reshape(4, 4)
-    eid = world.add_entity((HasPose,), pose=pose.copy())
+    eid = world.add_entity((C6,), pose=pose.copy())
     world.update()
     e = world.get_entity(eid)
 
@@ -168,7 +168,7 @@ def test_entity_read_is_a_live_view_not_a_copy():
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
-    world.query(HasPosition).position = np.array([[7.0, 7.0]], "float32")   # the vectorised write path
+    world.query(C1).position = np.array([[7.0, 7.0]], "float32")   # the vectorised write path
 
     np.testing.assert_array_equal(e.position, [7.0, 7.0])
 
@@ -196,7 +196,7 @@ def test_entity_write_never_rebinds_the_pool_column():
     (capacity, *shape) column with one row's worth of data: every other entity's value is gone and the next spawn
     dies with `IndexError: index N is out of bounds for axis 0 with size 2`. Pinned for both write paths."""
     world, eid = _world_with_one()
-    other = world.add_entity((HasPosition,), position=np.array([3.0, 4.0], "float32"))
+    other = world.add_entity((C1,), position=np.array([3.0, 4.0], "float32"))
     world.update()
     pool, _ = world._eid_to_pool_ix[eid]
     column = pool.data["position"]
@@ -207,7 +207,7 @@ def test_entity_write_never_rebinds_the_pool_column():
     assert pool.data["position"] is column                                   # not swapped out
     assert pool.data["position"].shape == (pool.capacity, 2)                 # still the full column
     np.testing.assert_array_equal(world.get_entity(other).position, [3.0, 4.0])   # neighbour's row intact
-    world.add_entity((HasPosition,), position=np.array([5.0, 5.0], "float32"))
+    world.add_entity((C1,), position=np.array([5.0, 5.0], "float32"))
     world.update()                                                          # and the pool can still grow
 
 
@@ -257,8 +257,8 @@ def test_entity_inplace_add_lands_immediately():
 
 def test_entity_multidim_slice_write_lands_immediately():
     """`e.pose[0:3, 3] = t` -- robosim's set-translation idiom, on a (4, 4) field."""
-    world = World([HasPose])
-    eid = world.add_entity((HasPose,), pose=np.zeros((4, 4), "float32"))
+    world = World([C6])
+    eid = world.add_entity((C6,), pose=np.zeros((4, 4), "float32"))
     world.update()
     e = world.get_entity(eid)
 
@@ -270,8 +270,8 @@ def test_entity_multidim_slice_write_lands_immediately():
 
 def test_entity_object_field_slice_write_swaps_the_reference():
     """An object-dtype row is a view too -- `e.label[0] = obj` swaps the stored reference, no copy."""
-    world = World([HasLabel])
-    eid = world.add_entity((HasLabel,), label=np.array([{"v": 0}], dtype=object))
+    world = World([C4])
+    eid = world.add_entity((C4,), label=np.array([{"v": 0}], dtype=object))
     world.update()
     e = world.get_entity(eid)
 
@@ -283,8 +283,8 @@ def test_entity_object_field_slice_write_swaps_the_reference():
 
 def test_entity_zero_dim_field_write_lands_immediately():
     """A shape-() field is written whole (`e.scale = np.float32 array`); there is no row to slice into."""
-    world = World([HasScale])
-    eid = world.add_entity((HasScale,), scale=np.array(2.5, "float32"))
+    world = World([C5])
+    eid = world.add_entity((C5,), scale=np.array(2.5, "float32"))
     world.update()
     e = world.get_entity(eid)
 
@@ -312,8 +312,8 @@ def test_entity_read_modify_write_composes_within_one_tick():
 
     Silent lost updates otherwise: with eager reads and buffered writes both calls read 10 and the second staged
     command overwrites the first. A bounce-impulse accumulator needs exactly this to compose."""
-    world = World([HasHealth])
-    eid = world.add_entity((HasHealth,), health=np.array([10.0], "float32"))
+    world = World([C3])
+    eid = world.add_entity((C3,), health=np.array([10.0], "float32"))
     world.update()
     e = world.get_entity(eid)
 
@@ -328,8 +328,8 @@ def test_entity_read_modify_write_composes_within_one_tick():
 
 def test_entity_inplace_accumulator_composes_within_one_tick():
     """Same property through the `+=` idiom -- the shape an impulse accumulator actually takes."""
-    world = World([HasHealth])
-    eid = world.add_entity((HasHealth,), health=np.array([0.0], "float32"))
+    world = World([C3])
+    eid = world.add_entity((C3,), health=np.array([0.0], "float32"))
     world.update()
     e = world.get_entity(eid)
 
@@ -342,7 +342,7 @@ def test_entity_inplace_accumulator_composes_within_one_tick():
 def test_entity_write_is_visible_through_a_query_taken_before_it():
     """A query held from before the write sees it: both point at the same pool memory, no re-query needed."""
     world, eid = _world_with_one()
-    qr = world.query(HasPosition)                                # taken BEFORE the write
+    qr = world.query(C1)                                # taken BEFORE the write
 
     world.get_entity(eid).position = np.array([9.0, 8.0], "float32")
 
@@ -355,7 +355,7 @@ def test_entity_write_is_visible_to_a_batch_read_modify_write():
     e = world.get_entity(eid)
 
     e.position += np.array([1.0, 1.0], "float32")                # -> [2, 2]
-    qr = world.query(HasPosition)
+    qr = world.query(C1)
     qr.position = qr.position * 10.0                             # batch sees [2, 2] -> [20, 20]
 
     np.testing.assert_array_equal(e.position, [20.0, 20.0])      # and the entity view sees that
@@ -367,12 +367,12 @@ def test_data_only_tick_keeps_the_query_cache_alive():
     A staged data write would make the buffer non-empty, so update() would drop every cached query -- a data-only
     tick invalidating queries that structurally cannot have changed."""
     world, eid = _world_with_one()
-    qr = world.query(HasPosition)
+    qr = world.query(C1)
 
     world.get_entity(eid).position = np.array([9.0, 8.0], "float32")
     world.update()
 
-    assert world.query(HasPosition) is qr                        # same object: nothing was invalidated
+    assert world.query(C1) is qr                        # same object: nothing was invalidated
 
 
 def test_entity_write_does_not_disturb_staged_structural_commands():
@@ -381,7 +381,7 @@ def test_entity_write_does_not_disturb_staged_structural_commands():
     world, eid = _world_with_one()
     e = world.get_entity(eid)
 
-    e.add_component(HasVelocity, velocity=np.zeros(2, "float32"))     # staged: HasPosition -> HasPosition+HasVelocity
+    e.add_component(C2, velocity=np.zeros(2, "float32"))     # staged: C1 -> C1+C2
     e.position = np.array([9.0, 8.0], "float32")                     # eager, into the OLD pool
     assert len(world._command_buffer) == 1                           # the write added nothing to the buffer
     np.testing.assert_array_equal(e.position, [9.0, 8.0])
@@ -448,7 +448,7 @@ def test_entity_write_agrees_with_the_batch_write_path(reason, value):
     except Exception as ex:                                  # noqa: BLE001 -- the type is the thing under test
         entity_err = type(ex)
     try:
-        world_q.query(HasPosition).position = value
+        world_q.query(C1).position = value
     except Exception as ex:                                  # noqa: BLE001
         qr_err = type(ex)
 
@@ -472,8 +472,8 @@ def test_entity_write_rejected_value_leaves_the_pool_untouched(reason, value):
 
 def test_entity_write_object_field_takes_a_bare_python_object():
     """The ergonomic win of following numpy: an object-dtype field takes the object itself, no np.array() wrapper."""
-    world = World([HasLabel])
-    eid = world.add_entity((HasLabel,), label=np.array([{"v": 0}], dtype=object))
+    world = World([C4])
+    eid = world.add_entity((C4,), label=np.array([{"v": 0}], dtype=object))
     world.update()
 
     payload = {"v": 42}
@@ -525,8 +525,8 @@ def test_entity_zero_dim_field_accumulates_but_cannot_be_sliced():
     `+=` works: the scalar is immutable, so numpy makes a NEW one and hands it to __setattr__, which accepts it
     like any other numpy-convertible value. `e.scale[...] = v` cannot work -- a scalar is not subscriptable -- but
     that is a property of the READ, not of the write path."""
-    world = World([HasScale])
-    eid = world.add_entity((HasScale,), scale=np.array(2.5, "float32"))
+    world = World([C5])
+    eid = world.add_entity((C5,), scale=np.array(2.5, "float32"))
     world.update()
     e = world.get_entity(eid)
 
@@ -558,22 +558,22 @@ _NEEDS_A_ROW = {
     "set_data":       lambda e: e.set_data(position=np.array([9.0, 8.0], "float32")),
     "get_components": lambda e: e.get_components(),
     "get_fields":     lambda e: e.get_fields(),
-    "has_component":  lambda e: e.has_component(HasPosition),
+    "has_component":  lambda e: e.has_component(C1),
     "to_dict":        lambda e: e.to_dict(),
 }
 
 
 def _uncommitted_spawn():
     """A handle to an entity that is a live id with no row yet: add_entity, no update()."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))
     return world.get_entity(eid), eid
 
 
 def _committed_despawn():
     """A handle kept across a COMMITTED remove_entity: the id is gone from live_entities and has no row."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))
     world.update()
     e = world.get_entity(eid)
     world.remove_entity(eid)
@@ -606,8 +606,8 @@ def test_entity_without_a_row_raises_attributeerror_everywhere(entry, state):
 
 def test_entity_field_read_before_update_raises_attributeerror():
     """A field read on a not-yet-committed spawn raises AttributeError (not a raw KeyError on the id)."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))   # no update()
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))   # no update()
     e = world.get_entity(eid)
 
     with pytest.raises(AttributeError):
@@ -616,8 +616,8 @@ def test_entity_field_read_before_update_raises_attributeerror():
 
 def test_entity_field_write_before_update_raises_attributeerror():
     """And so does a write: same error, same reason. Spawn data goes in add_entity's kwargs, not a pre-commit write."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))   # no update()
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))   # no update()
     e = world.get_entity(eid)
 
     with pytest.raises(AttributeError):
@@ -629,8 +629,8 @@ def test_entity_field_write_before_update_raises_attributeerror():
 
 def test_entity_write_after_commit_of_the_spawn_works():
     """The very next tick is fine -- the refusal above is about the missing row, not about the entity being new."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))
     e = world.get_entity(eid)
     world.update()
 
@@ -644,10 +644,10 @@ def test_entity_write_after_commit_of_the_spawn_works():
 def test_entity_write_targets_correct_row_after_swap_remove():
     """Writes resolve by id, not index: after a swap-remove relocates rows, the write hits the moved entity's
     current row -- never a neighbour's."""
-    world = World(components=[HasPosition, HasVelocity])
-    a = world.add_entity(components=(HasPosition,), position=np.array([0.0, 0.0], "float32"))  # idx 0
-    b = world.add_entity(components=(HasPosition,), position=np.array([1.0, 1.0], "float32"))  # idx 1
-    c = world.add_entity(components=(HasPosition,), position=np.array([2.0, 2.0], "float32"))  # idx 2 (tail)
+    world = World(components=[C1, C2])
+    a = world.add_entity(components=(C1,), position=np.array([0.0, 0.0], "float32"))  # idx 0
+    b = world.add_entity(components=(C1,), position=np.array([1.0, 1.0], "float32"))  # idx 1
+    c = world.add_entity(components=(C1,), position=np.array([2.0, 2.0], "float32"))  # idx 2 (tail)
     world.update()
     world.remove_entity(a)                               # c swaps into slot 0; b stays at slot 1
     world.update()
@@ -661,18 +661,18 @@ def test_entity_write_targets_correct_row_after_swap_remove():
 def test_entity_view_is_live_across_archetype_migration():
     """A held Entity is a view, not a snapshot: after add_component migrates it to another pool, the SAME view
     still reads the (relocated) data, reports the new component set, and can write the newly-added field."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity(components=(HasPosition,), position=np.array([5.0, 6.0], "float32"))
+    world = World(components=[C1, C2])
+    eid = world.add_entity(components=(C1,), position=np.array([5.0, 6.0], "float32"))
     world.update()
 
     e = world.get_entity(eid)                            # held BEFORE the migration
-    assert set(e.get_components()) == {HasPosition}
+    assert set(e.get_components()) == {C1}
 
-    world.get_entity(eid).add_component(HasVelocity, velocity=np.array([1.0, 1.0], "float32"))  # -> pos+vel pool
+    world.get_entity(eid).add_component(C2, velocity=np.array([1.0, 1.0], "float32"))  # -> pos+vel pool
     world.update()
 
     np.testing.assert_array_equal(e.position, [5.0, 6.0])           # data survived the move, same view
-    assert set(e.get_components()) == {HasPosition, HasVelocity}    # view sees the new archetype
+    assert set(e.get_components()) == {C1, C2}    # view sees the new archetype
     assert "velocity" in e.get_fields()
 
     e.velocity = np.array([7.0, 7.0], "float32")                    # write the newly-available field via old view
@@ -683,12 +683,12 @@ def test_entity_write_to_a_field_added_this_tick_raises_until_update():
     """The other half of the rule: the component is only PENDING, so its column does not exist yet and the write
     has nowhere to land. A write never consults the command buffer -- so it raises, and the same
     write succeeds one update() later."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world = World(components=[C1, C2])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))
     world.update()
     e = world.get_entity(eid)
 
-    e.add_component(HasVelocity, velocity=np.zeros(2, "float32"))    # staged, not applied
+    e.add_component(C2, velocity=np.zeros(2, "float32"))    # staged, not applied
     with pytest.raises(AttributeError):
         e.velocity = np.array([5.0, 6.0], "float32")
 
@@ -700,13 +700,13 @@ def test_entity_write_to_a_field_added_this_tick_raises_until_update():
 def test_entity_write_to_a_field_pending_removal_lands_then_is_dropped():
     """Mirror case: the component is leaving but its column is still there, so the write lands NOW -- and then
     update() removes the component and the data goes with it. Consistent, and needs no buffer scan to explain."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition, HasVelocity), position=np.array([1.0, 2.0], "float32"),
+    world = World(components=[C1, C2])
+    eid = world.add_entity((C1, C2), position=np.array([1.0, 2.0], "float32"),
                            velocity=np.array([3.0, 4.0], "float32"))
     world.update()
     e = world.get_entity(eid)
 
-    e.remove_component(HasVelocity)                                  # staged
+    e.remove_component(C2)                                  # staged
     e.velocity = np.array([5.0, 6.0], "float32")                     # accepted: the column is still live
     np.testing.assert_array_equal(e.velocity, [5.0, 6.0])
 
@@ -730,28 +730,28 @@ def test_stale_handle_add_component_after_remove_rejects_eagerly():
     world.remove_entity(eid)                             # eid leaves live_entities -> handle is now stale
 
     with pytest.raises(ValueError):
-        e.add_component(HasVelocity, velocity=np.array([1.0, 1.0], "float32"))   # valid comp -> only liveness can raise
+        e.add_component(C2, velocity=np.array([1.0, 1.0], "float32"))   # valid comp -> only liveness can raise
 
 
 def test_stale_handle_remove_component_after_remove_rejects_eagerly():
     """Same guard for the narrowing op: remove_component through a stale handle must reject eagerly."""
-    world = World(components=[HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition, HasVelocity),
+    world = World(components=[C1, C2])
+    eid = world.add_entity((C1, C2),
                            position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
     world.update()
     e = world.get_entity(eid)                            # valid handle, taken before despawn
     world.remove_entity(eid)                             # now stale
 
     with pytest.raises(ValueError):
-        e.remove_component(HasVelocity)
+        e.remove_component(C2)
 
 
 def test_stale_handle_data_write_after_committed_remove_raises():
     """Once the despawn is committed the id has no row, so a write through the stale handle raises rather than
     poking whatever entity was swapped into that slot."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    other = world.add_entity((HasPosition,), position=np.array([3.0, 4.0], "float32"))   # swaps into eid's slot
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))
+    other = world.add_entity((C1,), position=np.array([3.0, 4.0], "float32"))   # swaps into eid's slot
     world.update()
     e = world.get_entity(eid)
     world.remove_entity(eid)
@@ -767,9 +767,9 @@ def test_stale_handle_data_write_before_the_remove_commits_cannot_corrupt_a_neig
     """While the despawn is only STAGED the row still exists, and there is no gate on the data path -- so the
     write may well land in the doomed row. Either way the invariant is the same: it touches nothing but that row,
     so the entity that swap-removes into the slot still carries its own value afterwards."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
-    other = world.add_entity((HasPosition,), position=np.array([3.0, 4.0], "float32"))
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))
+    other = world.add_entity((C1,), position=np.array([3.0, 4.0], "float32"))
     world.update()
     e = world.get_entity(eid)
     world.remove_entity(eid)                             # staged, not committed: eid still has a row
@@ -790,9 +790,9 @@ def test_stashed_row_view_across_update_is_the_documented_hole():
     whatever row now sits at that index -- here B's, after B swap-removes into A's slot. This is the same rule
     queries have: **do not hold a view across `update()`**. If a future guard ever makes this raise, delete this
     test -- the guarantee holds then."""
-    world = World([HasPosition])
-    a = world.add_entity((HasPosition,), position=np.array([1.0, 1.0], "float32"))   # row 0
-    b = world.add_entity((HasPosition,), position=np.array([2.0, 2.0], "float32"))   # row 1
+    world = World([C1])
+    a = world.add_entity((C1,), position=np.array([1.0, 1.0], "float32"))   # row 0
+    b = world.add_entity((C1,), position=np.array([2.0, 2.0], "float32"))   # row 1
     world.update()
     stashed = world.get_entity(a).position               # a writable view of row 0
 
@@ -811,21 +811,21 @@ def test_stashed_row_view_across_update_is_the_documented_hole():
 
 def test_to_dict_dumps_components_and_all_fields():
     """No filter: every field of every component, values as plain lists, components by class name."""
-    world = World([HasPosition, HasVelocity])
-    eid = world.add_entity((HasPosition, HasVelocity),
+    world = World([C1, C2])
+    eid = world.add_entity((C1, C2),
                            position=np.array([1.0, 2.0], "float32"), velocity=np.array([3.0, 4.0], "float32"))
     world.update()
 
     d = world.get_entity(eid).to_dict()
 
-    assert set(d["components"]) == {"HasPosition", "HasVelocity"}
+    assert set(d["components"]) == {"C1", "C2"}
     assert d["data"] == {"position": [1.0, 2.0], "velocity": [3.0, 4.0]}
 
 
 def test_to_dict_is_json_serializable():
     """The point of to_dict: the result round-trips through json -- no ndarray leaks into 'data'."""
-    world = World([HasPosition])
-    eid = world.add_entity((HasPosition,), position=np.array([1.0, 2.0], "float32"))
+    world = World([C1])
+    eid = world.add_entity((C1,), position=np.array([1.0, 2.0], "float32"))
     world.update()
 
     restored = json.loads(json.dumps(world.get_entity(eid).to_dict()))
@@ -834,9 +834,9 @@ def test_to_dict_is_json_serializable():
 
 def test_to_dict_object_dtype_uses_item_not_tolist():
     """An object-dtype field serializes via .item() -> the stored python object itself, not a [list]."""
-    world = World([HasLabel])
+    world = World([C4])
     payload = {"hp": 7, "name": "goblin"}
-    eid = world.add_entity((HasLabel,), label=np.array([payload], dtype=object))
+    eid = world.add_entity((C4,), label=np.array([payload], dtype=object))
     world.update()
 
     assert world.get_entity(eid).to_dict()["data"]["label"] == payload
@@ -844,8 +844,8 @@ def test_to_dict_object_dtype_uses_item_not_tolist():
 
 def test_to_dict_filters_out_non_serializable_fields():
     """With serialization_field set, a field marked False is dropped; the True one survives."""
-    world = World([HasSerial], extra_metadata=["serializable"])
-    eid = world.add_entity((HasSerial,), keep=np.array([1.0], "float32"), drop=np.array([9.0], "float32"))
+    world = World([C7], extra_metadata=["serializable"])
+    eid = world.add_entity((C7,), keep=np.array([1.0], "float32"), drop=np.array([9.0], "float32"))
     world.update()
 
     d = world.get_entity(eid).to_dict(serialization_field="serializable")
@@ -854,8 +854,8 @@ def test_to_dict_filters_out_non_serializable_fields():
 
 def test_to_dict_without_filter_dumps_even_non_serializable_fields():
     """No serialization_field -> filter off, so even a serializable=False field is dumped."""
-    world = World([HasSerial], extra_metadata=["serializable"])
-    eid = world.add_entity((HasSerial,), keep=np.array([1.0], "float32"), drop=np.array([9.0], "float32"))
+    world = World([C7], extra_metadata=["serializable"])
+    eid = world.add_entity((C7,), keep=np.array([1.0], "float32"), drop=np.array([9.0], "float32"))
     world.update()
 
     d = world.get_entity(eid).to_dict()

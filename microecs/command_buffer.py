@@ -1,12 +1,17 @@
 # pylint: disable=protected-access
 """command_buffer.py - data structure that eagerly manages the staging area (add/rm entity/cmpt) before world.upate()"""
 from __future__ import annotations
-from typing import Any
-from dataclasses import dataclass
+from typing import Any, TYPE_CHECKING
+from dataclasses import dataclass, field
 from enum import StrEnum
+
+import numpy as np
 
 from .utils import EntityId
 from .component import ComponentType
+
+if TYPE_CHECKING:
+    from microecs import World
 
 class CommandType(StrEnum):
     """The types of commands in the command pattern below"""
@@ -18,15 +23,15 @@ class CommandType(StrEnum):
 @dataclass
 class Command:
     """A command that can happen between two world.updates(), e.g. add/rm entity or components"""
-    command_type: CommandType
-    entity_id: EntityId
-    args: Any | None = None
+    command_type: CommandType                            # The type of command in the command buffer
+    entity_id: EntityId                                  # The entity this command applies to
+    args: dict[str, Any] = field(default_factory=dict)   # The arguments of this command. Each command has its own shape
 
 class CommandBuffer:
     """A data structure that holds all the uncommited commands between two world updates. Support eager exceptions
        on things like adding the same component twice on the same entity"""
     def __init__(self, world: "World"): # noqa
-        self.data: list[Command] = []
+        self.data: list[Command] = [] # should we make this dict[EntityId, list[Command]] ?
         self.world = world
         self.removed_this_tick: set[EntityId] = set()
 
@@ -35,41 +40,36 @@ class CommandBuffer:
         self.data.clear()
         self.removed_this_tick.clear()
 
-    def _get_entity_components(self, entity_id: EntityId) -> list[ComponentType]: # noqa
-        # This is the case for uncommited entities
-        if entity_id not in self.world._eid_to_pool_ix:
-            # uncommitted spawn: base = the components it was spawned with
+    def _get_entity_components(self, entity_id: EntityId) -> list[ComponentType]:
+        """
+        Return the entity's component set before this tick's component commands.
+        The buffered components (via ADD/REMOVE_COMPONENT) are not visible here.
+        Moreover, ADD_ENTITY->REMOVE_ENTITY->ADD_ENTITY cannot happen, as we always increment the id on adds.
+        Finally, we for-loop forward, so we get the first (and only) staged ADD_ENTITY, making it ok.
+        """
+        if entity_id not in self.world._eid_to_pool_ix: # staged entity (this tick) via ADD_ENTITY
             for cmd in self.data:
                 if cmd.entity_id == entity_id and cmd.command_type == CommandType.ADD_ENTITY:
                     return cmd.args["components"]
-            return [] # Entity should exist so this shouldn't be reached technically. We have an assert at call site.
+            assert False, "Invariant: live entity has a pool or a staged ADD_ENTITY"
         pool, _ = self.world._eid_to_pool_ix[entity_id]
         return self.world.pool_to_components[pool]
 
-    def _entity_has_buffered_component(self, entity_id: EntityId, component: ComponentType,
-                                       existing_components: list[ComponentType]) -> bool:
+    def _get_component_in_buffer_state(self, entity_id: EntityId, component: ComponentType) -> bool | None:
         # Look for the latest state of this entity w.r.t this component given the unstaged command buffer.
-        # We look in the buffer from right to left and return True if the component was added, False otherwise.
-        # If the component is not in the buffer at all, we check if it is already in the entity. Returns a bool.
+        # If the component is not in the buffer at all, return None. Return True if the last command is an ADD_COMPONENT
+        # Return False if the last command is an REMOVE_COMPONENT. Tri-state used to determine what we do with a new
+        # component called twice in the same tick before world.update()
         for old_command in reversed(self.data):
-            if old_command.entity_id != entity_id:
-                continue
-            if old_command.command_type == CommandType.ADD_COMPONENT:
-                old_component = old_command.args["component"]
-                if component == old_component:
-                    return True
-            if old_command.command_type == CommandType.REMOVE_COMPONENT:
-                old_component = old_command.args
-                if component == old_component:
-                    return False
-        return component in existing_components
+            if old_command.entity_id == entity_id and old_command.args.get("component", None) == component:
+                return old_command.command_type == CommandType.ADD_COMPONENT # true if ADD, false if REMOVE
+        return None
 
     def append(self, command: Command):
         """Appends a command to the buffer"""
         world = self.world
-        entity_id = command.entity_id
-        if entity_id not in world.live_entities:
-            raise ValueError(f"Entity: {entity_id} not in live entities ({command})")
+        if (eid := command.entity_id) not in world.live_entities:
+            raise ValueError(f"Entity: {eid} not in live entities ({command})")
 
         if command.command_type == CommandType.ADD_ENTITY:
             # nothing to do here: world.add_entity already ensures validated args (& defaults) come here.
@@ -77,7 +77,7 @@ class CommandBuffer:
 
         elif command.command_type == CommandType.REMOVE_ENTITY:
             # needed so we can fast check in world.remove_enitity if this is a no-op (same tick) or error (stale eid).
-            self.removed_this_tick.add(command.entity_id)
+            self.removed_this_tick.add(eid)
 
         elif command.command_type == CommandType.ADD_COMPONENT:
             component = command.args["component"]
@@ -86,26 +86,37 @@ class CommandBuffer:
             fk = world._convert_components_data([component], **fk)
             world._validate_component(component, strict=True, check_extra=True, **fk)
 
-            components = self._get_entity_components(entity_id)
-            if len(components) == 0:
-                raise ValueError(f"guaranteed to be >0 {entity_id} {components}")
-            has_component = self._entity_has_buffered_component(entity_id, component, existing_components=components)
-            if has_component:
-                raise ValueError(f"Component: {component} either added twice or exists already (id: {entity_id})")
-            command.args = {"component": component, **fk}   # commit path materializes the converted data
+            component_state = self._get_component_in_buffer_state(eid, component)
+            if component_state is True:
+                raise ValueError(f"Component: {component} already was already buffered this tick (id: {eid}). "
+                                 f"Run world.update() or you may have a bug where 2 systems write without a lock in "
+                                  "the same frame which may cause data loss on entities.")
+
+            if component_state is None:
+                components = self._get_entity_components(eid)
+                if component in components:
+                    raise ValueError(f"Component: {component} already exists already, use e.set_data(). (id: {eid})")
+
+            # If we reach here either the component is not in the entity or we flip-flop in this frame (REMOVE->ADD)
+            command.args = {"component": component, **fk}
 
         elif command.command_type == CommandType.REMOVE_COMPONENT:
-            component = command.args # TODO: use command.args["component"] for consistency
+            component = command.args["component"]
             if component not in world.component_types:
                 raise ValueError(f"Unknown component: {component} not in world components {world.component_types}")
 
-            components = self._get_entity_components(entity_id)
-            if len(components) == 0:
-                raise ValueError(f"guaranteed to be >0 {entity_id} {components}")
-            has_component = self._entity_has_buffered_component(entity_id, component, existing_components=components)
-            if not has_component:
-                raise ValueError(f"Component: {component} either removed twice or doesn't exist (id: {entity_id})")
+            components = self._get_entity_components(eid)
+            component_state = self._get_component_in_buffer_state(eid, component)
+            if component_state is None: # not in buffer -> we check if the entity has the component at all
+                if component not in components:
+                    raise ValueError(f"{component=} is not part of the entity. Use e.add_component(). (id: {eid})")
+            else: # Component is buffered. Thus we need to make sure it's flip flopped (e.g. remove after add)
+                if component_state is False: # remove after remove is no-op
+                    return
 
+        # We copy here because there's no guarantee the underlying arrays won't mutate (e.g. arr.resize) before commit.
+        command.args = {name: value.copy() if isinstance(value, np.ndarray) else value
+                        for name, value in command.args.items()}
         self.data.append(command)
 
     def __iter__(self):

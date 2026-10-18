@@ -13,7 +13,7 @@ from microecs import Pool, Component, QRField, f32
 from microecs.query_result import QueryResult, _QR_INTERNAL_ATTRS
 
 
-class HasPosition(Component):  # owns the `position` field the pools below carry
+class C1(Component):  # owns the `position` field the pools below carry
     position: np.ndarray = f32((2,))
 
 

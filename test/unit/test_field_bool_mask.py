@@ -22,45 +22,45 @@ import pytest
 from microecs import World, Component, f32, i32, obj, boolf
 
 
-class HasVel(Component):
+class C1(Component):
     velocity: np.ndarray = f32((2,))
 
 
-class HasAcc(Component):
+class C2(Component):
     acceleration: np.ndarray = f32((2,))
 
 
-class HasCount(Component):
+class C3(Component):
     count: np.ndarray = i32((1,))
 
 
-class HasFlag(Component):
+class C4(Component):
     flag: np.ndarray = boolf((1,))
 
 
-class HasName(Component):
+class C5(Component):
     name: np.ndarray = obj((1,))
 
 
-class HasTag(Component):  # forces a second archetype/pool for the HasVel query
+class C6(Component):  # forces a second archetype/pool for the C1 query
     tag: np.ndarray = f32((1,))
 
 
-# row values (two pools: 2 rows without HasTag + 3 rows with HasTag)
+# row values (two pools: 2 rows without C6 + 3 rows with C6)
 ROWS = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0], [9.0, 10.0]]
 NAMES = ["r0", "r1", "r2", "r3", "r4"]
 MASK5 = np.array([True, False, True, False, True])          # selects n=3 rows, crosses the pool boundary
 
 
 def _world(multipool: bool):
-    w = World(components=[HasVel, HasAcc, HasCount, HasFlag, HasName, HasTag])
+    w = World(components=[C1, C2, C3, C4, C5, C6])
     for i, v in enumerate(ROWS[:2]):
-        w.add_entity(components=[HasVel, HasAcc, HasCount, HasFlag, HasName],
+        w.add_entity(components=[C1, C2, C3, C4, C5],
                      velocity=np.array(v, "float32"), acceleration=np.array(v, "float32"),
                      count=np.array([i], "int32"), flag=np.array([i % 2 == 0], "bool"),
                      name=np.array([NAMES[i]], "object"))
     for i, v in enumerate(ROWS[2:]):
-        comps = [HasVel, HasAcc, HasCount, HasFlag, HasName] + ([HasTag] if multipool else [])
+        comps = [C1, C2, C3, C4, C5] + ([C6] if multipool else [])
         data = dict(velocity=np.array(v, "float32"), acceleration=np.array(v, "float32"),
                     count=np.array([i + 2], "int32"), flag=np.array([(i + 2) % 2 == 0], "bool"),
                     name=np.array([NAMES[i + 2]], "object"))
@@ -68,9 +68,9 @@ def _world(multipool: bool):
             data["tag"] = np.array([0.0], "float32")
         w.add_entity(components=comps, **data)
     w.update()
-    # query every data component (NOT HasTag: it's only on pool B, and querying it would
+    # query every data component (NOT C6: it's only on pool B, and querying it would
     # exclude pool A) so the field set covers all dtypes the tests read from one qr
-    return w, w.query(HasVel, HasAcc, HasCount, HasFlag, HasName)
+    return w, w.query(C1, C2, C3, C4, C5)
 
 
 # --- READS: `qr.field[mask]` == `qr.field.numpy()[mask]` -----------------------------------------------

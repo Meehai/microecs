@@ -18,17 +18,17 @@ does not:
 Retrying `update()` therefore raises `KeyError: 'components'`, and any command that did succeed would apply
 twice. There is no path back to a consistent world; the only recovery is to throw the world away.
 
-### Reachable? Yes — checked 2026-07-26 with public API only
+### Reachable? Not through the old alias route
 
-The question was whether eager validation makes `update()` unable to fail at all. It does not. Three routes,
-no privates touched, all the same shape — **#39**'s aliasing: `add_entity` / `add_component` hold *your*
-array by reference, and numpy lets you change it after staging in ways validation already approved.
+Eager validation does not make `update()` unable to fail, but the public alias route is gone: **#39** landed and
+`CommandBuffer.append` snapshots staged arrays, so changing the caller's array after `add_entity` /
+`add_component` no longer reaches commit. The recovery tests inject the bad shape into the buffer's own staged
+snapshot instead. The lesson stands for any internal producer that queues an invalid command.
 
 ```python
-arr = np.zeros(2, "float32")
-world.add_entity([P], p=arr)        # validated at the call: shape (2,), ok
-arr.resize(3, refcheck=False)       # or: arr.dtype = "int32"
-world.update()                      # AssertionError in Pool.add_entity, mid-loop
+world.add_entity([P], p=np.zeros(2, "float32"))   # valid at the call
+world._command_buffer.data[0].args["p"].resize(3, refcheck=False)
+world.update()                                    # ValueError in Pool.add_entity, mid-loop
 ```
 
 Three things the original write-up missed:
@@ -45,9 +45,9 @@ Three things the original write-up missed:
 Repro: `test/manual/41-failed-update/probe.py`. Original: `test/manual/structural-audit/probe_invariants.py`
 probe 8.
 
-Priority stays **3** for one reason: **#39 closes the only known public route.** Snapshot staged writes and
-the trigger is gone, leaving internal bugs. The two are a pair — #39 stops it happening, this stops it being
-permanent — and #39 is the one to do first.
+Priority stays **3**: **#39** closed the public route, so this now covers internal bad commands. A commit can
+still fail, and when it does the buffer is bricked. #39 stopped the known trigger; this stops any trigger from
+being permanent.
 
 ## What
 
@@ -67,8 +67,8 @@ one option that is out.
 
 ## Validation (tester)
 
-**Written, strict-xfail, in `test/unit/test_world.py`** — they turn green the moment this lands. The trigger is
-the public-API one above (a resized staged array), not a monkeypatch, so each test doubles as the repro:
+**Written, strict-xfail, in `test/unit/test_world.py`** — they turn green the moment this lands. The trigger
+widens the buffer's own staged snapshot, so each test doubles as the repro for any internally malformed command:
 
 - `test_failed_update_leaves_an_empty_buffer`
 - `test_update_after_a_failed_update_is_a_clean_noop` — the headline: one bad frame costs one frame, not the world

@@ -19,40 +19,40 @@ import pytest
 from microecs import World, Component, QRField, f32
 
 
-class HasVel(Component):
+class C1(Component):
     velocity: np.ndarray = f32((2,))
 
 
-class HasTag(Component):  # forces a second archetype/pool for the velocity query
+class C2(Component):  # forces a second archetype/pool for the velocity query
     tag: np.ndarray = f32((1,))
 
 
-class HasPose(Component):
+class C3(Component):
     pose: np.ndarray = f32((4, 4))
 
 
 def _multipool_velocity():
     """A (5,2) velocity field split across two pools (2 rows + 3 rows)."""
-    w = World(components=[HasVel, HasTag])
+    w = World(components=[C1, C2])
     for v in ([1, 2], [3, 4]):
-        w.add_entity(components=[HasVel], velocity=np.array(v, "float32"))
+        w.add_entity(components=[C1], velocity=np.array(v, "float32"))
     for v in ([5, 6], [7, 8], [9, 10]):
-        w.add_entity(components=[HasVel, HasTag],
+        w.add_entity(components=[C1, C2],
                      velocity=np.array(v, "float32"), tag=np.array([0], "float32"))
     w.update()
-    return w, w.query(HasVel)
+    return w, w.query(C1)
 
 
 def _multipool_pose():
     """A (5,4,4) pose field split across two pools (2 + 3)."""
-    w = World(components=[HasPose, HasTag])
+    w = World(components=[C3, C2])
     for i in range(2):
-        w.add_entity(components=[HasPose], pose=(i + 1) * np.ones((4, 4), "float32"))
+        w.add_entity(components=[C3], pose=(i + 1) * np.ones((4, 4), "float32"))
     for i in range(3):
-        w.add_entity(components=[HasPose, HasTag],
+        w.add_entity(components=[C3, C2],
                      pose=(i + 3) * np.ones((4, 4), "float32"), tag=np.array([0], "float32"))
     w.update()
-    return w, w.query(HasPose)
+    return w, w.query(C3)
 
 
 def assert_parity(qr_field, logical, op):
@@ -148,7 +148,7 @@ def test_assignment_broadcast_matches_numpy(value_factory, expected_factory):
     logical = qr.velocity.numpy().copy()
     qr.velocity[:] = value_factory()
     w.update()
-    assert np.allclose(w.query(HasVel).velocity.numpy(), expected_factory(logical))
+    assert np.allclose(w.query(C1).velocity.numpy(), expected_factory(logical))
 
 
 # --- bucket 2: explicit pool-crossing ops differ from numpy ON PURPOSE ---
@@ -166,13 +166,13 @@ def test_cumsum_axis0_diverges_from_numpy():
 def test_sort_axis0_diverges_when_pools_interleave():
     """np.sort(axis=0) sorts within each pool. With values that interleave across pools, that differs
     from the global sort the user might expect."""
-    w = World(components=[HasVel, HasTag])
+    w = World(components=[C1, C2])
     for v in ([5, 1], [1, 5]):                              # pool A holds the large-then-small rows
-        w.add_entity(components=[HasVel], velocity=np.array(v, "float32"))
-    w.add_entity(components=[HasVel, HasTag],
+        w.add_entity(components=[C1], velocity=np.array(v, "float32"))
+    w.add_entity(components=[C1, C2],
                  velocity=np.array([3, 3], "float32"), tag=np.array([0], "float32"))
     w.update()
-    qr = w.query(HasVel)
+    qr = w.query(C1)
     field_result = np.sort(qr.velocity, axis=0).numpy()
     numpy_result = np.sort(qr.velocity.numpy(), axis=0)
     assert not np.array_equal(field_result, numpy_result)

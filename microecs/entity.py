@@ -30,7 +30,8 @@ class Entity:
 
     def remove_component(self, component: ComponentType):
         """Removes a component from an entity given its id. Lazy; call update()"""
-        self._world_command_buffer.append(Command(CommandType.REMOVE_COMPONENT, self.entity_id, args=component))
+        self._world_command_buffer.append(Command(CommandType.REMOVE_COMPONENT, self.entity_id,
+                                                  args={"component": component}))
 
     def has_component(self, component: ComponentType) -> bool:
         """Checks if this entity has a component"""
